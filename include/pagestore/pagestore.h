@@ -158,8 +158,12 @@ typedef struct ps_log_hooks {
 
 /*
  * Installs a copy of *hooks (NULL clears them). Any thread; waits for a
- * running checkpoint, which keeps the hooks it started with. The hooks are
- * called on the checkpointing thread.
+ * running checkpoint, which keeps the hooks it started with.
+ *
+ * The hooks are called on the checkpointing thread with the store's
+ * checkpoint lock held. They must not call ps_checkpoint or
+ * ps_set_log_hooks on the same store (that deadlocks); operations,
+ * snapshots and the WAL may be used.
  */
 void ps_set_log_hooks(ps_store *s, const ps_log_hooks *hooks);
 

@@ -104,6 +104,9 @@ static bool durable_bit(u32 group_id, u32 bit)
 
 /* ---- log hooks recorder ---- */
 
+typedef struct bg_ckpt bg_ckpt;
+static void bg_start(bg_ckpt *b);
+
 struct ps_log_hooks_ctx {
     pthread_mutex_t mu;
     pthread_cond_t cv;
@@ -116,6 +119,8 @@ struct ps_log_hooks_ctx {
     u64 count_at_done;
     char order[32]; /* 'F' per flush_log, 'D' per checkpoint_done */
     u32 norder;
+    bool hold; /* flush_log waits until released */
+    bool released;
 };
 
 static void hooks_init(ps_log_hooks_ctx *h)
@@ -142,6 +147,10 @@ static int rec_flush(ps_log_hooks_ctx *h, u64 lsn)
     }
     const int rv = h->flush_rv;
     pthread_cond_broadcast(&h->cv);
+    while (h->hold && !h->released) {
+        pthread_cond_wait(&h->cv, &h->mu);
+    }
+    h->released = false;
     pthread_mutex_unlock(&h->mu);
     return rv;
 }
@@ -175,6 +184,28 @@ static void wait_flushes(ps_log_hooks_ctx *h, u32 n)
     pthread_mutex_unlock(&h->mu);
 }
 
+/* Stop the checkpoint in flush_log so the test can commit before its first page write. */
+static void bg_start_held(bg_ckpt *b, ps_log_hooks_ctx *h)
+{
+    pthread_mutex_lock(&h->mu);
+    h->hold = true;
+    h->released = false;
+    const u32 n = h->nflush;
+    pthread_mutex_unlock(&h->mu);
+    bg_start(b);
+    wait_flushes(h, n + 1);
+}
+
+/* Release the current flush and stop holding later calls. */
+static void release_flush(ps_log_hooks_ctx *h)
+{
+    pthread_mutex_lock(&h->mu);
+    h->hold = false;
+    h->released = true;
+    pthread_cond_broadcast(&h->cv);
+    pthread_mutex_unlock(&h->mu);
+}
+
 static u32 nflush(ps_log_hooks_ctx *h)
 {
     pthread_mutex_lock(&h->mu);
@@ -193,10 +224,10 @@ static u32 ndone(ps_log_hooks_ctx *h)
 
 /* ---- checkpoint thread helpers ---- */
 
-typedef struct bg_ckpt {
+struct bg_ckpt {
     pthread_t t;
     int rv;
-} bg_ckpt;
+};
 
 static void *bg_ckpt_main(void *arg)
 {
@@ -414,6 +445,148 @@ static void test_mid_operation_and_bitmap_copy(void)
     T_EQ(stats().frames_dirty, 0);
     close_store();
     hooks_destroy(&h);
+}
+
+/*
+ * Operation 2 commits before the first write at LSN 1. Copying the bitmap at
+ * commit keeps its allocation out of that checkpoint.
+ */
+static void test_bitmap_copy_before_write(void)
+{
+    open_store(64);
+    ps_log_hooks_ctx h;
+    hooks_init(&h);
+    set_hooks(&h);
+    T_EQ(alloc_with(1, "a"), 1);
+    T_OK(ps_op_begin(s, 2));
+    T_EQ(alloc_text("b"), 2);
+
+    bg_ckpt b;
+    bg_start_held(&b, &h); /* L = 1, nothing copied yet */
+    ps_op_commit(s);
+    release_flush(&h);
+    T_OK(bg_join(&b));
+
+    T_EQ(mb_info(mb).durable_lsn, 1);
+    T_CHECK(durable_bit(0, 1));
+    T_CHECK(!durable_bit(0, 2)); /* the image at L, not the committed one */
+    T_EQ(((const ps_page *) mb_page(mb, 0))->lsn, 1);
+    T_EQ(ps_test_chain_len(s, 0), 1);
+    T_OK(ps_checkpoint(s));
+    T_CHECK(durable_bit(0, 2));
+    close_store();
+    hooks_destroy(&h);
+}
+
+/* Abort exposes the marker that became durable under the new allocation. */
+static void test_abort_drops_lone_marker(void)
+{
+    open_store(64);
+    ps_log_hooks_ctx h;
+    hooks_init(&h);
+    set_hooks(&h);
+    T_EQ(alloc_with(1, "A"), 1);
+    T_OK(ps_op_begin(s, 2));
+    T_OK(ps_free(s, 1));
+    ps_op_commit(s);
+
+    T_OK(ps_op_begin(s, 3));
+    T_EQ(alloc_text("C"), 1); /* over the marker */
+    T_OK(ps_checkpoint(s)); /* L = 2: the marker goes on disk under the op's node */
+    T_CHECK(ps_test_has_entry(s, 1));
+    ps_op_abort(s);
+    T_CHECK(!ps_test_has_entry(s, 1));
+    T_EQ(stats().frames_dirty, 0);
+
+    /* The same through ps_free of the id this op allocated. */
+    T_OK(ps_op_begin(s, 3));
+    T_EQ(alloc_text("C"), 1);
+    T_OK(ps_free(s, 1)); /* cancelled: the chain is the committed history again */
+    ps_op_commit(s);
+    T_EQ(alloc_with(4, "D"), 1);
+    T_OK(ps_op_begin(s, 5));
+    T_OK(ps_free(s, 1));
+    ps_op_commit(s);
+    T_OK(ps_op_begin(s, 6));
+    T_EQ(alloc_text("E"), 1);
+    T_OK(ps_checkpoint(s)); /* L = 5: marker on disk under the op's node */
+    T_OK(ps_free(s, 1));
+    ps_op_commit(s);
+    T_CHECK(!ps_test_has_entry(s, 1));
+    close_store();
+    hooks_destroy(&h);
+}
+
+/* A backend that failed to begin has no attempt to abort. */
+static void test_begin_failure(void)
+{
+    open_store(64);
+    alloc_with(1, "a");
+    const u64 aborts = mb_abort_count(mb);
+    mb_fail(mb, MB_BEGIN, ENOSPC, 1);
+    T_ERR(ps_checkpoint(s), ENOSPC);
+    T_EQ(mb_abort_count(mb), aborts);
+    const struct ps_stats st = stats();
+    T_CHECK(!st.failed);
+    T_EQ(st.checkpoints_failed, 1);
+    T_EQ(st.frames_dirty, 2);
+    T_OK(ps_checkpoint(s));
+    T_EQ(ps_durable_lsn(s), 1);
+    check_durable_text(1, "a");
+    close_store();
+}
+
+/* Failed checkpoints free the bitmap copies and retired versions kept for them (leak-checked). */
+static void fail_with_pending(mb_point point, int want)
+{
+    open_store(64);
+    ps_log_hooks_ctx h;
+    hooks_init(&h);
+    set_hooks(&h);
+    T_OK(ps_op_begin(s, 1));
+    T_EQ(alloc_text("a"), 1);
+    T_EQ(alloc_text("b"), 2);
+    ps_op_commit(s);
+    const u32 free0 = stats().frames_free;
+    const u64 aborts = mb_abort_count(mb);
+
+    mb_fail(mb, point, EIO, 1);
+    bg_ckpt b;
+    bg_start_held(&b, &h);
+    T_OK(ps_op_begin(s, 2));
+    write_text(1, "B"); /* the version at L is retired */
+    T_EQ(alloc_text("c"), 3); /* bitmap 0 is copied */
+    ps_op_commit(s);
+    T_EQ(stats().frames_retired, 1);
+    T_EQ(ps_test_chain_len(s, 0), 2);
+    release_flush(&h);
+    T_ERR(bg_join(&b), want);
+
+    const struct ps_stats st = stats();
+    T_EQ(st.frames_retired, 0);
+    T_EQ(ps_test_chain_len(s, 0), 1);
+    T_EQ(ps_test_chain_len(s, 1), 1);
+    T_EQ(st.frames_free, free0 - 1); /* page 3 only */
+    T_EQ(st.checkpoints_failed, 1);
+    if (point == MB_COMMIT_FATAL) {
+        T_CHECK(st.failed);
+        T_EQ(mb_abort_count(mb), aborts); /* never after a fatal commit */
+    } else {
+        T_CHECK(!st.failed);
+        T_EQ(mb_abort_count(mb), aborts + 1);
+        T_OK(ps_checkpoint(s));
+        check_durable_text(1, "B");
+        T_CHECK(durable_bit(0, 3));
+    }
+    close_store();
+    hooks_destroy(&h);
+}
+
+static void test_failures_free_pending(void)
+{
+    fail_with_pending(MB_WRITE, EIO);
+    fail_with_pending(MB_COMMIT, EIO);
+    fail_with_pending(MB_COMMIT_FATAL, EIO);
 }
 
 /* Replacing a page must leave the running checkpoint's version readable. */
@@ -817,6 +990,10 @@ int main(int argc, char **argv)
     T_RUN(test_lsn_only_advance);
     T_RUN(test_freed_page_skipped);
     T_RUN(test_mid_operation_and_bitmap_copy);
+    T_RUN(test_bitmap_copy_before_write);
+    T_RUN(test_abort_drops_lone_marker);
+    T_RUN(test_begin_failure);
+    T_RUN(test_failures_free_pending);
     T_RUN(test_write_during_checkpoint);
     T_RUN(test_realloc_during_checkpoint);
     T_RUN(test_hooks_order_and_failure);

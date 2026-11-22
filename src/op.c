@@ -616,6 +616,8 @@ void ps_op_abort(ps_store *s)
             e->head = b->older;
             ps_vnode_delete(s->pt, b);
         }
+        /* A checkpoint may have marked the committed marker under h ON_DISK meanwhile. */
+        ps_drop_lone_marker(s, e);
         ps_update_evictable(s, e);
         ps_entry_maybe_release(s->pt, e);
         ps_unlatch(s->pt, id);
@@ -960,6 +962,7 @@ int ps_free(ps_store *s, u32 id)
         ps_vnode_delete(s->pt, h);
         s->op.frames--;
         drop_page(s, e);
+        ps_drop_lone_marker(s, e); /* as in abort */
         ps_update_evictable(s, e);
         ps_entry_maybe_release(s->pt, e);
     } else if (h != NULL && (h->flags & PS_VF_IN_OP) != 0) {

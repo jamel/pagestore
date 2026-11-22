@@ -317,13 +317,9 @@ static void mark_written(ps_store *s, u32 n, u8 cbit)
         v->flags |= PS_VF_ON_DISK;
         const u8 was = atomic_fetch_and_explicit(&e->dirty, (u8) ~cbit, memory_order_relaxed);
         PS_ASSERT((was & cbit) != 0);
+        PS_UNUSED(was);
         atomic_fetch_sub_explicit(&s->frames_dirty, 1, memory_order_relaxed);
-        /* A lone on-disk free marker carries no information. */
-        if ((was & (u8) ~cbit) == 0 && e->head == v && v->kind == PS_V_FREE && v->older == NULL &&
-            v->pins == 0) {
-            e->head = NULL;
-            ps_vnode_delete(s->pt, v);
-        }
+        ps_drop_lone_marker(s, e);
         ps_update_evictable(s, e);
         ps_entry_maybe_release(s->pt, e);
         ps_unlatch(s->pt, id);

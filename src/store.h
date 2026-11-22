@@ -210,6 +210,15 @@ void ps_node_pin(ps_store *s, ps_vnode *v);
 void ps_node_free(ps_store *s, ps_entry *e, ps_vnode *v);
 
 /*
+ * A lone, unpinned ON_DISK free marker carries no information. If e's chain is just that and e is on no dirty list, the marker is
+ * deleted (the chain becomes empty). The caller then calls
+ * ps_entry_maybe_release. Every path that can leave such a marker alone
+ * calls it: node free, checkpoint end, abort, and ps_free of an id this op
+ * allocated.
+ */
+void ps_drop_lone_marker(ps_store *s, ps_entry *e);
+
+/*
  * Drops one pin; at the last unpin a PS_VF_FREE_WHEN_UNPINNED node is
  * freed (ps_node_free, so e may be gone afterwards).
  */
@@ -237,7 +246,11 @@ void ps_mark_dirty(ps_store *s, ps_entry *e);
  */
 int ps_checkpoint_run(ps_store *s);
 
-/* Puts the store in its failed state and logs err at ERROR. Any thread, any locks. */
+/*
+ * Puts the store in its failed state and logs err at ERROR.
+ * Any thread; it calls the user's log callback, so it must not be called
+ * with reg_mu or a page latch held (ckpt_mu is fine).
+ */
 void ps_store_fail(ps_store *s, int err);
 
 /* Registry (reg_mu held). r->lsn must be >= every registered lsn. */

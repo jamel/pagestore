@@ -1,15 +1,17 @@
 #pragma once
 
 /*
- * In-memory ps_backend for unit tests. Its durable state (the header info
- * and the page images) lives in the mem_backend object and survives
- * ps_close, so a test can close and reopen a store on it.
+ * Keep the backend alive across ps_close to test a reopen.
  *
- * It checks the store: every ckpt_write page must carry a valid checksum
- * and its own page_id, ckpt_commit must follow exactly count writes, and
- * the ckpt_* calls must come in order (aborts the test otherwise).
- * All functions are thread-safe; mb_page's pointer is stable until
- * mb_destroy but its contents change at each committed checkpoint.
+ *     mem_backend *mb = mb_create();
+ *     ps_store *s = NULL;
+ *     T_OK(mb_open(mb, 64, PS_CREATE, &s));
+ *     ps_close(s);
+ *     T_OK(mb_open(mb, 64, 0, &s));
+ *     ps_close(s);
+ *     mb_destroy(mb);
+ *
+ * Checkpoint callbacks assert their call order, write count and page checksums.
  */
 
 #include "pagestore/backend.h"
@@ -21,6 +23,7 @@ typedef struct mem_backend mem_backend;
 /* Injection points for mb_fail. */
 typedef enum mb_point {
     MB_READ, /* read_page */
+    MB_BEGIN, /* ckpt_begin */
     MB_WRITE, /* ckpt_write */
     MB_COMMIT, /* ckpt_commit, non-fatal */
     MB_COMMIT_FATAL, /* ckpt_commit, fatal */
@@ -53,6 +56,8 @@ void mb_set_info(mem_backend *mb, ps_backend_info info);
 ps_backend_info mb_info(mem_backend *mb);
 
 u64 mb_ckpt_count(mem_backend *mb);
+u64 mb_abort_count(mem_backend *mb);
+/* True only if the last committed checkpoint wrote this ID. */
 bool mb_written_last(mem_backend *mb, u32 id);
 
 /* Fail the next count calls at p. Use -1 to fail until mb_fail(mb, p, 0, 0). */

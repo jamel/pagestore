@@ -58,6 +58,7 @@ struct mem_backend {
     u32 nstaged;
 
     u64 ckpt_done;
+    u64 aborts;
     mb_fault faults[MB_POINTS];
     bool block_writes;
     u32 commit_delay_ms;
@@ -241,6 +242,11 @@ static int be_ckpt_begin(ps_backend_ctx *ctx, u64 lsn, u32 num_groups, u32 count
     pthread_mutex_lock(&mb->mu);
     T_CHECK(mb->open && !mb->in_ckpt);
     T_CHECK(num_groups >= 1);
+    const int rv = take_fault(mb, MB_BEGIN);
+    if (rv != 0) {
+        pthread_mutex_unlock(&mb->mu);
+        return rv;
+    }
     mb->in_ckpt = true;
     mb->ckpt_lsn = lsn;
     mb->ckpt_ng = num_groups;
@@ -326,6 +332,9 @@ static void be_ckpt_abort(ps_backend_ctx *ctx)
 {
     mem_backend *mb = ctx->mb;
     pthread_mutex_lock(&mb->mu);
+    /* A fatal commit has already closed the checkpoint. */
+    T_CHECK(mb->in_ckpt);
+    mb->aborts++;
     drop_staged(mb);
     pthread_mutex_unlock(&mb->mu);
 }
@@ -407,6 +416,14 @@ u64 mb_ckpt_count(mem_backend *mb)
 {
     pthread_mutex_lock(&mb->mu);
     const u64 n = mb->ckpt_done;
+    pthread_mutex_unlock(&mb->mu);
+    return n;
+}
+
+u64 mb_abort_count(mem_backend *mb)
+{
+    pthread_mutex_lock(&mb->mu);
+    const u64 n = mb->aborts;
     pthread_mutex_unlock(&mb->mu);
     return n;
 }

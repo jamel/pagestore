@@ -43,15 +43,19 @@ void ps_node_free(ps_store *s, ps_entry *e, ps_vnode *v)
     drop_frame(s, v);
     ps_vnode_delete(s->pt, v);
 
-    /* A lone free marker that is on disk carries no information. */
+    ps_drop_lone_marker(s, e);
+    ps_update_evictable(s, e);
+    ps_entry_maybe_release(s->pt, e);
+}
+
+void ps_drop_lone_marker(ps_store *s, ps_entry *e)
+{
     ps_vnode *h = e->head;
     if (h != NULL && h->older == NULL && h->kind == PS_V_FREE && (h->flags & PS_VF_ON_DISK) != 0 &&
-        h->pins == 0) {
+        h->pins == 0 && atomic_load_explicit(&e->dirty, memory_order_relaxed) == 0) {
         e->head = NULL;
         ps_vnode_delete(s->pt, h);
     }
-    ps_update_evictable(s, e);
-    ps_entry_maybe_release(s->pt, e);
 }
 
 void ps_node_unpin(ps_store *s, ps_entry *e, ps_vnode *v)
