@@ -26,7 +26,7 @@
     {
       "name": "tsan",
       "inherits": "base",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "PS_SANITIZE": "thread" }
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "PS_SANITIZE": "thread", "CMAKE_C_COMPILER": "clang" }
     },
     {
       "name": "msan",
