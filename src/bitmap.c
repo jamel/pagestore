@@ -6,18 +6,19 @@
 
 #include "bitmap.h"
 
+#include "pagestore/compiler.h"
 #include "util.h"
 
 #include <string.h>
 
 void ps_bit_set(uint8_t *m, uint32_t bit)
 {
-    m[bit / 8] |= (uint8_t)(1u << (bit % 8));
+    m[bit / 8] |= (uint8_t) (1u << (bit % 8));
 }
 
 void ps_bit_clear(uint8_t *m, uint32_t bit)
 {
-    m[bit / 8] &= (uint8_t)~(1u << (bit % 8));
+    m[bit / 8] &= (uint8_t) ~(1u << (bit % 8));
 }
 
 int ps_bit_test(const uint8_t *m, uint32_t bit)
@@ -45,36 +46,39 @@ static uint64_t load_word(const uint8_t *m, uint32_t nbytes, uint32_t w, uint8_t
 
 uint32_t ps_bit_find_clear(const uint8_t *m, uint32_t nbits, uint32_t from)
 {
-    if (from >= nbits)
+    if (from >= nbits) {
         return nbits;
+    }
 
-    uint32_t nbytes = (uint32_t)(((uint64_t)nbits + 7) / 8);
+    uint32_t nbytes = (uint32_t) (((uint64_t) nbits + 7) / 8);
     uint32_t nwords = (nbytes + 7) / 8;
     uint32_t w = from / 64;
     uint64_t x = ~load_word(m, nbytes, w, 0xFF) & (~0ull << (from % 64));
 
     for (;;) {
         if (x != 0) {
-            uint64_t bit = (uint64_t)w * 64 + (uint64_t)__builtin_ctzll(x);
-            return bit < nbits ? (uint32_t)bit : nbits;
+            uint64_t bit = (uint64_t) w * 64 + (uint64_t) PS_CTZ64(x);
+            return bit < nbits ? (uint32_t) bit : nbits;
         }
-        if (++w >= nwords)
+        if (++w >= nwords) {
             return nbits;
+        }
         x = ~load_word(m, nbytes, w, 0xFF);
     }
 }
 
 uint32_t ps_bit_count_set(const uint8_t *m, uint32_t nbits)
 {
-    uint32_t nbytes = (uint32_t)(((uint64_t)nbits + 7) / 8);
+    uint32_t nbytes = (uint32_t) (((uint64_t) nbits + 7) / 8);
     uint32_t full = nbits / 64;
     uint32_t count = 0;
 
-    for (uint32_t w = 0; w < full; w++)
-        count += (uint32_t)__builtin_popcountll(load_word(m, nbytes, w, 0));
+    for (uint32_t w = 0; w < full; w++) {
+        count += PS_POPCOUNT64(load_word(m, nbytes, w, 0));
+    }
     if (nbits % 64 != 0) {
         uint64_t x = load_word(m, nbytes, full, 0) & ((1ull << (nbits % 64)) - 1);
-        count += (uint32_t)__builtin_popcountll(x);
+        count += PS_POPCOUNT64(x);
     }
     return count;
 }

@@ -1,5 +1,4 @@
-#ifndef PS_TEST_H
-#define PS_TEST_H
+#pragma once
 
 /*
  * Register tests with T_RUN in main.
@@ -16,6 +15,8 @@
  * worker thread.
  */
 
+#include "pagestore/compiler.h"
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -26,69 +27,85 @@ int t_select(const char *name); /* 1 if the named test should run */
 void t_begin(const char *name);
 void t_end(const char *name);
 
-#define T_RUN(fn)                                                                                  \
-    do {                                                                                           \
-        if (t_select(#fn)) {                                                                       \
-            t_begin(#fn);                                                                          \
-            fn();                                                                                  \
-            t_end(#fn);                                                                            \
-        }                                                                                          \
+#define T_RUN(fn) \
+    do { \
+        if (t_select(#fn)) { \
+            t_begin(#fn); \
+            fn(); \
+            t_end(#fn); \
+        } \
     } while (0)
 
-_Noreturn void t_fail(const char *file, int line, const char *fmt, ...)
-    __attribute__((format(printf, 3, 4)));
-_Noreturn void t_fail_eq(const char *file, int line, const char *op, const char *as,
-                         const char *bs, unsigned long long a, unsigned long long b);
-_Noreturn void t_fail_err(const char *file, int line, const char *es, const char *cs, int got,
-                          int want);
-_Noreturn void t_fail_mem(const char *file, int line, const char *as, const char *bs,
-                          const void *a, const void *b, size_t n);
+PS_NORETURN void t_fail(const char *file, int line, const char *fmt, ...) PS_PRINTF(3, 4);
+PS_NORETURN void t_fail_eq(
+    const char *file,
+    int line,
+    const char *op,
+    const char *as,
+    const char *bs,
+    unsigned long long a,
+    unsigned long long b);
+PS_NORETURN void t_fail_err(
+    const char *file,
+    int line,
+    const char *es,
+    const char *cs,
+    int got,
+    int want);
+PS_NORETURN void t_fail_mem(
+    const char *file,
+    int line,
+    const char *as,
+    const char *bs,
+    const void *a,
+    const void *b,
+    size_t n);
 
-#define T_CHECK(c)                                                                                 \
-    do {                                                                                           \
-        if (!(c))                                                                                  \
-            t_fail(__FILE__, __LINE__, "T_CHECK(%s) failed", #c);                                  \
+#define T_CHECK(c) \
+    do { \
+        if (!(c)) \
+            t_fail(__FILE__, __LINE__, "T_CHECK(%s) failed", #c); \
     } while (0)
 
-#define T_EQ(a, b)                                                                                 \
-    do {                                                                                           \
-        unsigned long long t_a_ = (unsigned long long)(a);                                         \
-        unsigned long long t_b_ = (unsigned long long)(b);                                         \
-        if (t_a_ != t_b_)                                                                          \
-            t_fail_eq(__FILE__, __LINE__, "T_EQ", #a, #b, t_a_, t_b_);                             \
+#define T_EQ(a, b) \
+    do { \
+        unsigned long long t_a_ = (unsigned long long) (a); \
+        unsigned long long t_b_ = (unsigned long long) (b); \
+        if (t_a_ != t_b_) \
+            t_fail_eq(__FILE__, __LINE__, "T_EQ", #a, #b, t_a_, t_b_); \
     } while (0)
 
-#define T_NE(a, b)                                                                                 \
-    do {                                                                                           \
-        unsigned long long t_a_ = (unsigned long long)(a);                                         \
-        unsigned long long t_b_ = (unsigned long long)(b);                                         \
-        if (t_a_ == t_b_)                                                                          \
-            t_fail_eq(__FILE__, __LINE__, "T_NE", #a, #b, t_a_, t_b_);                             \
+#define T_NE(a, b) \
+    do { \
+        unsigned long long t_a_ = (unsigned long long) (a); \
+        unsigned long long t_b_ = (unsigned long long) (b); \
+        if (t_a_ == t_b_) \
+            t_fail_eq(__FILE__, __LINE__, "T_NE", #a, #b, t_a_, t_b_); \
     } while (0)
 
-#define T_OK(e)                                                                                    \
-    do {                                                                                           \
-        int t_e_ = (e);                                                                            \
-        if (t_e_ != 0)                                                                             \
-            t_fail_err(__FILE__, __LINE__, #e, NULL, t_e_, 0);                                     \
+#define T_OK(e) \
+    do { \
+        int t_e_ = (e); \
+        if (t_e_ != 0) \
+            t_fail_err(__FILE__, __LINE__, #e, NULL, t_e_, 0); \
     } while (0)
 
 /* Pass the error value returned directly by the call. */
-#define T_ERR(e, code)                                                                             \
-    do {                                                                                           \
-        int t_e_ = (e);                                                                            \
-        int t_c_ = (code);                                                                         \
-        if (t_e_ != t_c_)                                                                          \
-            t_fail_err(__FILE__, __LINE__, #e, #code, t_e_, t_c_);                                 \
+#define T_ERR(e, code) \
+    do { \
+        int t_e_ = (e); \
+        int t_c_ = (code); \
+        if (t_e_ != t_c_) \
+            t_fail_err(__FILE__, __LINE__, #e, #code, t_e_, t_c_); \
     } while (0)
 
-#define T_MEMEQ(a, b, n)                                                                           \
-    do {                                                                                           \
-        const void *t_a_ = (a);                                                                    \
-        const void *t_b_ = (b);                                                                    \
-        size_t t_n_ = (n);                                                                         \
-        if (t_n_ != 0 && memcmp(t_a_, t_b_, t_n_) != 0)                                            \
-            t_fail_mem(__FILE__, __LINE__, #a, #b, t_a_, t_b_, t_n_);                              \
+#define T_MEMEQ(a, b, n) \
+    do { \
+        const void *t_a_ = (a); \
+        const void *t_b_ = (b); \
+        size_t t_n_ = (n); \
+        if (t_n_ != 0 && memcmp(t_a_, t_b_, t_n_) != 0) \
+            t_fail_mem(__FILE__, __LINE__, #a, #b, t_a_, t_b_, t_n_); \
     } while (0)
 
 #include <string.h>
@@ -107,5 +124,3 @@ void t_rmtree(const char *path);
 
 /* Monotonic clock in milliseconds. */
 uint64_t t_now_ms(void);
-
-#endif /* PS_TEST_H */

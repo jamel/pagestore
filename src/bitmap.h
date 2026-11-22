@@ -1,5 +1,4 @@
-#ifndef PS_BITMAP_H
-#define PS_BITMAP_H
+#pragma once
 
 /*
  * Bits are numbered from the low bit in each byte. For example, a
@@ -17,5 +16,3 @@ int ps_bit_test(const uint8_t *m, uint32_t bit); /* 0 or 1 */
 uint32_t ps_bit_find_clear(const uint8_t *m, uint32_t nbits, uint32_t from);
 
 uint32_t ps_bit_count_set(const uint8_t *m, uint32_t nbits);
-
-#endif /* PS_BITMAP_H */

@@ -85,15 +85,17 @@ static void test_find_clear_exhaustive(void)
         for (size_t i = 0; i < sizeof(m); i++) {
             x = x * 1103515245u + 12345u;
             /* Long runs of set bits exercise scans that skip full words. */
-            m[i] = (x >> 16) % 4 ? 0xFF : (uint8_t)(x >> 8);
+            m[i] = (x >> 16) % 4 ? 0xFF : (uint8_t) (x >> 8);
         }
         for (uint32_t nbits = 0; nbits <= sizeof(m) * 8; nbits += 1 + nbits % 13) {
             for (uint32_t from = 0; from <= nbits + 1; from++) {
                 uint32_t want = from;
-                while (want < nbits && ps_bit_test(m, want))
+                while (want < nbits && ps_bit_test(m, want)) {
                     want++;
-                if (want > nbits)
+                }
+                if (want > nbits) {
                     want = nbits;
+                }
                 T_EQ(ps_bit_find_clear(m, nbits, from), want);
             }
         }

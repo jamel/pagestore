@@ -22,12 +22,14 @@ static void test_rfc3720_vectors(void)
     memset(b, 0xFF, sizeof(b));
     T_EQ(ps_crc32c(0, b, sizeof(b)), 0x62A8AB43u);
 
-    for (int i = 0; i < 32; i++)
-        b[i] = (uint8_t)i;
+    for (int i = 0; i < 32; i++) {
+        b[i] = (uint8_t) i;
+    }
     T_EQ(ps_crc32c(0, b, sizeof(b)), 0x46DD794Eu);
 
-    for (int i = 0; i < 32; i++)
-        b[i] = (uint8_t)(31 - i);
+    for (int i = 0; i < 32; i++) {
+        b[i] = (uint8_t) (31 - i);
+    }
     T_EQ(ps_crc32c(0, b, sizeof(b)), 0x113FDB5Cu);
 }
 
@@ -45,8 +47,9 @@ static uint32_t crc32c_bitwise(const uint8_t *p, size_t len)
     uint32_t crc = 0xFFFFFFFFu;
     for (size_t i = 0; i < len; i++) {
         crc ^= p[i];
-        for (int k = 0; k < 8; k++)
+        for (int k = 0; k < 8; k++) {
             crc = (crc >> 1) ^ (0x82F63B78u & (0u - (crc & 1u)));
+        }
     }
     return ~crc;
 }
@@ -58,17 +61,20 @@ static void fill_pattern(uint8_t *p, size_t len)
         x ^= x << 13;
         x ^= x >> 17;
         x ^= x << 5;
-        p[i] = (uint8_t)x;
+        p[i] = (uint8_t) x;
     }
 }
 
 /* Compare each offset with an aligned copy and the bitwise reference. */
 static void test_unaligned_input(void)
 {
-    enum { N = 1000, PAD = 16 };
+    enum {
+        N = 1000,
+        PAD = 16
+    };
     uint8_t *raw = malloc(N + PAD);
     uint64_t aligned_store[(N + 7) / 8];
-    uint8_t *aligned = (uint8_t *)aligned_store;
+    uint8_t *aligned = (uint8_t *) aligned_store;
     T_CHECK(raw != NULL);
 
     fill_pattern(raw, N + PAD);
@@ -94,8 +100,9 @@ static void test_split_points(void)
     uint8_t b[300];
     fill_pattern(b, sizeof(b));
     uint32_t whole = ps_crc32c(0, b, sizeof(b));
-    for (size_t cut = 0; cut <= sizeof(b); cut++)
+    for (size_t cut = 0; cut <= sizeof(b); cut++) {
         T_EQ(ps_crc32c(ps_crc32c(0, b, cut), b + cut, sizeof(b) - cut), whole);
+    }
 }
 
 int main(int argc, char **argv)

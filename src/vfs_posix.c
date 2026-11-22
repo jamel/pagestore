@@ -16,175 +16,232 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-struct ps_file {
+/* What this implementation keeps in a ps_file. */
+typedef struct posix_file {
     int fd;
-};
+} posix_file;
+
+_Static_assert(sizeof(posix_file) <= sizeof(ps_file), "posix_file must fit in ps_file");
 
 #define FILE_MODE 0644
-#define DIR_MODE  0755
+#define DIR_MODE 0755
 
-/* The current errno as a return code; never 0. */
-static int err(void)
+static inline posix_file *pf(ps_file *f)
 {
-    return errno != 0 ? errno : EIO;
+    return (posix_file *) f->opaque;
+}
+
+static void set_fd(ps_file *f, int fd)
+{
+    memset(f, 0, sizeof(*f));
+    pf(f)->fd = fd;
+}
+
+/* Return a positive errno even if the underlying call left errno unset. */
+static int err(int rv)
+{
+    return rv != 0 ? rv : EIO;
 }
 
 /* Check the end offset before converting to signed off_t. */
 static int check_range(uint64_t off, size_t len)
 {
-    const uint64_t max = (uint64_t)INT64_MAX;
-    if (off > max || (uint64_t)len > max - off)
+    const uint64_t max = (uint64_t) INT64_MAX;
+    if (off > max || (uint64_t) len > max - off) {
         return EFBIG;
+    }
     return 0;
 }
 
-static int wrap_fd(int fd, ps_file **out)
+/* Retry open on EINTR. On failure, return -1 and put the error in *rv. */
+static int open_retry(const char *path, int oflags, int *rv)
 {
-    ps_file *f = malloc(sizeof(*f));
-    if (f == NULL) {
-        close(fd);
-        return ENOMEM;
+    for (;;) {
+        const int fd = open(path, oflags, FILE_MODE);
+        if (fd >= 0) {
+            return fd;
+        }
+        const int e = errno;
+        if (e != EINTR) {
+            *rv = err(e);
+            return -1;
+        }
     }
-    f->fd = fd;
-    *out = f;
-    return 0;
+}
+
+static int ftruncate_retry(int fd, uint64_t size)
+{
+    for (;;) {
+        if (ftruncate(fd, (off_t) size) == 0) {
+            return 0;
+        }
+        const int rv = errno;
+        if (rv != EINTR) {
+            return err(rv);
+        }
+    }
 }
 
 static int sync_fd(int fd, int is_dir)
 {
 #ifdef __APPLE__
-    (void)is_dir;
-    if (fcntl(fd, F_FULLFSYNC) == 0)
+    PS_UNUSED(is_dir);
+    if (fcntl(fd, F_FULLFSYNC) == 0) {
         return 0;
+    }
+    const int rv = errno;
     /* Network and FUSE mounts can reject F_FULLFSYNC. Fall back to fsync. */
-    if (errno != ENOTSUP && errno != EINVAL)
-        return err();
-    if (fsync(fd) == 0)
+    if (rv != ENOTSUP && rv != EINVAL) {
+        return err(rv);
+    }
+    if (fsync(fd) == 0) {
         return 0;
-    return err();
+    }
+    return err(errno);
 #else
     /* fdatasync includes file size changes. Directory entries need fsync. */
-    int r = is_dir ? fsync(fd) : fdatasync(fd);
-    return r == 0 ? 0 : err();
+    if ((is_dir ? fsync(fd) : fdatasync(fd)) == 0) {
+        return 0;
+    }
+    return err(errno);
 #endif
 }
 
-static int posix_open(void *ctx, const char *path, unsigned flags, ps_file **out)
+static int posix_open(ps_vfs_ctx *ctx, const char *path, unsigned flags, ps_file *out)
 {
-    (void)ctx;
+    PS_UNUSED(ctx);
     int oflags = O_RDWR | O_CLOEXEC;
     if (flags & PS_VFS_CREATE) {
         oflags |= O_CREAT;
-        if (flags & PS_VFS_EXCL)
+        if (flags & PS_VFS_EXCL) {
             oflags |= O_EXCL;
+        }
     }
-    int fd;
-    do
-        fd = open(path, oflags, FILE_MODE);
-    while (fd < 0 && errno == EINTR);
-    if (fd < 0)
-        return err();
-    return wrap_fd(fd, out);
+    int rv = 0;
+    const int fd = open_retry(path, oflags, &rv);
+    if (fd < 0) {
+        return rv;
+    }
+    set_fd(out, fd);
+    return 0;
 }
 
-static void posix_close(void *ctx, ps_file *f)
+static void posix_close(ps_vfs_ctx *ctx, ps_file *f)
 {
-    (void)ctx;
-    if (f == NULL)
+    PS_UNUSED(ctx);
+    if (f == NULL) {
         return;
+    }
     /* Retrying close after EINTR could close a reused descriptor. */
-    close(f->fd);
-    free(f);
+    close(pf(f)->fd);
+    set_fd(f, -1);
 }
 
-static int posix_pread(void *ctx, ps_file *f, void *buf, size_t len, uint64_t off, size_t *got)
+static int posix_pread(
+    ps_vfs_ctx *ctx,
+    ps_file *f,
+    void *buf,
+    size_t len,
+    uint64_t off,
+    size_t *got)
 {
-    (void)ctx;
-    int r = check_range(off, len);
-    if (r != 0)
+    PS_UNUSED(ctx);
+    const int r = check_range(off, len);
+    if (r != 0) {
         return r;
+    }
     uint8_t *p = buf;
     size_t done = 0;
     while (done < len) {
-        ssize_t n = pread(f->fd, p + done, len - done, (off_t)(off + done));
+        const ssize_t n = pread(pf(f)->fd, p + done, len - done, (off_t) (off + done));
         if (n < 0) {
-            if (errno == EINTR)
+            const int rv = errno;
+            if (rv == EINTR) {
                 continue;
-            return err();
+            }
+            return err(rv);
         }
-        if (n == 0)
+        if (n == 0) {
             break;
-        done += (size_t)n;
+        }
+        done += (size_t) n;
     }
     *got = done;
     return 0;
 }
 
-static int posix_pwrite(void *ctx, ps_file *f, const void *buf, size_t len, uint64_t off)
+static int posix_pwrite(ps_vfs_ctx *ctx, ps_file *f, const void *buf, size_t len, uint64_t off)
 {
-    (void)ctx;
-    int r = check_range(off, len);
-    if (r != 0)
+    PS_UNUSED(ctx);
+    const int r = check_range(off, len);
+    if (r != 0) {
         return r;
+    }
     const uint8_t *p = buf;
     size_t done = 0;
     while (done < len) {
-        ssize_t n = pwrite(f->fd, p + done, len - done, (off_t)(off + done));
+        const ssize_t n = pwrite(pf(f)->fd, p + done, len - done, (off_t) (off + done));
         if (n < 0) {
-            if (errno == EINTR)
+            const int rv = errno;
+            if (rv == EINTR) {
                 continue;
-            return err();
+            }
+            return err(rv);
         }
-        if (n == 0)
+        if (n == 0) {
             return EIO;
-        done += (size_t)n;
+        }
+        done += (size_t) n;
     }
     return 0;
 }
 
-static int posix_fsync(void *ctx, ps_file *f)
+static int posix_fsync(ps_vfs_ctx *ctx, ps_file *f)
 {
-    (void)ctx;
-    return sync_fd(f->fd, 0);
+    PS_UNUSED(ctx);
+    return sync_fd(pf(f)->fd, 0);
 }
 
-static int posix_size(void *ctx, ps_file *f, uint64_t *out)
+static int posix_size(ps_vfs_ctx *ctx, ps_file *f, uint64_t *out)
 {
-    (void)ctx;
+    PS_UNUSED(ctx);
     struct stat st;
-    if (fstat(f->fd, &st) != 0)
-        return err();
-    *out = (uint64_t)st.st_size;
-    return 0;
-}
-
-static int posix_truncate(void *ctx, ps_file *f, uint64_t size)
-{
-    (void)ctx;
-    int r = check_range(size, 0);
-    if (r != 0)
-        return r;
-    while (ftruncate(f->fd, (off_t)size) != 0) {
-        if (errno != EINTR)
-            return err();
+    if (fstat(pf(f)->fd, &st) != 0) {
+        return err(errno);
     }
+    *out = (uint64_t) st.st_size;
     return 0;
 }
 
-static int posix_preallocate(void *ctx, ps_file *f, uint64_t size)
+static int posix_truncate(ps_vfs_ctx *ctx, ps_file *f, uint64_t size)
 {
-    (void)ctx;
-    int r = check_range(size, 0);
-    if (r != 0)
+    PS_UNUSED(ctx);
+    const int r = check_range(size, 0);
+    if (r != 0) {
         return r;
-    if (size == 0)
+    }
+    return ftruncate_retry(pf(f)->fd, size);
+}
+
+static int posix_preallocate(ps_vfs_ctx *ctx, ps_file *f, uint64_t size)
+{
+    PS_UNUSED(ctx);
+    int r = check_range(size, 0);
+    if (r != 0) {
+        return r;
+    }
+    if (size == 0) {
         return 0;
+    }
+    const int fd = pf(f)->fd;
 #ifdef __APPLE__
     struct stat st;
-    if (fstat(f->fd, &st) != 0)
-        return err();
-    if ((uint64_t)st.st_size >= size)
+    if (fstat(fd, &st) != 0) {
+        return err(errno);
+    }
+    if ((uint64_t) st.st_size >= size) {
         return 0;
+    }
     /*
      * F_PEOFPOSMODE starts at the physical EOF. Request the logical
      * shortfall, then extend the file to the requested size.
@@ -194,137 +251,140 @@ static int posix_preallocate(void *ctx, ps_file *f, uint64_t size)
     fs.fst_flags = F_ALLOCATECONTIG | F_ALLOCATEALL;
     fs.fst_posmode = F_PEOFPOSMODE;
     fs.fst_offset = 0;
-    fs.fst_length = (off_t)(size - (uint64_t)st.st_size);
-    if (fcntl(f->fd, F_PREALLOCATE, &fs) == -1) {
+    fs.fst_length = (off_t) (size - (uint64_t) st.st_size);
+    if (fcntl(fd, F_PREALLOCATE, &fs) == -1) {
         fs.fst_flags = F_ALLOCATEALL;
-        if (fcntl(f->fd, F_PREALLOCATE, &fs) == -1)
-            return err();
+        if (fcntl(fd, F_PREALLOCATE, &fs) == -1) {
+            return err(errno);
+        }
     }
-    while (ftruncate(f->fd, (off_t)size) != 0) {
-        if (errno != EINTR)
-            return err();
-    }
-    return 0;
+    return ftruncate_retry(fd, size);
 #else
     /* Mode 0 grows the file to cover the allocation and preserves larger sizes. */
     for (;;) {
-        if (fallocate(f->fd, 0, 0, (off_t)size) == 0)
+        if (fallocate(fd, 0, 0, (off_t) size) == 0) {
             return 0;
-        if (errno == EINTR)
+        }
+        const int rv = errno;
+        if (rv == EINTR) {
             continue;
-        if (errno != EOPNOTSUPP && errno != ENOSYS)
-            return err();
+        }
+        if (rv != EOPNOTSUPP && rv != ENOSYS) {
+            return err(rv);
+        }
         break;
     }
     /* libc can emulate allocation on filesystems without fallocate. */
-    do
-        r = posix_fallocate(f->fd, 0, (off_t)size);
-    while (r == EINTR);
+    do {
+        r = posix_fallocate(fd, 0, (off_t) size);
+    } while (r == EINTR);
     return r;
 #endif
 }
 
-static int posix_unlink(void *ctx, const char *path)
+static int posix_unlink(ps_vfs_ctx *ctx, const char *path)
 {
-    (void)ctx;
-    return unlink(path) == 0 ? 0 : err();
+    PS_UNUSED(ctx);
+    return unlink(path) == 0 ? 0 : err(errno);
 }
 
-static int posix_rename(void *ctx, const char *from, const char *to)
+static int posix_rename(ps_vfs_ctx *ctx, const char *from, const char *to)
 {
-    (void)ctx;
-    return rename(from, to) == 0 ? 0 : err();
+    PS_UNUSED(ctx);
+    return rename(from, to) == 0 ? 0 : err(errno);
 }
 
-static int posix_mkdir(void *ctx, const char *path)
+static int posix_mkdir(ps_vfs_ctx *ctx, const char *path)
 {
-    (void)ctx;
-    return mkdir(path, DIR_MODE) == 0 ? 0 : err();
+    PS_UNUSED(ctx);
+    return mkdir(path, DIR_MODE) == 0 ? 0 : err(errno);
 }
 
-static int posix_fsync_dir(void *ctx, const char *path)
+static int posix_fsync_dir(ps_vfs_ctx *ctx, const char *path)
 {
-    (void)ctx;
-    int fd;
-    do
-        fd = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-    while (fd < 0 && errno == EINTR);
-    if (fd < 0)
-        return err();
-    int r = sync_fd(fd, 1);
+    PS_UNUSED(ctx);
+    int rv = 0;
+    const int fd = open_retry(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC, &rv);
+    if (fd < 0) {
+        return rv;
+    }
+    rv = sync_fd(fd, 1);
     close(fd);
-    return r;
+    return rv;
 }
 
-static int posix_list(void *ctx, const char *dir, int (*fn)(void *arg, const char *name),
-                      void *arg)
+static int posix_list(ps_vfs_ctx *ctx, const char *dir, ps_vfs_list_fn fn, ps_vfs_list_ctx *arg)
 {
-    (void)ctx;
+    PS_UNUSED(ctx);
     DIR *d = opendir(dir);
-    if (d == NULL)
-        return err();
+    if (d == NULL) {
+        return err(errno);
+    }
     int r = 0;
     for (;;) {
         errno = 0;
-        struct dirent *de = readdir(d);
+        const struct dirent *de = readdir(d);
         if (de == NULL) {
-            if (errno != 0)
-                r = errno;
+            const int rv = errno;
+            if (rv != 0) {
+                r = rv;
+            }
             break;
         }
         const char *name = de->d_name;
-        if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0)
+        if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
             continue;
+        }
         r = fn(arg, name);
-        if (r != 0)
+        if (r != 0) {
             break;
+        }
     }
     closedir(d);
     return r;
 }
 
-static int posix_lock(void *ctx, const char *path, ps_file **out)
+static int posix_lock(ps_vfs_ctx *ctx, const char *path, ps_file *out)
 {
-    (void)ctx;
-    int fd;
-    do
-        fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC, FILE_MODE);
-    while (fd < 0 && errno == EINTR);
-    if (fd < 0)
-        return err();
+    PS_UNUSED(ctx);
+    int rv = 0;
+    const int fd = open_retry(path, O_RDWR | O_CREAT | O_CLOEXEC, &rv);
+    if (fd < 0) {
+        return rv;
+    }
     /*
      * flock follows the open file description. A separate open of the same
      * file conflicts with this lock, and closing that handle leaves it held.
      */
     while (flock(fd, LOCK_EX | LOCK_NB) != 0) {
-        if (errno == EINTR)
+        rv = errno;
+        if (rv == EINTR) {
             continue;
-        int e = (errno == EWOULDBLOCK || errno == EAGAIN) ? EBUSY : err();
+        }
         close(fd);
-        return e;
+        return (rv == EWOULDBLOCK || rv == EAGAIN) ? EBUSY : err(rv);
     }
-    return wrap_fd(fd, out);
+    set_fd(out, fd);
+    return 0;
 }
 
-static const ps_vfs posix_vfs = {
-    .ctx = NULL,
-    .open = posix_open,
-    .close = posix_close,
-    .pread = posix_pread,
-    .pwrite = posix_pwrite,
-    .fsync = posix_fsync,
-    .size = posix_size,
-    .truncate = posix_truncate,
-    .preallocate = posix_preallocate,
-    .unlink = posix_unlink,
-    .rename = posix_rename,
-    .mkdir = posix_mkdir,
-    .fsync_dir = posix_fsync_dir,
-    .list = posix_list,
-    .lock = posix_lock,
-};
-
-const ps_vfs *ps_vfs_posix(void)
+void ps_vfs_posix_init(ps_vfs *vfs)
 {
-    return &posix_vfs;
+    *vfs = (ps_vfs) {
+        .ctx = NULL,
+        .open = posix_open,
+        .close = posix_close,
+        .pread = posix_pread,
+        .pwrite = posix_pwrite,
+        .fsync = posix_fsync,
+        .size = posix_size,
+        .truncate = posix_truncate,
+        .preallocate = posix_preallocate,
+        .unlink = posix_unlink,
+        .rename = posix_rename,
+        .mkdir = posix_mkdir,
+        .fsync_dir = posix_fsync_dir,
+        .list = posix_list,
+        .lock = posix_lock,
+    };
 }

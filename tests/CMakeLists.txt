@@ -48,4 +48,5 @@ endfunction()
 
 ps_add_test(NAME test_crc32c LABEL unit SOURCES unit/test_crc32c.c)
 ps_add_test(NAME test_bits   LABEL unit SOURCES unit/test_bits.c)
+ps_add_test(NAME test_compiler LABEL unit SOURCES unit/test_compiler.c)
 ps_add_test(NAME test_vfs_posix LABEL unit SOURCES unit/test_vfs_posix.c)
