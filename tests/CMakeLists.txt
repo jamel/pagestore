@@ -1,5 +1,6 @@
 set(PS_TESTSUPPORT_SOURCES
   support/test.c
+  support/fault_vfs.c
 )
 
 add_library(ps_testsupport STATIC ${PS_TESTSUPPORT_SOURCES})
@@ -50,3 +51,4 @@ ps_add_test(NAME test_crc32c LABEL unit SOURCES unit/test_crc32c.c)
 ps_add_test(NAME test_bits   LABEL unit SOURCES unit/test_bits.c)
 ps_add_test(NAME test_compiler LABEL unit SOURCES unit/test_compiler.c)
 ps_add_test(NAME test_vfs_posix LABEL unit SOURCES unit/test_vfs_posix.c)
+ps_add_test(NAME test_fault_vfs LABEL unit SOURCES unit/test_fault_vfs.c)
