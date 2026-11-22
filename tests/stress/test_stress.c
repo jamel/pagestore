@@ -30,6 +30,9 @@ enum {
     ID_MAX = 1024, /* Lowest-first allocation stays below this. */
     MAX_ACTIONS = 4,
     MAX_READS = 20,
+    HOLD_MIN = 20,
+    HOLD_SPAN = 200,
+    HOLD_MAX_US = 1000000,
     RUN_MS = 2000,
     EXTRA_MS = 60000
 };
@@ -175,6 +178,20 @@ static void sleep_us(u32 us)
     }
 }
 
+/*
+ * Wait for the committed LSN to advance. A fixed delay can leave the
+ * snapshot too young for cut-off when the writer runs under MSan.
+ */
+static void hold_snapshot(const stress *st, u64 S, u32 commits)
+{
+    for (u32 waited = 0; waited < HOLD_MAX_US && !atomic_load(&st->stop); waited += 100) {
+        if (ps_committed_lsn(st->s) >= S + commits) {
+            return;
+        }
+        sleep_us(100);
+    }
+}
+
 static struct ps_stats get_stats(const ps_store *s)
 {
     struct ps_stats out;
@@ -226,10 +243,10 @@ static void *reader_main(void *arg)
         last_lsn = S;
         u32 nheld = 0;
         const u32 nreads = 1 + (u32) rng_below(&g, MAX_READS);
-        const u32 sleep_at = rng_below(&g, 8) == 0 ? (u32) rng_below(&g, nreads) : UINT32_MAX;
+        const u32 hold_at = rng_below(&g, 8) == 0 ? (u32) rng_below(&g, nreads) : UINT32_MAX;
         for (u32 k = 0; k < nreads; k++) {
-            if (k == sleep_at) {
-                sleep_us(200 + (u32) rng_below(&g, 2000));
+            if (k == hold_at) {
+                hold_snapshot(st, S, HOLD_MIN + (u32) rng_below(&g, HOLD_SPAN));
             }
             const u32 end = atomic_load(&st->id_end);
             const u32 id = 1 + (u32) rng_below(&g, end > 1 ? end - 1 : 1);
