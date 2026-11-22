@@ -44,10 +44,15 @@ function(ps_add_test)
   else()
     set(timeout 120)
   endif()
+  set(env ${PS_TEST_ENV})
+  if(PS_COVERAGE)
+    # %p gives each process its own file, so repeated runs add up.
+    list(APPEND env "LLVM_PROFILE_FILE=${PS_COVERAGE_DIR}/profiles/${T_NAME}-%p.profraw")
+  endif()
   set_tests_properties(${T_NAME} PROPERTIES
     LABELS ${T_LABEL}
     TIMEOUT ${timeout}
-    ENVIRONMENT "${PS_TEST_ENV}")
+    ENVIRONMENT "${env}")
 endfunction()
 
 ps_add_test(NAME test_crc32c LABEL unit SOURCES unit/test_crc32c.c)

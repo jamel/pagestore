@@ -12,6 +12,8 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
+# Test runs with this preset also write a coverage report for the tests they ran.
+COVERAGE_PRESET = "coverage"
 RED = 31
 GREEN = 32
 YELLOW = 33
@@ -89,6 +91,11 @@ def make_parser():
             "--release", dest="preset", action="store_const", const="release",
             help="use the release preset",
         )
+        if command is test:
+            selection.add_argument(
+                "--coverage", dest="preset", action="store_const", const=COVERAGE_PRESET,
+                help="use the coverage preset and write a line coverage report",
+            )
 
     for command in (build, test):
         command.add_argument(
@@ -169,7 +176,14 @@ def run_tests(args, preset, parallel):
     else:
         if args.verbose:
             test.append("--verbose")
-        run(test)
+        if preset == COVERAGE_PRESET:
+            # Remove old profiles so the report covers only the tests run here.
+            build = ["cmake", "--build", "--preset", preset, "--target"]
+            run([*build, "coverage-reset"])
+            run(test)
+            run([*build, "coverage-report"])
+        else:
+            run(test)
 
 
 def run_preset(args, preset):

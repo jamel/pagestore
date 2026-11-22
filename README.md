@@ -7,8 +7,9 @@ The public API is in [`pagestore.h`](include/pagestore/pagestore.h).
 
 ## Development
 
-You'll need Python 3.8+, CMake 3.20+, Ninja, and GCC or Clang. The `tsan` and
-`msan` presets use Clang. Run `msan` on Linux.
+You'll need Python 3.8+, CMake 3.20+, Ninja, and GCC or Clang. The `tsan`,
+`msan` and `coverage` presets use Clang, and `coverage` also needs `llvm-cov`
+and `llvm-profdata`. Run `msan` on Linux.
 
 ```sh
 ./dev.py build                       # Configure and build debug
@@ -17,9 +18,16 @@ You'll need Python 3.8+, CMake 3.20+, Ninja, and GCC or Clang. The `tsan` and
 ./dev.py test checkpoint --no-build  # Rerun matching tests from the last build
 ./dev.py test checkpoint --verbose   # Rerun matching tests with their output
 ./dev.py test -p asan                # Build and test with ASan and UBSan
+./dev.py test --coverage             # Run the tests and write a coverage report
+./dev.py test wal --coverage         # See which lines the matching tests cover
 ./dev.py test -p all                 # Build and test every preset
 ./dev.py clean -p all                # Clean every build preset
 ```
 
 Use `--release` for the release preset. Run `./dev.py presets` to see the full
 list of available presets.
+
+`--coverage` prints a summary for each library source file and writes an HTML
+report with line counts to `build/coverage/coverage/html/index.html`. The report
+covers only the tests in that run. Files those tests never reach show 0%, so
+gaps are easy to spot.

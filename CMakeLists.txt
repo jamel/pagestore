@@ -31,6 +31,54 @@ if(PS_SAN_FLAGS)
   add_link_options(${PS_SAN_FLAGS})
 endif()
 
+# Coverage uses clang's source-based coverage. Each test writes a profile to
+# PS_COVERAGE_DIR/profiles. Then build these targets:
+#
+#   coverage-reset   remove profiles left by earlier test runs
+#   coverage-report  merge the profiles, print a summary, and write an HTML
+#                    report to PS_COVERAGE_DIR/html
+#
+# For example: ./dev.py test --coverage wal
+option(PS_COVERAGE "Build with clang source-based coverage" OFF)
+if(PS_COVERAGE)
+  if(NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
+    message(FATAL_ERROR "PS_COVERAGE requires clang")
+  endif()
+  add_compile_options(-fprofile-instr-generate -fcoverage-mapping)
+  add_link_options(-fprofile-instr-generate)
+
+  # The tools must match the compiler's version, so look next to it first.
+  get_filename_component(ps_llvm_bin "${CMAKE_C_COMPILER}" REALPATH)
+  get_filename_component(ps_llvm_bin "${ps_llvm_bin}" DIRECTORY)
+  string(REGEX MATCH "^[0-9]+" ps_llvm_major "${CMAKE_C_COMPILER_VERSION}")
+  find_program(PS_LLVM_PROFDATA NAMES llvm-profdata-${ps_llvm_major} llvm-profdata
+    HINTS "${ps_llvm_bin}" REQUIRED)
+  find_program(PS_LLVM_COV NAMES llvm-cov-${ps_llvm_major} llvm-cov
+    HINTS "${ps_llvm_bin}" REQUIRED)
+
+  set(PS_COVERAGE_DIR ${PROJECT_BINARY_DIR}/coverage)
+  set(ps_profdata ${PS_COVERAGE_DIR}/merged.profdata)
+  # The report reads the library, not the test binaries. Then every source
+  # file shows up, even when the selected tests never link it.
+  set(ps_cov_args $<TARGET_FILE:pagestore> -instr-profile=${ps_profdata}
+    -show-region-summary=false -show-branch-summary=false)
+
+  add_custom_target(coverage-reset
+    COMMAND ${CMAKE_COMMAND} -E rm -rf ${PS_COVERAGE_DIR}/profiles
+    COMMENT "Removing old coverage profiles"
+    VERBATIM)
+  add_custom_target(coverage-report
+    COMMAND ${PS_LLVM_PROFDATA} merge -sparse -o ${ps_profdata} ${PS_COVERAGE_DIR}/profiles
+    COMMAND ${CMAKE_COMMAND} -E rm -rf ${PS_COVERAGE_DIR}/html
+    COMMAND ${PS_LLVM_COV} show ${ps_cov_args} -format=html
+      -output-dir=${PS_COVERAGE_DIR}/html -project-title=PageStore
+    COMMAND ${PS_LLVM_COV} report ${ps_cov_args}
+    COMMAND ${CMAKE_COMMAND} -E echo "HTML report: ${PS_COVERAGE_DIR}/html/index.html"
+    COMMENT "Writing coverage report"
+    USES_TERMINAL
+    VERBATIM)
+endif()
+
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_compile_definitions(_GNU_SOURCE)
 elseif(APPLE)
