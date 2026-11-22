@@ -54,6 +54,7 @@ set(PS_SOURCES
   src/checkpoint.c
   src/snapshot.c
   src/wal.c
+  src/recover.c
 )
 
 add_library(pagestore STATIC ${PS_SOURCES})

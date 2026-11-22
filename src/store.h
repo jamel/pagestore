@@ -363,6 +363,9 @@ bool ps_snap_cut_off_for_frames(ps_store *s);
 /* Format can start an operation at LSN 0 before the store is shared. */
 void ps_op_begin_format(ps_store *s);
 
+/* Recovery uses this to check whether its callback left an operation open. */
+bool ps_op_active_here(ps_store *s);
+
 /* Test hooks. Quiescent store only. */
 bool ps_test_has_entry(ps_store *s, u32 id);
 u32 ps_test_pins(ps_store *s, u32 id); /* total pins on every version of id */
