@@ -13,7 +13,7 @@
 
 /* Page images go to disk in host byte order. */
 #if defined(__BYTE_ORDER__) && defined(__ORDER_LITTLE_ENDIAN__)
-_Static_assert(
+PS_STATIC_ASSERT(
     __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__,
     "pagestore requires a little-endian host");
 #else

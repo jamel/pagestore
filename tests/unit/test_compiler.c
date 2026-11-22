@@ -31,6 +31,14 @@ static void test_unused(void)
     T_EQ(n, 2);
 }
 
+PS_STATIC_ASSERT(sizeof(u32) == 4, "u32 is 4 bytes");
+
+static void test_static_assert(void)
+{
+    PS_STATIC_ASSERT(sizeof(u64) == 8, "u64 is 8 bytes");
+    T_EQ(sizeof(u64), 8);
+}
+
 static void test_bit_scans(void)
 {
     T_EQ(PS_CTZ64(1ull), 0);
@@ -43,6 +51,7 @@ int main(int argc, char **argv)
 {
     t_init(argc, argv);
     T_RUN(test_unused);
+    T_RUN(test_static_assert);
     T_RUN(test_bit_scans);
     return t_done();
 }

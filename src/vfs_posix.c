@@ -21,7 +21,7 @@ typedef struct posix_file {
     int fd;
 } posix_file;
 
-_Static_assert(sizeof(posix_file) <= sizeof(ps_file), "posix_file must fit in ps_file");
+PS_STATIC_ASSERT(sizeof(posix_file) <= sizeof(ps_file), "posix_file must fit in ps_file");
 
 #define FILE_MODE 0644
 #define DIR_MODE 0755

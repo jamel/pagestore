@@ -6,6 +6,8 @@
  * host, so keep them out of the on-disk format.
  */
 
+#include "pagestore/compiler.h"
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -26,6 +28,6 @@ typedef size_t usize;
 typedef float f32;
 typedef double f64;
 
-_Static_assert(sizeof(f32) == 4, "f32 must be 32 bits");
-_Static_assert(sizeof(f64) == 8, "f64 must be 64 bits");
-_Static_assert(sizeof(isize) == sizeof(usize), "isize and usize must have the same width");
+PS_STATIC_ASSERT(sizeof(f32) == 4, "f32 must be 32 bits");
+PS_STATIC_ASSERT(sizeof(f64) == 8, "f64 must be 64 bits");
+PS_STATIC_ASSERT(sizeof(isize) == sizeof(usize), "isize and usize must have the same width");

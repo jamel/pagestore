@@ -6,8 +6,6 @@
  * link to the same symbols.
  */
 
-#include "pagestore/types.h"
-
 #ifdef __cplusplus
 #define PS_EXTERN_C_BEGIN extern "C" {
 #define PS_EXTERN_C_END }
@@ -24,6 +22,13 @@
 #define PS_NORETURN [[noreturn]]
 #else
 #define PS_NORETURN _Noreturn
+#endif
+
+/* Works at file scope and inside a function. */
+#ifdef __cplusplus
+#define PS_STATIC_ASSERT(cond, msg) static_assert(cond, msg)
+#else
+#define PS_STATIC_ASSERT(cond, msg) _Static_assert(cond, msg)
 #endif
 
 /* In void report(int level, const char *fmt, ...), use PS_PRINTF(2, 3). */
