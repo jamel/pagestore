@@ -94,10 +94,20 @@ u32 ps_page_size(const ps_store *s);
 u64 ps_committed_lsn(const ps_store *s);
 u64 ps_durable_lsn(const ps_store *s);
 
+/*
+ * Memory pressure. op_frames counts the frames the operation
+ * holds until it ends: its copies (and, for a page it did not ps_read
+ * first, the committed version under the copy, which can no longer be
+ * evicted), allocations, distinct ps_read pages, and one spare per bitmap
+ * group it touches or creates. op_limit is total_frames minus the snapshot
+ * pin budget (max_pinned_pct) minus one resident bitmap page per group; a
+ * call that would take the operation past it fails with ENOBUFS at once.
+ * Long jobs commit and start a new operation before reaching it.
+ */
 typedef struct ps_pressure {
     u32 op_frames; /* frames held by the current operation */
     u32 op_limit; /* most frames an operation may hold */
-    u32 dirty_frames;
+    u32 dirty_frames; /* dirty-set memberships: a checkpoint makes these evictable */
     u32 total_frames;
 } ps_pressure;
 
@@ -111,6 +121,7 @@ int ps_op_begin(ps_store *s, u64 lsn);
 void ps_op_commit(ps_store *s);
 /* Discards every change of the operation. */
 void ps_op_abort(ps_store *s);
+/* On the operation's thread (op_frames is 0 outside an operation). */
 void ps_op_pressure(const ps_store *s, ps_pressure *out);
 
 /*
@@ -126,6 +137,11 @@ int ps_write(ps_store *s, u32 id, ps_page **page);
 
 int ps_snapshot_open(ps_store *s, ps_snapshot **out);
 u64 ps_snapshot_lsn(const ps_snapshot *snap);
+/*
+ * Pins the page until unpin or close. Reading a pinned ID again returns the
+ * same pointer without a second pin. ENOBUFS when pins or frames run out.
+ * ESTALE when the writer cut off the snapshot. Pins already held stay valid.
+ */
 int ps_snapshot_read(ps_snapshot *snap, u32 id, const ps_page **page);
 void ps_snapshot_unpin(ps_snapshot *snap, u32 id);
 void ps_snapshot_close(ps_snapshot *snap);

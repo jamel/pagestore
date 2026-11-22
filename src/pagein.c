@@ -105,7 +105,8 @@ int ps_page_in(ps_store *s, ps_entry *e, ps_vnode *frameless, bool writer, ps_vn
         e->head = v;
     }
     v->frame = f;
-    ps_frames_set_owner(s->frames, f, v);
+    ps_frames_set_owner(s->frames, f, v, id);
+    ps_frames_touch(s->frames, f); /* Give a fresh page a CLOCK second chance. */
     if ((v->flags & PS_VF_RETIRED) != 0) {
         atomic_fetch_add_explicit(&s->frames_retired, 1, memory_order_relaxed);
     }

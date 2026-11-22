@@ -2,16 +2,9 @@
 
 /*
  * The frame pool hands out page-sized slots in one aligned memory region.
- * Frame pool: cache_size / page_size page-sized frames in one
- * 4096-aligned region, a free list, and per-frame CLOCK state.
- *
- * The free list is guarded by an internal leaf mutex. Each frame's
- * owner, evictable flag and reference bit, the counters and the clock hand
- * are atomics, so any thread may read them; owner and evictable are only
- * changed by the thread holding the owning page's latch.
- *
- * Frame indexes run from 0 to ps_frames_count() - 1; passing any other
- * index is an internal-invariant violation (asserted).
+ * Take the free-list mutex last. The owning page's latch guards changes
+ * to a frame's owner and evictable flag. For eviction, read the owner ID,
+ * latch that page, then check the ID again before using the owner pointer.
  * Valid frame indexes are [0, ps_frames_count()).
  */
 
@@ -37,10 +30,17 @@ void *ps_frame(const ps_frames *fp, u32 f);
 int ps_frames_alloc(ps_frames *fp, u32 *f);
 /* Clears ownership and CLOCK state before returning the frame to the free list. */
 void ps_frames_release(ps_frames *fp, u32 f);
+/* Clears ownership and CLOCK state so an evictor can reuse the allocated frame. */
+void ps_frames_detach(ps_frames *fp, u32 f);
 u32 ps_frames_free_count(const ps_frames *fp);
 
-void ps_frames_set_owner(ps_frames *fp, u32 f, struct ps_vnode *owner);
+/* ps_frames_owner_id of a free, detached or not yet owned frame. */
+#define PS_FRAMES_NO_OWNER UINT32_MAX
+
+void ps_frames_set_owner(ps_frames *fp, u32 f, struct ps_vnode *owner, u32 id);
 struct ps_vnode *ps_frames_owner(const ps_frames *fp, u32 f);
+/* Page id of the owner, or PS_FRAMES_NO_OWNER. */
+u32 ps_frames_owner_id(const ps_frames *fp, u32 f);
 
 /* Setting the same value again leaves the evictable count alone. */
 void ps_frames_set_evictable(ps_frames *fp, u32 f, bool on);

@@ -23,6 +23,7 @@ struct ps_frames {
     u32 count;
 
     _Atomic(struct ps_vnode *) *owner;
+    _Atomic u32 *owner_id;
     atomic_bool *evictable;
     atomic_bool *ref;
 
@@ -43,6 +44,7 @@ static void frames_free(ps_frames *fp)
         free(fp->mem);
     }
     free(fp->owner);
+    free(fp->owner_id);
     free(fp->evictable);
     free(fp->ref);
     free(fp->stack);
@@ -70,12 +72,13 @@ int ps_frames_create(u32 page_size, usize cache_size, void *memory, ps_frames **
     fp->page_size = page_size;
     fp->count = (u32) n;
     fp->owner = calloc(n, sizeof(*fp->owner));
+    fp->owner_id = calloc(n, sizeof(*fp->owner_id));
     fp->evictable = calloc(n, sizeof(*fp->evictable));
     fp->ref = calloc(n, sizeof(*fp->ref));
     fp->stack = calloc(n, sizeof(*fp->stack));
     fp->is_free = calloc(n, sizeof(*fp->is_free));
-    if (fp->owner == NULL || fp->evictable == NULL || fp->ref == NULL || fp->stack == NULL ||
-        fp->is_free == NULL) {
+    if (fp->owner == NULL || fp->owner_id == NULL || fp->evictable == NULL || fp->ref == NULL ||
+        fp->stack == NULL || fp->is_free == NULL) {
         frames_free(fp);
         return ENOMEM;
     }
@@ -101,6 +104,7 @@ int ps_frames_create(u32 page_size, usize cache_size, void *memory, ps_frames **
 
     for (u32 i = 0; i < fp->count; i++) {
         atomic_init(&fp->owner[i], NULL);
+        atomic_init(&fp->owner_id[i], PS_FRAMES_NO_OWNER);
         atomic_init(&fp->evictable[i], false);
         atomic_init(&fp->ref[i], false);
         /* Start with frame 0 at the top. Recycled frames come back in LIFO order. */
@@ -153,12 +157,18 @@ int ps_frames_alloc(ps_frames *fp, u32 *f)
     return 0;
 }
 
-void ps_frames_release(ps_frames *fp, u32 f)
+void ps_frames_detach(ps_frames *fp, u32 f)
 {
     PS_ASSERT(f < fp->count);
-    atomic_store_explicit(&fp->owner[f], NULL, memory_order_release);
     ps_frames_set_evictable(fp, f, false);
+    atomic_store_explicit(&fp->owner_id[f], PS_FRAMES_NO_OWNER, memory_order_release);
+    atomic_store_explicit(&fp->owner[f], NULL, memory_order_release);
     atomic_store_explicit(&fp->ref[f], false, memory_order_relaxed);
+}
+
+void ps_frames_release(ps_frames *fp, u32 f)
+{
+    ps_frames_detach(fp, f);
 
     pthread_mutex_lock(&fp->mu);
     PS_ASSERT(!fp->is_free[f]);
@@ -174,16 +184,23 @@ u32 ps_frames_free_count(const ps_frames *fp)
     return atomic_load_explicit(&fp->nfree, memory_order_relaxed);
 }
 
-void ps_frames_set_owner(ps_frames *fp, u32 f, struct ps_vnode *owner)
+void ps_frames_set_owner(ps_frames *fp, u32 f, struct ps_vnode *owner, u32 id)
 {
     PS_ASSERT(f < fp->count);
     atomic_store_explicit(&fp->owner[f], owner, memory_order_release);
+    atomic_store_explicit(&fp->owner_id[f], id, memory_order_release);
 }
 
 struct ps_vnode *ps_frames_owner(const ps_frames *fp, u32 f)
 {
     PS_ASSERT(f < fp->count);
     return atomic_load_explicit(&fp->owner[f], memory_order_acquire);
+}
+
+u32 ps_frames_owner_id(const ps_frames *fp, u32 f)
+{
+    PS_ASSERT(f < fp->count);
+    return atomic_load_explicit(&fp->owner_id[f], memory_order_acquire);
 }
 
 void ps_frames_set_evictable(ps_frames *fp, u32 f, bool on)

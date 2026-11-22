@@ -128,7 +128,6 @@ static int init_memory(ps_store *s, u32 page_size)
     }
     s->total_frames = ps_frames_count(s->frames);
     s->max_pinned = (u32) ((u64) s->total_frames * s->cfg.max_pinned_pct / 100);
-    s->op_limit = s->total_frames - s->max_pinned;
     rv = ps_ptable_create(s->total_frames, &s->pt);
     if (rv != 0) {
         return rv;
@@ -139,6 +138,26 @@ static int init_memory(ps_store *s, u32 page_size)
     }
     atomic_store_explicit(&s->ckpt_bytes, page_size, memory_order_relaxed);
     return ps_allocator_create(page_size, &s->alloc);
+}
+
+/* Reject undersized caches before loading the resident bitmaps. */
+static int check_op_limit(ps_store *s, u32 num_groups)
+{
+    const u64 need = (u64) s->max_pinned + num_groups + PS_OP_MIN_FRAMES;
+    if (need <= s->total_frames) {
+        return 0;
+    }
+    ps_log(
+        s,
+        PS_LOG_ERROR,
+        "cache of %u frames too small: %u bitmap pages and %u snapshot pins (max_pinned_pct %u) "
+        "leave fewer than %u frames for an operation",
+        s->total_frames,
+        num_groups,
+        s->max_pinned,
+        s->cfg.max_pinned_pct,
+        PS_OP_MIN_FRAMES);
+    return EINVAL;
 }
 
 /*
@@ -268,6 +287,9 @@ int ps_open_backend(const ps_backend *be, const ps_config *cfg, u32 flags, ps_st
         rv = init_memory(s, info.page_size);
     }
     if (rv == 0) {
+        rv = check_op_limit(s, info.seq == 0 ? 1 : info.num_groups);
+    }
+    if (rv == 0) {
         if (info.seq == 0) {
             rv = format(s);
         } else {
@@ -388,16 +410,10 @@ bool ps_test_evict(ps_store *s, u32 id)
 {
     ps_latch(s->pt, id);
     ps_entry *e = ps_entry_find(s->pt, id);
-    ps_vnode *h = e != NULL ? e->head : NULL;
-    const bool ok = h != NULL && h->older == NULL && h->kind == PS_V_DATA &&
-        h->flags == PS_VF_ON_DISK && h->pins == 0 && h->frame != PS_NO_FRAME &&
-        (e->flags & (PS_E_BITMAP | PS_E_LOADING)) == 0 && atomic_load(&e->dirty) == 0;
+    u32 f = PS_NO_FRAME;
+    const bool ok = e != NULL && ps_evict_head(s, e, &f);
     if (ok) {
-        ps_mem_release(s, h->frame);
-        h->frame = PS_NO_FRAME;
-        e->head = NULL;
-        ps_vnode_delete(s->pt, h);
-        ps_entry_maybe_release(s->pt, e);
+        ps_mem_release(s, f);
     }
     ps_unlatch(s->pt, id);
     return ok;

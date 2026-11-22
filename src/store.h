@@ -19,11 +19,21 @@
 #include <stdatomic.h>
 
 /*
- * Store-private ps_vnode.flags bits (ptable.h uses 0x01..0x08). Both are
- * guarded by the page latch and are only set while an operation runs.
+ * The page latch guards these operation-only bits in ps_vnode.flags.
  */
-#define PS_VF_OP_PIN 0x10u /* holds one pin taken by the op's ps_read */
-#define PS_VF_OP_BASE 0x20u /* lsn-0 disk node pushed by this op's ps_free */
+#define PS_VF_OP_PIN 0x10u /* holds one pin taken by the operation's ps_read */
+#define PS_VF_OP_BASE 0x20u /* disk node added by this operation's ps_free */
+/*
+ * The operation made this committed frame unevictable. It counts in
+ * op_frames only if PS_VF_OP_PIN is clear.
+ */
+#define PS_VF_OP_HELD 0x40u
+
+/*
+ * Minimum operation frame budget for the store to open: a page, its copy,
+ * a new group's bitmap and a spare.
+ */
+#define PS_OP_MIN_FRAMES 4u
 
 /* Resources reserved for a group before the operation commits. */
 typedef struct ps_op_group {
@@ -62,7 +72,8 @@ typedef struct ps_ckpt_item {
 /* Only the writer thread touches this state. */
 typedef struct ps_op {
     u64 lsn;
-    u32 frames; /* op_frames: copies, allocations, spares, distinct ps_read pins */
+    u32 frames; /* op_frames in ps_pressure */
+    u32 reserved; /* frames the current call will add after its allocator call */
 
     /* Entries whose head is this operation's node (PS_VF_IN_OP); NULL = dropped. */
     ps_entry **pages;
@@ -95,8 +106,7 @@ struct ps_store {
     u32 gsize; /* ids per group */
     u32 max_groups;
     u32 total_frames;
-    u32 max_pinned; /* total_frames * max_pinned_pct / 100 */
-    u32 op_limit; /* total_frames - max_pinned */
+    u32 max_pinned; /* snapshot pin budget, in frames */
 
     ps_frames *frames;
     ps_ptable *pt;
@@ -174,24 +184,51 @@ static inline bool ps_is_bitmap_id(const ps_store *s, u32 id)
     return id % s->gsize == 0;
 }
 
+/*
+ * Frames left after the snapshot budget and the resident bitmaps. A new
+ * group's bitmap is charged to the operation until commit.
+ */
+static inline u32 ps_op_limit(const ps_store *s)
+{
+    const u64 reserved =
+        (u64) s->max_pinned + atomic_load_explicit(&s->num_groups, memory_order_relaxed);
+    return reserved < s->total_frames ? s->total_frames - (u32) reserved : 0;
+}
+
+/* The caller must keep the node's frame resident while using the pointer. */
 static inline ps_page *ps_node_page(const ps_store *s, const ps_vnode *v)
 {
     return (ps_page *) ps_frame(s->frames, v->frame);
 }
 
 /*
- * Frame requests (mem.c). Called with no page latch and without reg_mu.
- * Returns a free frame or fails with ENOBUFS.
+ * Frame requests. Called with no page latch and without
+ * reg_mu (the request may latch pages and take reg_mu), and never waits.
+ * In order:
+ *   1. a free frame;
+ *   2. evict a clean frame (CLOCK proposal, then latch and re-check);
+ *   3. writer only: if retired versions hold frames, cut off the oldest
+ *      snapshot and retry;
+ *   4. EAGAIN if a checkpoint would release frames (dirty frames exist or
+ *      one is running);
+ *   5. ENOBUFS.
+ * The op limit (ENOBUFS at once) is checked by the writer's callers in
+ * op.c, which know whether the frame counts in op_frames.
  */
 int ps_mem_frame(ps_store *s, bool writer, u32 *f);
 void ps_mem_release(ps_store *s, u32 f);
 
 /*
- * Enter with e latched and LOADING clear. Pass a frameless data node or
- * NULL for an empty chain. LOADING covers the unlocked frame request and
- * disk read. A temporary pin protects an existing node during that gap.
- * Returns with the latch held. On success *out owns one pin. On failure
- * e may have been released, so the caller can only use the page ID.
+ * Hold e's latch. On success, *f is still allocated and e may be gone.
+ * A head with older versions keeps its LSN in a frameless node.
+ */
+bool ps_evict_head(ps_store *s, ps_entry *e, u32 *f);
+
+/*
+ * Enter with e latched and LOADING clear. Pass a frameless data node, or
+ * NULL for an empty chain. Drops the latch for I/O and returns with it held.
+ * On success *out owns one pin. On failure e may be gone, so use only the
+ * page ID.
  */
 int ps_page_in(ps_store *s, ps_entry *e, ps_vnode *frameless, bool writer, ps_vnode **out);
 
@@ -216,17 +253,14 @@ void ps_node_free(ps_store *s, ps_entry *e, ps_vnode *v);
 void ps_drop_lone_marker(ps_store *s, ps_entry *e);
 
 /*
- * Drops one pin; at the last unpin a PS_VF_FREE_WHEN_UNPINNED node is
- * freed (ps_node_free, so e may be gone afterwards).
+ * The last unpin can free v and release e. It can also drop a clean frame
+ * a snapshot loaded below an in-op free marker, where CLOCK cannot reach it.
  */
 void ps_node_unpin(ps_store *s, ps_entry *e, ps_vnode *v);
 
 /*
- * The only code that sets or clears frames' evictable flags. A frame
- * is evictable iff its node is the chain head, committed (not IN_OP), a data
- * node, ON_DISK and unpinned, and e is neither a bitmap page nor LOADING.
- * Bitmap pages are never evicted: they stay resident from open (or their
- * creation) on, which lets the writer read committed bitmaps directly.
+ * Only a clean, unpinned data head can be a CLOCK candidate. Bitmaps stay
+ * resident so the allocator can read the committed bits directly.
  */
 void ps_update_evictable(ps_store *s, ps_entry *e);
 
@@ -288,8 +322,7 @@ u32 ps_test_chain_len(ps_store *s, u32 id);
 /* Threads waiting on id's LOADING (or holding its entry). Any time. */
 u32 ps_test_waiters(ps_store *s, u32 id);
 /*
- * Drops id's version from memory as eviction would if it is a lone,
- * clean (ON_DISK, not dirty), unpinned, committed user data version; the
- * chain becomes empty. Returns whether it did.
+ * Evicts id's head with the evictor (ps_evict_head) and frees its frame.
+ * Returns whether it did.
  */
 bool ps_test_evict(ps_store *s, u32 id);

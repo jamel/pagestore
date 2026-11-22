@@ -497,7 +497,8 @@ static void test_free_in_op(void)
     T_OK(ps_write(s, 1, &p));
     T_OK(ps_free(s, 1));
     T_EQ(ps_test_chain_len(s, 1), 2);
-    T_EQ(s->op.frames, 1); /* the spare for group 0 */
+    /* The spare for group 0, and page 1's dirty version under the marker. */
+    T_EQ(s->op.frames, 2);
     /* The cursor does not move back: the next allocation is 4. */
     T_OK(ps_alloc(s, &id, &p));
     T_EQ(id, 4);
@@ -711,8 +712,8 @@ static void test_cache_full_enobufs(void)
         T_EQ(id, n);
     }
     T_ERR(rv, ENOBUFS);
-    /* 16 frames: the bitmap page, group 0's spare, 14 pages. */
-    T_EQ(n, 14);
+    /* The 11-frame budget fits ten user pages and the bitmap spare. */
+    T_EQ(n, 10);
     ps_op_abort(s);
     struct ps_stats st;
     ps_stats(s, &st);
@@ -868,7 +869,8 @@ static void test_new_group_commit(void)
     T_OK(ps_alloc(s, &id, &p));
     T_EQ(id, G + 2);
     T_OK(ps_free(s, G + 1));
-    T_EQ(s->op.frames, 2); /* the page and group 1's spare */
+    /* The page, group 1's spare and G + 1's dirty version under the marker. */
+    T_EQ(s->op.frames, 3);
     ps_op_commit(s);
     ps_stats(s, &st);
     T_EQ(st.allocated_pages, G);
@@ -926,13 +928,12 @@ static void test_new_group_abort(void)
 }
 
 /*
- * The new group's bitmap frame cannot be had: the page's frame becomes the
- * bitmap's and the allocation is cancelled, so both abort and (an erroneous)
- * commit stay consistent.
+ * Exhaust the 11-frame budget so the new bitmap takes the user page's frame.
+ * Committing after the error checks that the operation is still consistent.
  */
 static void test_new_group_frame_steal(void)
 {
-    setup_full_group0(14);
+    setup_full_group0(10);
     T_OK(mb_open(mb, 16, 0, &s));
     const u32 G = ps_group_size(PS);
     const ps_page *rp = NULL;
@@ -941,20 +942,20 @@ static void test_new_group_frame_steal(void)
     struct ps_stats st;
 
     T_OK(ps_op_begin(s, 10));
-    for (u32 i = 1; i <= 14; i++) {
+    for (u32 i = 1; i <= 10; i++) {
         T_OK(ps_read(s, i, &rp));
     }
     ps_stats(s, &st);
-    T_EQ(st.frames_free, 1);
+    T_EQ(st.frames_free, 5);
     T_ERR(ps_alloc(s, &id, &p), ENOBUFS); /* group 1 created, its frame stolen */
-    T_EQ(s->op.frames, 15);
+    T_EQ(s->op.frames, 11);
     ps_stats(s, &st);
-    T_EQ(st.frames_free, 0);
-    T_ERR(ps_alloc(s, &id, &p), ENOBUFS); /* no frame for a page at all */
+    T_EQ(st.frames_free, 4);
+    T_ERR(ps_alloc(s, &id, &p), ENOBUFS); /* no room for a page at all */
     ps_op_abort(s);
     ps_stats(s, &st);
-    T_EQ(st.frames_free, 1);
-    T_EQ(st.frames_evictable, 14);
+    T_EQ(st.frames_free, 5);
+    T_EQ(st.frames_evictable, 10);
     T_EQ(st.frames_pinned, 0);
     T_EQ(st.num_groups, 1);
     T_EQ(st.allocated_pages, G - 1);
@@ -963,7 +964,7 @@ static void test_new_group_frame_steal(void)
     T_CHECK(!ps_test_has_entry(s, 2 * G));
 
     T_OK(ps_op_begin(s, 11));
-    for (u32 i = 1; i <= 14; i++) {
+    for (u32 i = 1; i <= 10; i++) {
         T_OK(ps_read(s, i, &rp));
     }
     T_ERR(ps_alloc(s, &id, &p), ENOBUFS);
@@ -971,7 +972,7 @@ static void test_new_group_frame_steal(void)
     ps_stats(s, &st);
     T_EQ(st.num_groups, 2);
     T_EQ(st.allocated_pages, G - 1);
-    T_EQ(st.frames_free, 0);
+    T_EQ(st.frames_free, 4);
     T_EQ(st.frames_pinned, 0);
     T_EQ(st.frames_dirty, 1); /* the new bitmap page */
     T_CHECK(!ps_test_has_entry(s, G + 1));

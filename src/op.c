@@ -210,11 +210,17 @@ static void drop_page(ps_store *s, const ps_entry *e)
     PS_ASSERT(false);
 }
 
-/* Gives a resident node a frame's identity. Latch held. */
+/* Hold the page latch with v->entry already set. */
 static void attach_frame(ps_store *s, ps_vnode *v, u32 f)
 {
     v->frame = f;
-    ps_frames_set_owner(s->frames, f, v);
+    ps_frames_set_owner(s->frames, f, v, v->entry->id);
+}
+
+/* Also counts frames promised to the outer page call during bitmap lookup. */
+static bool op_room(const ps_store *s, u32 n)
+{
+    return (u64) s->op.frames + s->op.reserved + n <= ps_op_limit(s);
 }
 
 /* ---- the allocator's bitmap callback -------------------------------------- */
@@ -227,6 +233,9 @@ static int bitmap_get(ps_bitmap_get_ctx *ctx, u32 g, const u8 **bits)
 {
     ps_store *s = ctx->s;
     PS_ASSERT(find_group(s, g) == NULL);
+    if (!op_room(s, 1)) {
+        return ENOBUFS;
+    }
     int rv = reserve_groups(s, s->op.ngroups + 1);
     if (rv != 0) {
         return rv;
@@ -333,6 +342,7 @@ static void op_start(ps_store *s, u64 lsn)
     ps_op *op = &s->op;
     op->lsn = lsn;
     op->frames = 0;
+    op->reserved = 0;
     op->npages = 0;
     op->npins = 0;
     op->ngroups = 0;
@@ -547,7 +557,7 @@ void ps_op_commit(ps_store *s)
         PS_ASSERT(h != NULL && (h->flags & PS_VF_IN_OP) != 0);
         h->flags &= (u8) ~PS_VF_IN_OP;
         if (h->older != NULL) {
-            h->older->flags &= (u8) ~PS_VF_OP_BASE;
+            h->older->flags &= (u8) ~(PS_VF_OP_BASE | PS_VF_OP_HELD);
         }
         ps_mark_dirty(s, e);
         ps_update_evictable(s, e);
@@ -618,6 +628,9 @@ void ps_op_abort(ps_store *s)
         }
         ps_vnode_delete(s->pt, h);
         ps_vnode *b = e->head;
+        if (b != NULL) {
+            b->flags &= (u8) ~PS_VF_OP_HELD;
+        }
         if (b != NULL && (b->flags & PS_VF_OP_BASE) != 0) {
             /*
              * With the free cancelled, the disk node is the committed head
@@ -644,16 +657,18 @@ void ps_op_abort(ps_store *s)
 
 /* ---- page calls ---------------------------------------------------------- */
 
-/* ---- page calls ------------------------------------------------------- */
-
 /*
- * Latches id and makes its newest version resident. On success the latch is
- * held and *vo is the head: either this op's data node (unpinned) or the
- * committed data head, which then holds one pin taken for the caller. EINVAL
- * (logged) for a free marker or an id that is not allocated; page-in errors.
- * On failure the latch is released.
+ * On success the caller owns the latch, plus one pin if the head is
+ * committed. Checks the operation limit before page-in, counting a write's
+ * copy and any committed frame the operation would start holding.
  */
-static int writer_head(ps_store *s, u32 id, const char *what, ps_entry **eo, ps_vnode **vo)
+static int writer_head(
+    ps_store *s,
+    u32 id,
+    const char *what,
+    bool for_write,
+    ps_entry **eo,
+    ps_vnode **vo)
 {
     bool checked = false;
     for (;;) {
@@ -678,6 +693,11 @@ static int writer_head(ps_store *s, u32 id, const char *what, ps_entry **eo, ps_
             *eo = e;
             *vo = h;
             return 0;
+        }
+        const bool counted = h != NULL && (h->flags & PS_VF_OP_PIN) != 0;
+        if (!op_room(s, (counted ? 0u : 1u) + (for_write ? 1u : 0u))) {
+            ps_unlatch(s->pt, id);
+            return ENOBUFS;
         }
         if (h != NULL && h->frame != PS_NO_FRAME) {
             ps_node_pin(s, h);
@@ -720,7 +740,7 @@ int ps_read(ps_store *s, u32 id, const ps_page **page)
     }
     ps_entry *e = NULL;
     ps_vnode *v = NULL;
-    rv = writer_head(s, id, "ps_read", &e, &v);
+    rv = writer_head(s, id, "ps_read", false, &e, &v);
     if (rv != 0) {
         return rv;
     }
@@ -752,7 +772,7 @@ int ps_write(ps_store *s, u32 id, ps_page **page)
     }
     ps_entry *e = NULL;
     ps_vnode *old = NULL;
-    rv = writer_head(s, id, "ps_write", &e, &old);
+    rv = writer_head(s, id, "ps_write", true, &e, &old);
     if (rv != 0) {
         return rv;
     }
@@ -790,24 +810,26 @@ int ps_write(ps_store *s, u32 id, ps_page **page)
     attach_frame(s, v, f);
     v->older = old;
     e->head = v;
+    s->op.frames++;
+    if ((old->flags & PS_VF_OP_PIN) == 0) {
+        /* Count old too, since CLOCK can only evict a chain head. */
+        old->flags |= PS_VF_OP_HELD;
+        s->op.frames++;
+    }
     ps_node_unpin(s, e, old);
     ps_update_evictable(s, e);
     ps_unlatch(s->pt, id);
 
     s->op.pages[s->op.npages++] = e;
-    s->op.frames++;
     *page = p;
     return 0;
 }
 
 /*
- * The ps_alloc rule: a frameless data version still in
- * e's chain (the lsn-0 disk node of a freed page, kept for a snapshot) is
- * exactly the data-file copy, which the checkpoint after this op overwrites.
- * Loads every such version (waiting for a load in flight). e's latch held;
- * it is dropped for the I/O and held again on return, e stays valid (held)
- * and the caller calls ps_entry_maybe_release if it gives up. The frame is
- * the retired version's, not the op's (not counted in op_frames).
+ * Reusing an ID lets a later checkpoint overwrite the disk copy. Load
+ * any old disk version a reader can still see before reusing it. These
+ * frames go against the retire queue's count, so cut-off can reclaim them.
+ * Enter and return with e latched. The caller can release e on failure.
  */
 static int load_frameless(ps_store *s, ps_entry *e)
 {
@@ -849,6 +871,9 @@ int ps_alloc(ps_store *s, u32 *id_out, ps_page **page)
     if (rv == 0) {
         rv = reserve_kit(s);
     }
+    if (rv == 0 && !op_room(s, 1)) {
+        rv = ENOBUFS;
+    }
     if (rv != 0) {
         return rv;
     }
@@ -883,7 +908,7 @@ int ps_alloc(ps_store *s, u32 *id_out, ps_page **page)
          */
         PS_ASSERT(s->op.kit_entry != NULL && id / s->gsize == s->op.kit_group);
         u32 bf = PS_NO_FRAME;
-        rv = ps_mem_frame(s, true, &bf);
+        rv = op_room(s, 1) ? ps_mem_frame(s, true, &bf) : ENOBUFS;
         if (rv == 0) {
             s->op.frames++;
         } else {
@@ -950,6 +975,26 @@ int ps_alloc(ps_store *s, u32 *id_out, ps_page **page)
     return 0;
 }
 
+/*
+ * CLOCK cannot reach a clean frame below the free marker, so release it
+ * here if unpinned. Checkpoint skips freed pages, leaving the disk copy
+ * available until ps_alloc needs to reload it before reuse. Hold the latch.
+ */
+static void release_base(ps_store *s, ps_vnode *base)
+{
+    if (base == NULL || base->frame == PS_NO_FRAME || base->pins > 0 ||
+        (base->flags & PS_VF_ON_DISK) == 0) {
+        return;
+    }
+    PS_ASSERT((base->flags & PS_VF_RETIRED) == 0);
+    if ((base->flags & PS_VF_OP_HELD) != 0) {
+        base->flags &= (u8) ~PS_VF_OP_HELD;
+        s->op.frames--;
+    }
+    ps_mem_release(s, base->frame);
+    base->frame = PS_NO_FRAME;
+}
+
 int ps_free(ps_store *s, u32 id)
 {
     int rv = op_enter(s, "ps_free");
@@ -973,15 +1018,29 @@ int ps_free(ps_store *s, u32 id)
         rv = ps_vnode_new(s->pt, &b);
     }
     ps_entry *e = NULL;
+    u32 held = 0; /* 1 if the committed head will count against the operation limit */
     if (rv == 0) {
         e = latch_find(s, id);
         if (e == NULL) {
             rv = ps_entry_get(s->pt, id, &e);
         }
-        if (rv == 0 && e->head != NULL && e->head->kind == PS_V_FREE) {
+        const ps_vnode *h = rv == 0 ? e->head : NULL;
+        /*
+         * Only a dirty base needs room. A checkpoint may clean it before
+         * we install the marker, and a clean base stays clean.
+         */
+        held = h != NULL && h->kind == PS_V_DATA && h->frame != PS_NO_FRAME &&
+                (h->flags & (PS_VF_IN_OP | PS_VF_ON_DISK | PS_VF_OP_PIN)) == 0 ?
+            1 :
+            0;
+        if (rv == 0 && h != NULL && h->kind == PS_V_FREE) {
             ps_log(s, PS_LOG_ERROR, "ps_free: page %u is already freed", id);
             ps_unlatch(s->pt, id);
             rv = EINVAL;
+        } else if (rv == 0 && !op_room(s, held)) {
+            ps_entry_maybe_release(s->pt, e);
+            ps_unlatch(s->pt, id);
+            rv = ENOBUFS;
         } else if (rv == 0) {
             /* The allocator may run the bitmap callback, which takes another latch. */
             hold(e);
@@ -998,7 +1057,9 @@ int ps_free(ps_store *s, u32 id)
 
     ps_bitmap_get_ctx gc = {s};
     bool cancelled = false;
+    s->op.reserved = held; /* a spare the callback takes must leave room for it */
     rv = ps_allocator_free(s->alloc, bitmap_get, &gc, id, &cancelled);
+    s->op.reserved = 0;
 
     ps_latch(s->pt, id);
     e->waiters--;
@@ -1033,6 +1094,7 @@ int ps_free(ps_store *s, u32 id)
         h->frame = PS_NO_FRAME;
         h->kind = PS_V_FREE;
         s->op.frames--;
+        release_base(s, h->older);
         ps_update_evictable(s, e);
     } else {
         if (h == NULL) {
@@ -1044,14 +1106,23 @@ int ps_free(ps_store *s, u32 id)
             e->head = b;
             b = NULL;
         }
-        PS_ASSERT(e->head->kind == PS_V_DATA);
+        ps_vnode *base = e->head;
+        PS_ASSERT(base->kind == PS_V_DATA);
         m->lsn = s->op.lsn;
         m->entry = e;
         m->kind = PS_V_FREE;
         m->flags = PS_VF_IN_OP;
-        m->older = e->head;
+        m->older = base;
         e->head = m;
         m = NULL;
+        if (base->frame != PS_NO_FRAME && (base->flags & (PS_VF_ON_DISK | PS_VF_OP_PIN)) == 0) {
+            /* A dirty base has no current disk copy to fall back on. */
+            PS_ASSERT(held == 1);
+            base->flags |= PS_VF_OP_HELD;
+            s->op.frames++;
+        } else {
+            release_base(s, base);
+        }
         ps_update_evictable(s, e);
         s->op.pages[s->op.npages++] = e;
     }
@@ -1059,4 +1130,14 @@ int ps_free(ps_store *s, u32 id)
     ps_vnode_delete(s->pt, m);
     ps_vnode_delete(s->pt, b);
     return 0;
+}
+
+/* ---- pressure ------------------------------------------------------------ */
+
+void ps_op_pressure(const ps_store *s, ps_pressure *out)
+{
+    out->op_frames = s->op.frames;
+    out->op_limit = ps_op_limit(s);
+    out->dirty_frames = atomic_load_explicit(&s->frames_dirty, memory_order_relaxed);
+    out->total_frames = s->total_frames;
 }
