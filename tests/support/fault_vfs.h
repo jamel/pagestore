@@ -68,3 +68,16 @@ void fault_vfs_reboot(fault_vfs *fv, fault_mode mode);
  * EINVAL for an offset outside the durable image.
  */
 int fault_vfs_corrupt(fault_vfs *fv, const char *path, u64 off, u8 xor_mask);
+
+/*
+ * Resolves path in the current directory tree and reads the durable
+ * bytes. It can open a name even before that name is durable. A short
+ * read means the durable end of the file.
+ */
+int fault_vfs_read_durable(
+    fault_vfs *fv,
+    const char *path,
+    u64 off,
+    void *buf,
+    usize len,
+    usize *got);

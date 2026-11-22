@@ -271,12 +271,15 @@ static int write_direct(ps_wal *w, u64 lsn, const void *payload, u32 len)
     return 0;
 }
 
+static bool is_disk_full(int err)
+{
+    return err == ENOSPC || err == EDQUOT;
+}
+
 /*
- * Publishes segment seq with prev_lsn: create
- * <seq>.wal.tmp, preallocate it, write its header, fsync it, rename it to
- * <seq>.wal and fsync the directory. On success *out is the open segment.
- * *clean is set when nothing is left behind and the WAL may stay healthy:
- * ENOSPC from creating or preallocating the file (the tmp file is deleted).
+ * Publish only after the header and preallocation are durable. *clean
+ * allows a retry after disk exhaustion during create or preallocation,
+ * provided no temp file remains.
  */
 static int publish(ps_wal *w, u64 seq, u64 prev_lsn, ps_file *out, bool *clean)
 {
@@ -285,13 +288,13 @@ static int publish(ps_wal *w, u64 seq, u64 prev_lsn, ps_file *out, bool *clean)
     int rv =
         w->vfs.open(w->vfs.ctx, seg_path(w, w->path, seq, true), PS_VFS_CREATE | PS_VFS_EXCL, &f);
     if (rv != 0) {
-        *clean = rv == ENOSPC;
+        *clean = is_disk_full(rv);
         return rv;
     }
     rv = w->vfs.preallocate(w->vfs.ctx, &f, w->cfg.segment_size);
     if (rv != 0) {
         w->vfs.close(w->vfs.ctx, &f);
-        if (rv == ENOSPC) {
+        if (is_disk_full(rv)) {
             /* The retry uses exclusive create, so first remove this temp file. */
             *clean = w->vfs.unlink(w->vfs.ctx, seg_path(w, w->path, seq, true)) == 0;
         }
@@ -338,13 +341,16 @@ static int reserve_seg(ps_wal *w)
 }
 
 /* A retry after a clean publish failure keeps the seal and skips straight to publishing. */
-static int rotate(ps_wal *w, bool *fatal)
+static int rotate(ps_wal *w, bool *fatal, const char **what)
 {
     *fatal = false;
+    *what = "rotation";
     int rv = 0;
     if (!w->sealed) {
+        *what = "write";
         rv = drain(w);
         if (rv == 0) {
+            *what = "seal";
             rv = w->vfs.truncate(w->vfs.ctx, &w->seg, w->file_off);
         }
         if (rv == 0) {
@@ -364,6 +370,7 @@ static int rotate(ps_wal *w, bool *fatal)
     ps_file f;
     bool clean = false;
     /* For an empty segment, written still equals its prev_lsn. */
+    *what = "segment publish";
     rv = publish(w, w->cur_seq + 1, w->written, &f, &clean);
     if (rv != 0) {
         *fatal = !clean;
@@ -393,16 +400,22 @@ int ps_wal_append(ps_wal *w, u64 lsn, const void *buf, usize len)
     bool fatal = false;
     int rv = 0;
 
+    /* A concurrent flush can fail the WAL before we take io_mu. Recheck under it. */
     if (w->sealed || w->seg_end + size > w->cfg.segment_size) {
         pthread_mutex_lock(&w->io_mu);
-        rv = rotate(w, &fatal);
+        if (is_failed(w)) {
+            pthread_mutex_unlock(&w->io_mu);
+            return EIO;
+        }
+        const char *what = NULL;
+        rv = rotate(w, &fatal, &what);
         if (fatal) {
             set_failed(w);
         }
         pthread_mutex_unlock(&w->io_mu);
         if (rv != 0) {
             if (fatal) {
-                log_failure(w, "rotation", rv);
+                log_failure(w, what, rv);
                 return EIO;
             }
             return rv;
@@ -417,6 +430,10 @@ int ps_wal_append(ps_wal *w, u64 lsn, const void *buf, usize len)
         pthread_mutex_unlock(&w->buf_mu);
         if (!room) {
             pthread_mutex_lock(&w->io_mu);
+            if (is_failed(w)) {
+                pthread_mutex_unlock(&w->io_mu);
+                return EIO;
+            }
             rv = drain(w);
             if (rv != 0) {
                 set_failed(w);
@@ -434,6 +451,10 @@ int ps_wal_append(ps_wal *w, u64 lsn, const void *buf, usize len)
         pthread_mutex_unlock(&w->buf_mu);
     } else {
         pthread_mutex_lock(&w->io_mu);
+        if (is_failed(w)) {
+            pthread_mutex_unlock(&w->io_mu);
+            return EIO;
+        }
         rv = drain(w);
         if (rv == 0) {
             rv = write_direct(w, lsn, buf, n);
@@ -597,21 +618,20 @@ void ps_wal_close(ps_wal *w)
     free(w);
 }
 
-/* Creates the directory if missing (fsyncing its parent) and takes the lock. */
+/* Sync the parent even on EEXIST. An earlier open may have missed that sync. */
 static int open_dir(ps_wal *w)
 {
     int rv = w->vfs.mkdir(w->vfs.ctx, w->dir);
-    if (rv == 0) {
-        char *parent = parent_of(w->dir);
-        if (parent == NULL) {
-            return ENOMEM;
-        }
-        rv = w->vfs.fsync_dir(w->vfs.ctx, parent);
-        free(parent);
-        if (rv != 0) {
-            return rv;
-        }
-    } else if (rv != EEXIST) {
+    if (rv != 0 && rv != EEXIST) {
+        return rv;
+    }
+    char *parent = parent_of(w->dir);
+    if (parent == NULL) {
+        return ENOMEM;
+    }
+    rv = w->vfs.fsync_dir(w->vfs.ctx, parent);
+    free(parent);
+    if (rv != 0) {
         return rv;
     }
     rv = w->vfs.lock(w->vfs.ctx, wal_path(w, w->path, "LOCK"), &w->lock);

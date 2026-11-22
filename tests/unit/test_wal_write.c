@@ -506,12 +506,48 @@ typedef struct race_arg {
     _Atomic bool *stop;
 } race_arg;
 
+/* Read durable images so this check can run while the writer is rotating. */
+static u64 durable_through(void)
+{
+    u8 *buf = malloc(SEG);
+    T_CHECK(buf != NULL);
+    u64 prev = 0;
+    for (u64 seq = 1;; seq++) {
+        char p[64];
+        seg_name(p, sizeof(p), seq);
+        usize got = 0;
+        if (fault_vfs_read_durable(fv, p, 0, buf, SEG, &got) != 0 || got < PS_WAL_SEG_HEADER_SIZE) {
+            break;
+        }
+        ps_wal_seg_header h;
+        if (ps_wal_seg_header_decode(buf, &h) != 0 || h.prev_lsn != prev) {
+            break;
+        }
+        usize off = PS_WAL_SEG_HEADER_SIZE;
+        for (;;) {
+            u64 lsn = 0;
+            const u8 *pl = NULL;
+            u32 len = 0;
+            usize rs = 0;
+            if (ps_wal_rec_decode(buf + off, got - off, prev, &lsn, &pl, &len, &rs) != 0) {
+                break;
+            }
+            T_EQ(lsn, prev + 1);
+            prev = lsn;
+            off += rs;
+        }
+    }
+    free(buf);
+    return prev;
+}
+
 static void *flush_loop(void *p)
 {
     race_arg *a = p;
     while (!atomic_load(a->stop)) {
         const u64 l = atomic_load(a->appended);
         T_OK(ps_wal_flush(a->w, l));
+        T_CHECK(durable_through() >= l);
     }
     return NULL;
 }
@@ -628,14 +664,22 @@ static void test_enospc_rotation_healthy(void)
     fault_vfs_enospc_after(fv, 1);
     u8 buf[BIG];
     fill_payload(buf, PER_SEG + 1, BIG);
+    u64 points = fault_vfs_points(fv);
     T_ERR(ps_wal_append(w, PER_SEG + 1, buf, BIG), ENOSPC);
+    /* The seal uses three points. The other three are temp create, preallocate and cleanup. */
+    T_EQ(fault_vfs_points(fv) - points, 6);
     T_EQ(count_files().tmps, 0);
     T_CHECK(!seg_exists(2));
-    /* Healthy: everything appended before is durable through a flush. */
+    /* The failed publish left a durable seal, so flush needs no I/O. */
+    points = fault_vfs_points(fv);
     T_OK(ps_wal_flush(w, PER_SEG));
-    T_ERR(ps_wal_append(w, PER_SEG + 1, buf, BIG), ENOSPC); /* the retry skips the seal */
+    T_EQ(fault_vfs_points(fv), points);
+    /* Retry only the temp file operations. */
+    T_ERR(ps_wal_append(w, PER_SEG + 1, buf, BIG), ENOSPC);
+    T_EQ(fault_vfs_points(fv) - points, 3);
     /* Even a small record needs a new segment after sealing. */
     T_ERR(ps_wal_append(w, PER_SEG + 1, buf, 8), ENOSPC);
+    T_EQ(fault_vfs_points(fv) - points, 6);
     fault_vfs_enospc_after(fv, UINT64_MAX);
     T_OK(ps_wal_append(w, PER_SEG + 1, buf, BIG));
     T_CHECK(seg_exists(2));
@@ -687,12 +731,18 @@ static void test_drain_and_seal_errors_fail_wal(void)
     c.buffer_size = 1024;
     ps_wal *w = NULL;
     T_OK(ps_wal_open(s, NULL, &c, &w));
-    append_rec(w, 1, 1000); /* 1016 bytes: the next record does not fit */
+    append_rec(w, 1, 1000);
+    T_OK(ps_wal_flush(w, 1));
+    append_rec(w, 2, 1000); /* 1016 of 1024 bytes buffered forces the next append to drain */
     fault_vfs_fail_at(fv, fault_vfs_points(fv) + 1, ENOSPC);
-    T_ERR(ps_wal_append(w, 2, "abc", 3), EIO); /* a failed drain is fatal: EIO, not ENOSPC */
-    T_ERR(ps_wal_append(w, 3, "abc", 3), EIO);
+    T_ERR(ps_wal_append(w, 3, "abc", 3), EIO); /* disk exhaustion during a write is fatal */
+    T_ERR(ps_wal_append(w, 4, "abc", 3), EIO);
+    T_ERR(ps_wal_flush(w, 4), EIO);
+    check_seg(1, 0, 1, 1, 1000);
+    fault_vfs_reboot(fv, FAULT_RANDOM_UNSYNCED);
     ps_close(s);
     ps_wal_close(w);
+    check_seg(1, 0, 1, 1, 1000);
     teardown();
 
     s = setup();
@@ -706,6 +756,167 @@ static void test_drain_and_seal_errors_fail_wal(void)
     fill_payload(buf, PER_SEG + 1, BIG);
     T_ERR(ps_wal_append(w, PER_SEG + 1, buf, BIG), EIO);
     T_ERR(ps_wal_flush(w, PER_SEG), EIO);
+    T_CHECK(!seg_exists(2));
+    ps_close(s);
+    ps_wal_close(w);
+    teardown();
+}
+
+/* Fill segment 1 so the next BIG append exercises rotation. */
+static void fill_seg1(ps_wal *w)
+{
+    for (u64 lsn = 1; lsn <= PER_SEG; lsn++) {
+        append_rec(w, lsn, BIG);
+    }
+}
+
+static void check_failed(ps_wal *w)
+{
+    const u64 points = fault_vfs_points(fv);
+    u8 buf[BIG];
+    fill_payload(buf, PER_SEG + 1, BIG);
+    T_ERR(ps_wal_append(w, PER_SEG + 1, buf, BIG), EIO);
+    T_ERR(ps_wal_append(w, PER_SEG + 1, buf, 8), EIO);
+    T_ERR(ps_wal_flush(w, PER_SEG), EIO);
+    T_EQ(fault_vfs_points(fv), points);
+}
+
+/*
+ * Points 1 through 3 drain, truncate and sync the old segment. The next
+ * two create and preallocate the temp file. Points 6 through 9 write and
+ * sync the header, rename the file and sync the directory.
+ */
+static void test_publish_errors_fatal(void)
+{
+    for (u64 k = 6; k <= 9; k++) {
+        ps_store *s = setup();
+        ps_wal *w = open_wal(s);
+        fill_seg1(w);
+        const u64 base = fault_vfs_points(fv);
+        fault_vfs_fail_at(fv, base + k, EIO);
+        u8 buf[BIG];
+        fill_payload(buf, PER_SEG + 1, BIG);
+        T_ERR(ps_wal_append(w, PER_SEG + 1, buf, BIG), EIO);
+        T_EQ(fault_vfs_points(fv), base + k);
+        fault_vfs_fail_at(fv, 0, 0);
+        check_failed(w);
+        T_EQ(seg_exists(2), k == 9); /* rename is visible if directory sync fails */
+        fault_vfs_reboot(fv, FAULT_DROP_UNSYNCED);
+        ps_close(s);
+        ps_wal_close(w);
+        T_CHECK(!seg_exists(2));
+        check_seg(1, 0, 1, PER_SEG, BIG);
+        teardown();
+    }
+}
+
+/* A leftover temp file blocks the next exclusive create. */
+static void test_enospc_cleanup_failure_fatal(void)
+{
+    ps_store *s = setup();
+    ps_wal *w = open_wal(s);
+    fill_seg1(w);
+    fault_vfs_enospc_after(fv, 1);
+    /* Fail point 6, the cleanup after preallocate returns ENOSPC. */
+    fault_vfs_fail_at(fv, fault_vfs_points(fv) + 6, EIO);
+    u8 buf[BIG];
+    fill_payload(buf, PER_SEG + 1, BIG);
+    T_ERR(ps_wal_append(w, PER_SEG + 1, buf, BIG), EIO);
+    fault_vfs_fail_at(fv, 0, 0);
+    fault_vfs_enospc_after(fv, UINT64_MAX);
+    check_failed(w);
+    ps_close(s);
+    ps_wal_close(w);
+    teardown();
+}
+
+/* A space error creating the temporary file leaves rotation retryable. */
+static void test_create_disk_full_clean(void)
+{
+    const int errs[2] = {ENOSPC, EDQUOT};
+    for (u32 i = 0; i < 2; i++) {
+        ps_store *s = setup();
+        ps_wal *w = open_wal(s);
+        fill_seg1(w);
+        fault_vfs_fail_at(fv, fault_vfs_points(fv) + 4, errs[i]);
+        u8 buf[BIG];
+        fill_payload(buf, PER_SEG + 1, BIG);
+        T_ERR(ps_wal_append(w, PER_SEG + 1, buf, BIG), errs[i]);
+        T_EQ(count_files().tmps, 0);
+        T_CHECK(!seg_exists(2));
+        T_OK(ps_wal_flush(w, PER_SEG));
+        T_OK(ps_wal_append(w, PER_SEG + 1, buf, BIG));
+        T_OK(ps_wal_flush(w, PER_SEG + 1));
+        fault_vfs_reboot(fv, FAULT_DROP_UNSYNCED);
+        ps_close(s);
+        ps_wal_close(w);
+        check_seg(1, 0, 1, PER_SEG, BIG);
+        check_seg(2, PER_SEG, PER_SEG + 1, PER_SEG + 1, BIG);
+        teardown();
+    }
+
+    ps_store *s = setup();
+    ps_wal *w = open_wal(s);
+    fill_seg1(w);
+    fault_vfs_fail_at(fv, fault_vfs_points(fv) + 5, EDQUOT);
+    u8 buf[BIG];
+    fill_payload(buf, PER_SEG + 1, BIG);
+    T_ERR(ps_wal_append(w, PER_SEG + 1, buf, BIG), EDQUOT);
+    T_EQ(count_files().tmps, 0);
+    T_OK(ps_wal_append(w, PER_SEG + 1, buf, BIG));
+    T_OK(ps_wal_flush(w, PER_SEG + 1));
+    ps_close(s);
+    ps_wal_close(w);
+    teardown();
+}
+
+/* Retry after a failed unlink to check that truncation resumes. */
+static void test_truncate_unlink_error(void)
+{
+    ps_store *s = setup();
+    ps_wal *w = open_wal(s);
+    const u64 last = 2 * PER_SEG + 1;
+    for (u64 lsn = 1; lsn <= last; lsn++) {
+        append_rec(w, lsn, BIG);
+    }
+    fault_vfs_fail_at(fv, fault_vfs_points(fv) + 1, EIO);
+    T_ERR(ps_wal_truncate(w, UINT64_MAX), EIO);
+    fault_vfs_fail_at(fv, 0, 0);
+    T_CHECK(seg_exists(1));
+    T_CHECK(seg_exists(2));
+    append_rec(w, last + 1, 100);
+    T_OK(ps_wal_flush(w, last + 1));
+    T_OK(ps_wal_truncate(w, UINT64_MAX));
+    T_CHECK(!seg_exists(1));
+    T_CHECK(!seg_exists(2));
+    T_CHECK(seg_exists(3));
+    ps_close(s);
+    ps_wal_close(w);
+    teardown();
+}
+
+/* After a flush on another thread failed the WAL, an append that must rotate writes nothing. */
+static void *failing_flush(void *p)
+{
+    flush_arg *a = p;
+    a->rv = ps_wal_flush(a->w, a->lsn);
+    return NULL;
+}
+
+static void test_no_io_after_failure(void)
+{
+    ps_store *s = setup();
+    ps_wal *w = open_wal(s);
+    fill_seg1(w);
+    /* Fail the other thread's fsync after the buffered bytes reach the file. */
+    fault_vfs_fail_at(fv, fault_vfs_points(fv) + 2, EIO);
+    flush_arg a = {w, PER_SEG, -1};
+    pthread_t t;
+    T_EQ(pthread_create(&t, NULL, failing_flush, &a), 0);
+    T_EQ(pthread_join(t, NULL), 0);
+    T_ERR(a.rv, EIO);
+    fault_vfs_fail_at(fv, 0, 0);
+    check_failed(w);
     T_CHECK(!seg_exists(2));
     ps_close(s);
     ps_wal_close(w);
@@ -794,6 +1005,11 @@ int main(int argc, char **argv)
     T_RUN(test_enospc_rotation_healthy);
     T_RUN(test_write_error_fails_wal);
     T_RUN(test_drain_and_seal_errors_fail_wal);
+    T_RUN(test_publish_errors_fatal);
+    T_RUN(test_enospc_cleanup_failure_fatal);
+    T_RUN(test_create_disk_full_clean);
+    T_RUN(test_truncate_unlink_error);
+    T_RUN(test_no_io_after_failure);
     T_RUN(test_hooks_installed);
     T_RUN(test_posix_smoke);
     return t_done();

@@ -378,14 +378,14 @@ static void release_files(ps_backend_ctx *c)
 static int fb_open_files(ps_backend_ctx *c, bool create, u32 page_size)
 {
     if (create) {
+        /* A prior open may have created dir and failed before syncing its parent. */
         const int rv = c->vfs.mkdir(c->vfs.ctx, c->dir);
-        if (rv == 0) {
-            const int rv2 = c->vfs.fsync_dir(c->vfs.ctx, c->parent);
-            if (rv2 != 0) {
-                return rv2;
-            }
-        } else if (rv != EEXIST) {
+        if (rv != 0 && rv != EEXIST) {
             return rv;
+        }
+        const int rv2 = c->vfs.fsync_dir(c->vfs.ctx, c->parent);
+        if (rv2 != 0) {
+            return rv2;
         }
     }
     int rv = c->vfs.lock(c->vfs.ctx, c->lock_path, &c->lock);

@@ -49,11 +49,10 @@ void ps_wal_config_init(ps_wal_config *cfg);
 int ps_wal_open(ps_store *store, const char *waldir, const ps_wal_config *cfg, ps_wal **out);
 
 /*
- * Appends a record; one thread (the writer). EINVAL if lsn is not above the
- * last appended LSN or len > max_record_size; ENOMEM, or ENOSPC when the
- * disk is full at rotation: nothing was written, the WAL stays healthy and
- * the call may be retried. EIO if the WAL has failed or fails now.
- * The record is durable only after ps_wal_flush.
+ * Writer only. EINVAL if lsn does not exceed the last LSN in the log or len
+ * exceeds max_record_size. ENOMEM, and ENOSPC or EDQUOT when starting a new
+ * segment, leave the record unwritten and can be retried. After a fatal
+ * error, append and flush return EIO until reopen.
  */
 int ps_wal_append(ps_wal *w, u64 lsn, const void *buf, usize len);
 

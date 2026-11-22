@@ -1199,3 +1199,29 @@ int fault_vfs_corrupt(fault_vfs *fv, const char *path, u64 off, u8 xor_mask)
     pthread_mutex_unlock(&fv->mu);
     return rv;
 }
+
+int fault_vfs_read_durable(
+    fault_vfs *fv,
+    const char *path,
+    u64 off,
+    void *buf,
+    usize len,
+    usize *got)
+{
+    pthread_mutex_lock(&fv->mu);
+    lookup l;
+    int rv = lookup_path(fv, path, &l);
+    if (rv == 0) {
+        node *n = l.node;
+        if (n == NULL) {
+            rv = ENOENT;
+        } else if (n->is_dir) {
+            rv = EISDIR;
+        } else {
+            *got = image_read(&n->dur, off, buf, len);
+        }
+    }
+    lookup_free(&l);
+    pthread_mutex_unlock(&fv->mu);
+    return rv;
+}
