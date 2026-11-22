@@ -16,14 +16,12 @@
  */
 
 #include "pagestore/compiler.h"
-
-#include <stddef.h>
-#include <stdint.h>
+#include "pagestore/types.h"
 
 void t_init(int argc, char **argv);
 int t_done(void); /* Returns 1 if the requested test name matched nothing. */
 
-int t_select(const char *name); /* 1 if the named test should run */
+bool t_select(const char *name);
 void t_begin(const char *name);
 void t_end(const char *name);
 
@@ -59,7 +57,7 @@ PS_NORETURN void t_fail_mem(
     const char *bs,
     const void *a,
     const void *b,
-    size_t n);
+    usize n);
 
 #define T_CHECK(c) \
     do { \
@@ -103,7 +101,7 @@ PS_NORETURN void t_fail_mem(
     do { \
         const void *t_a_ = (a); \
         const void *t_b_ = (b); \
-        size_t t_n_ = (n); \
+        usize t_n_ = (n); \
         if (t_n_ != 0 && memcmp(t_a_, t_b_, t_n_) != 0) \
             t_fail_mem(__FILE__, __LINE__, #a, #b, t_a_, t_b_, t_n_); \
     } while (0)
@@ -111,7 +109,7 @@ PS_NORETURN void t_fail_mem(
 #include <string.h>
 
 /* Reads PS_TEST_SCALE. Values outside 1..1000000 fall back to 1. */
-unsigned t_scale(void);
+u32 t_scale(void);
 
 /*
  * Creates a directory under TMPDIR, or /tmp by default. Call t_rmtree
@@ -123,4 +121,4 @@ char *t_tmpdir(void);
 void t_rmtree(const char *path);
 
 /* Monotonic clock in milliseconds. */
-uint64_t t_now_ms(void);
+u64 t_now_ms(void);

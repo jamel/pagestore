@@ -2,12 +2,11 @@
 #include "test.h"
 #include "util.h"
 
-#include <stdint.h>
 #include <string.h>
 
 static void test_set_clear(void)
 {
-    uint8_t m[16] = {0};
+    u8 m[16] = {0};
 
     ps_bit_set(m, 0);
     ps_bit_set(m, 9);
@@ -33,7 +32,7 @@ static void test_set_clear(void)
 
 static void test_find_clear(void)
 {
-    uint8_t m[16];
+    u8 m[16];
 
     memset(m, 0xFF, sizeof(m));
     ps_bit_clear(m, 70);
@@ -56,7 +55,7 @@ static void test_find_clear(void)
 /* A full-word read of this three-byte bitmap would overrun it. */
 static void test_find_clear_partial(void)
 {
-    uint8_t m[3];
+    u8 m[3];
 
     memset(m, 0xFF, sizeof(m));
     T_EQ(ps_bit_find_clear(m, 20, 0), 20);
@@ -68,7 +67,7 @@ static void test_find_clear_partial(void)
     T_EQ(ps_bit_find_clear(m, 20, 6), 19);
     T_EQ(ps_bit_find_clear(m, 5, 0), 5);
 
-    uint8_t one = 0xFF;
+    u8 one = 0xFF;
     T_EQ(ps_bit_find_clear(&one, 8, 0), 8);
     one = 0x7F;
     T_EQ(ps_bit_find_clear(&one, 8, 0), 7);
@@ -78,18 +77,18 @@ static void test_find_clear_partial(void)
 /* Use a bit-by-bit scan as the reference for the word search. */
 static void test_find_clear_exhaustive(void)
 {
-    uint8_t m[40];
-    uint32_t x = 12345;
+    u8 m[40];
+    u32 x = 12345;
 
     for (int round = 0; round < 50; round++) {
-        for (size_t i = 0; i < sizeof(m); i++) {
+        for (usize i = 0; i < sizeof(m); i++) {
             x = x * 1103515245u + 12345u;
             /* Long runs of set bits exercise scans that skip full words. */
-            m[i] = (x >> 16) % 4 ? 0xFF : (uint8_t) (x >> 8);
+            m[i] = (x >> 16) % 4 ? 0xFF : (u8) (x >> 8);
         }
-        for (uint32_t nbits = 0; nbits <= sizeof(m) * 8; nbits += 1 + nbits % 13) {
-            for (uint32_t from = 0; from <= nbits + 1; from++) {
-                uint32_t want = from;
+        for (u32 nbits = 0; nbits <= sizeof(m) * 8; nbits += 1 + nbits % 13) {
+            for (u32 from = 0; from <= nbits + 1; from++) {
+                u32 want = from;
                 while (want < nbits && ps_bit_test(m, want)) {
                     want++;
                 }
@@ -104,7 +103,7 @@ static void test_find_clear_exhaustive(void)
 
 static void test_count_set(void)
 {
-    uint8_t m[16] = {0};
+    u8 m[16] = {0};
 
     T_EQ(ps_bit_count_set(m, 128), 0);
     m[0] = 0xFF;
@@ -125,7 +124,7 @@ static void test_count_set(void)
 
 static void test_le_helpers(void)
 {
-    uint8_t b[9];
+    u8 b[9];
 
     ps_put_le32(b, 0x11223344u);
     T_EQ(b[0], 0x44);

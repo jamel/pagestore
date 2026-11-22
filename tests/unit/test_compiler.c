@@ -1,8 +1,6 @@
 #include "pagestore/compiler.h"
 #include "test.h"
 
-#include <stdint.h>
-
 /* These helpers fail -Werror=unused-parameter if PS_UNUSED misses an argument. */
 static int one(int a)
 {
@@ -10,7 +8,7 @@ static int one(int a)
     return 1;
 }
 
-static int three(int a, const char *b, double c)
+static int three(int a, const char *b, f64 c)
 {
     PS_UNUSED(a, b, c);
     return 3;

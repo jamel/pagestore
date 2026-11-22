@@ -6,13 +6,14 @@
  * ceil(nbits / 8) bytes, and ignore unused bits in the last byte.
  */
 
-#include <stdint.h>
+#include "pagestore/types.h"
 
-void ps_bit_set(uint8_t *m, uint32_t bit);
-void ps_bit_clear(uint8_t *m, uint32_t bit);
-int ps_bit_test(const uint8_t *m, uint32_t bit); /* 0 or 1 */
+void ps_bit_set(u8 *m, u32 bit);
+void ps_bit_clear(u8 *m, u32 bit);
+bool ps_bit_test(const u8 *m, u32 bit);
 
 /* Finds the first clear bit in [from, nbits), or returns nbits. */
-uint32_t ps_bit_find_clear(const uint8_t *m, uint32_t nbits, uint32_t from);
+u32 ps_bit_find_clear(const u8 *m, u32 nbits, u32 from);
 
-uint32_t ps_bit_count_set(const uint8_t *m, uint32_t nbits);
+/* The number of set bits below nbits. */
+u32 ps_bit_count_set(const u8 *m, u32 nbits);

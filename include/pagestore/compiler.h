@@ -6,6 +6,8 @@
  * link to the same symbols.
  */
 
+#include "pagestore/types.h"
+
 #ifdef __cplusplus
 #define PS_EXTERN_C_BEGIN extern "C" {
 #define PS_EXTERN_C_END }
@@ -31,8 +33,8 @@
 #define PS_UNLIKELY(x) __builtin_expect(!!(x), 0)
 
 /* PS_CTZ64 requires a nonzero argument. */
-#define PS_CTZ64(x) ((unsigned) __builtin_ctzll(x))
-#define PS_POPCOUNT64(x) ((unsigned) __builtin_popcountll(x))
+#define PS_CTZ64(x) ((u32) __builtin_ctzll(x))
+#define PS_POPCOUNT64(x) ((u32) __builtin_popcountll(x))
 
 /* PS_UNUSED accepts one to eight arguments and evaluates each once. */
 #define PS_UNUSED_1(a) ((void) (a))

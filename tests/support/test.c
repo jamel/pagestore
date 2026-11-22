@@ -12,7 +12,7 @@
 static const char *t_prog = "test";
 static const char *t_filter;
 static const char *t_current;
-static int t_matched;
+static bool t_matched;
 static int t_ran;
 
 void t_init(int argc, char **argv)
@@ -29,13 +29,13 @@ void t_init(int argc, char **argv)
     setvbuf(stdout, NULL, _IONBF, 0);
 }
 
-int t_select(const char *name)
+bool t_select(const char *name)
 {
     if (t_filter != NULL && strcmp(t_filter, name) != 0) {
-        return 0;
+        return false;
     }
-    t_matched = 1;
-    return 1;
+    t_matched = true;
+    return true;
 }
 
 void t_begin(const char *name)
@@ -141,15 +141,15 @@ void t_fail_mem(
     const char *bs,
     const void *a,
     const void *b,
-    size_t n)
+    usize n)
 {
     const unsigned char *pa = a, *pb = b;
-    size_t i = 0, diffs = 0;
+    usize i = 0, diffs = 0;
 
     while (i < n && pa[i] == pb[i]) {
         i++;
     }
-    for (size_t j = i; j < n; j++) {
+    for (usize j = i; j < n; j++) {
         diffs += pa[j] != pb[j];
     }
     t_where(file, line);
@@ -167,7 +167,7 @@ void t_fail_mem(
     t_abort();
 }
 
-unsigned t_scale(void)
+u32 t_scale(void)
 {
     const char *s = getenv("PS_TEST_SCALE");
     char *end;
@@ -183,14 +183,14 @@ unsigned t_scale(void)
         fprintf(stderr, "bad PS_TEST_SCALE '%s', using 1\n", s);
         return 1;
     }
-    return (unsigned) v;
+    return (u32) v;
 }
 
 char *t_tmpdir(void)
 {
     const char *base = getenv("TMPDIR");
     char *path;
-    size_t len;
+    usize len;
 
     if (base == NULL || *base == '\0') {
         base = "/tmp";
@@ -235,7 +235,7 @@ void t_rmtree(const char *path)
     }
 }
 
-uint64_t t_now_ms(void)
+u64 t_now_ms(void)
 {
     struct timespec ts;
 
@@ -243,5 +243,5 @@ uint64_t t_now_ms(void)
         const int rv = errno;
         t_fail(__FILE__, __LINE__, "clock_gettime: %s", strerror(rv));
     }
-    return (uint64_t) ts.tv_sec * 1000u + (uint64_t) ts.tv_nsec / 1000000u;
+    return (u64) ts.tv_sec * 1000u + (u64) ts.tv_nsec / 1000000u;
 }

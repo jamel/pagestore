@@ -12,7 +12,7 @@ static char *dir;
 
 static char *path(const char *name)
 {
-    size_t n = strlen(dir) + 1 + strlen(name) + 1;
+    usize n = strlen(dir) + 1 + strlen(name) + 1;
     char *p = malloc(n);
     T_CHECK(p != NULL);
     snprintf(p, n, "%s/%s", dir, name);
@@ -46,21 +46,21 @@ static void close_file(ps_file f)
     v->close(v->ctx, &f);
 }
 
-static uint64_t fsize(ps_file *f)
+static u64 fsize(ps_file *f)
 {
-    uint64_t sz = 0;
+    u64 sz = 0;
     T_OK(v->size(v->ctx, f, &sz));
     return sz;
 }
 
-static int all_zero(const uint8_t *b, size_t n)
+static bool all_zero(const u8 *b, usize n)
 {
-    for (size_t i = 0; i < n; i++) {
+    for (usize i = 0; i < n; i++) {
         if (b[i] != 0) {
-            return 0;
+            return false;
         }
     }
-    return 1;
+    return true;
 }
 
 /* list() collector: names joined into a sorted, fixed-size table. */
@@ -109,8 +109,8 @@ static void test_create_write_read(void)
     T_OK(v->pwrite(v->ctx, &f, "0123456789", 10, 4096));
     T_EQ(fsize(&f), 4106);
 
-    uint8_t buf[8192];
-    size_t got = 1234;
+    u8 buf[8192];
+    usize got = 1234;
     memset(buf, 0xAA, sizeof(buf));
     T_OK(v->pread(v->ctx, &f, buf, 4106, 0, &got));
     T_EQ(got, 4106);
@@ -170,8 +170,8 @@ static void test_preallocate(void)
     T_OK(v->preallocate(v->ctx, &f, 1u << 20));
     T_EQ(fsize(&f), 1u << 20);
 
-    static uint8_t buf[1u << 20];
-    size_t got = 0;
+    static u8 buf[1u << 20];
+    usize got = 0;
     memset(buf, 0xAA, sizeof(buf));
     T_OK(v->pread(v->ctx, &f, buf, sizeof(buf), 0, &got));
     T_EQ(got, sizeof(buf));
@@ -201,8 +201,8 @@ static void test_truncate(void)
 {
     setup();
     ps_file f = create("f");
-    uint8_t buf[200];
-    size_t got = 0;
+    u8 buf[200];
+    usize got = 0;
 
     memset(buf, 'z', sizeof(buf));
     T_OK(v->pwrite(v->ctx, &f, buf, sizeof(buf), 0));
@@ -256,7 +256,7 @@ static void test_rename_unlink_list(void)
     T_OK(v->open(v->ctx, c, 0, &f));
     T_EQ(fsize(&f), 3);
     char buf[8];
-    size_t got = 0;
+    usize got = 0;
     T_OK(v->pread(v->ctx, &f, buf, sizeof(buf), 0, &got));
     T_EQ(got, 3);
     T_MEMEQ(buf, "new", 3);

@@ -9,15 +9,13 @@
  */
 
 #include "pagestore/compiler.h"
-
-#include <stddef.h>
-#include <stdint.h>
+#include "pagestore/types.h"
 
 PS_EXTERN_C_BEGIN
 
 /* The caller owns the storage. Its VFS owns the contents. */
 typedef struct ps_file {
-    uint64_t opaque[2];
+    u64 opaque[2];
 } ps_file;
 
 /* Defined by the VFS. */
@@ -35,19 +33,19 @@ typedef int (*ps_vfs_list_fn)(ps_vfs_list_ctx *arg, const char *name);
 typedef struct ps_vfs {
     ps_vfs_ctx *ctx;
     /* Open read-write. PS_VFS_CREATE preserves existing contents. */
-    int (*open)(ps_vfs_ctx *ctx, const char *path, unsigned flags, ps_file *out);
+    int (*open)(ps_vfs_ctx *ctx, const char *path, u32 flags, ps_file *out);
     /* Also releases a lock acquired through lock. */
     void (*close)(ps_vfs_ctx *ctx, ps_file *f);
     /* A successful short read means EOF. */
-    int (*pread)(ps_vfs_ctx *ctx, ps_file *f, void *buf, size_t len, uint64_t off, size_t *got);
+    int (*pread)(ps_vfs_ctx *ctx, ps_file *f, void *buf, usize len, u64 off, usize *got);
     /* Success means all len bytes were written. */
-    int (*pwrite)(ps_vfs_ctx *ctx, ps_file *f, const void *buf, size_t len, uint64_t off);
+    int (*pwrite)(ps_vfs_ctx *ctx, ps_file *f, const void *buf, usize len, u64 off);
     /* Sync file data and size. Use fsync_dir for directory entries. */
     int (*fsync)(ps_vfs_ctx *ctx, ps_file *f);
-    int (*size)(ps_vfs_ctx *ctx, ps_file *f, uint64_t *out);
-    int (*truncate)(ps_vfs_ctx *ctx, ps_file *f, uint64_t size);
+    int (*size)(ps_vfs_ctx *ctx, ps_file *f, u64 *out);
+    int (*truncate)(ps_vfs_ctx *ctx, ps_file *f, u64 size);
     /* Reserve blocks for [0, size) and extend the file if needed. */
-    int (*preallocate)(ps_vfs_ctx *ctx, ps_file *f, uint64_t size);
+    int (*preallocate)(ps_vfs_ctx *ctx, ps_file *f, u64 size);
     int (*unlink)(ps_vfs_ctx *ctx, const char *path);
     /* Paths must share a directory. An existing target is atomically replaced. */
     int (*rename)(ps_vfs_ctx *ctx, const char *from, const char *to);

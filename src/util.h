@@ -6,9 +6,9 @@
  */
 
 #include "pagestore/compiler.h"
+#include "pagestore/types.h"
 
 #include <assert.h>
-#include <stdint.h>
 #include <string.h>
 
 /* Page images go to disk in host byte order. */
@@ -31,31 +31,31 @@ _Static_assert(
 #define PS_MIN(a, b) ((a) < (b) ? (a) : (b))
 #define PS_MAX(a, b) ((a) > (b) ? (a) : (b))
 
-static inline void ps_put_le32(uint8_t *p, uint32_t v)
+static inline void ps_put_le32(u8 *p, u32 v)
 {
-    p[0] = (uint8_t) v;
-    p[1] = (uint8_t) (v >> 8);
-    p[2] = (uint8_t) (v >> 16);
-    p[3] = (uint8_t) (v >> 24);
+    p[0] = (u8) v;
+    p[1] = (u8) (v >> 8);
+    p[2] = (u8) (v >> 16);
+    p[3] = (u8) (v >> 24);
 }
 
-static inline void ps_put_le64(uint8_t *p, uint64_t v)
+static inline void ps_put_le64(u8 *p, u64 v)
 {
-    ps_put_le32(p, (uint32_t) v);
-    ps_put_le32(p + 4, (uint32_t) (v >> 32));
+    ps_put_le32(p, (u32) v);
+    ps_put_le32(p + 4, (u32) (v >> 32));
 }
 
-static inline uint32_t ps_get_le32(const uint8_t *p)
+static inline u32 ps_get_le32(const u8 *p)
 {
-    return (uint32_t) p[0] | (uint32_t) p[1] << 8 | (uint32_t) p[2] << 16 | (uint32_t) p[3] << 24;
+    return (u32) p[0] | (u32) p[1] << 8 | (u32) p[2] << 16 | (u32) p[3] << 24;
 }
 
-static inline uint64_t ps_get_le64(const uint8_t *p)
+static inline u64 ps_get_le64(const u8 *p)
 {
-    return (uint64_t) ps_get_le32(p) | (uint64_t) ps_get_le32(p + 4) << 32;
+    return (u64) ps_get_le32(p) | (u64) ps_get_le32(p + 4) << 32;
 }
 
-static inline int ps_is_pow2(uint64_t v)
+static inline bool ps_is_pow2(u64 v)
 {
     return v != 0 && (v & (v - 1)) == 0;
 }

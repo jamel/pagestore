@@ -11,14 +11,14 @@
 
 #include <string.h>
 
-uint32_t ps_crc32c(uint32_t crc, const void *buf, size_t len)
+u32 ps_crc32c(u32 crc, const void *buf, usize len)
 {
-    const uint32_t (*tab)[256] = ps_crc32c_tab;
-    const uint8_t *p = buf;
+    const u32(*tab)[256] = ps_crc32c_tab;
+    const u8 *p = buf;
 
     crc = ~crc; /* Unwrap the public CRC to continue its running state. */
     while (len >= 8) {
-        uint64_t w;
+        u64 w;
         memcpy(&w, p, 8);
         w ^= crc;
         crc = tab[7][w & 0xFF] ^ tab[6][(w >> 8) & 0xFF] ^ tab[5][(w >> 16) & 0xFF] ^

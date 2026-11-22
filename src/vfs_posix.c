@@ -44,10 +44,10 @@ static int err(int rv)
 }
 
 /* Check the end offset before converting to signed off_t. */
-static int check_range(uint64_t off, size_t len)
+static int check_range(u64 off, usize len)
 {
-    const uint64_t max = (uint64_t) INT64_MAX;
-    if (off > max || (uint64_t) len > max - off) {
+    const u64 max = (u64) INT64_MAX;
+    if (off > max || (u64) len > max - off) {
         return EFBIG;
     }
     return 0;
@@ -69,7 +69,8 @@ static int open_retry(const char *path, int oflags, int *rv)
     }
 }
 
-static int ftruncate_retry(int fd, uint64_t size)
+/* The caller has already checked that size fits off_t. */
+static int ftruncate_retry(int fd, u64 size)
 {
     for (;;) {
         if (ftruncate(fd, (off_t) size) == 0) {
@@ -82,7 +83,8 @@ static int ftruncate_retry(int fd, uint64_t size)
     }
 }
 
-static int sync_fd(int fd, int is_dir)
+/* Sync file data and size, or directory entries when is_dir is set. */
+static int sync_fd(int fd, bool is_dir)
 {
 #ifdef __APPLE__
     PS_UNUSED(is_dir);
@@ -107,7 +109,7 @@ static int sync_fd(int fd, int is_dir)
 #endif
 }
 
-static int posix_open(ps_vfs_ctx *ctx, const char *path, unsigned flags, ps_file *out)
+static int posix_open(ps_vfs_ctx *ctx, const char *path, u32 flags, ps_file *out)
 {
     PS_UNUSED(ctx);
     int oflags = O_RDWR | O_CLOEXEC;
@@ -137,23 +139,17 @@ static void posix_close(ps_vfs_ctx *ctx, ps_file *f)
     set_fd(f, -1);
 }
 
-static int posix_pread(
-    ps_vfs_ctx *ctx,
-    ps_file *f,
-    void *buf,
-    size_t len,
-    uint64_t off,
-    size_t *got)
+static int posix_pread(ps_vfs_ctx *ctx, ps_file *f, void *buf, usize len, u64 off, usize *got)
 {
     PS_UNUSED(ctx);
     const int r = check_range(off, len);
     if (r != 0) {
         return r;
     }
-    uint8_t *p = buf;
-    size_t done = 0;
+    u8 *p = buf;
+    usize done = 0;
     while (done < len) {
-        const ssize_t n = pread(pf(f)->fd, p + done, len - done, (off_t) (off + done));
+        const isize n = pread(pf(f)->fd, p + done, len - done, (off_t) (off + done));
         if (n < 0) {
             const int rv = errno;
             if (rv == EINTR) {
@@ -164,23 +160,23 @@ static int posix_pread(
         if (n == 0) {
             break;
         }
-        done += (size_t) n;
+        done += (usize) n;
     }
     *got = done;
     return 0;
 }
 
-static int posix_pwrite(ps_vfs_ctx *ctx, ps_file *f, const void *buf, size_t len, uint64_t off)
+static int posix_pwrite(ps_vfs_ctx *ctx, ps_file *f, const void *buf, usize len, u64 off)
 {
     PS_UNUSED(ctx);
     const int r = check_range(off, len);
     if (r != 0) {
         return r;
     }
-    const uint8_t *p = buf;
-    size_t done = 0;
+    const u8 *p = buf;
+    usize done = 0;
     while (done < len) {
-        const ssize_t n = pwrite(pf(f)->fd, p + done, len - done, (off_t) (off + done));
+        const isize n = pwrite(pf(f)->fd, p + done, len - done, (off_t) (off + done));
         if (n < 0) {
             const int rv = errno;
             if (rv == EINTR) {
@@ -191,7 +187,7 @@ static int posix_pwrite(ps_vfs_ctx *ctx, ps_file *f, const void *buf, size_t len
         if (n == 0) {
             return EIO;
         }
-        done += (size_t) n;
+        done += (usize) n;
     }
     return 0;
 }
@@ -199,21 +195,21 @@ static int posix_pwrite(ps_vfs_ctx *ctx, ps_file *f, const void *buf, size_t len
 static int posix_fsync(ps_vfs_ctx *ctx, ps_file *f)
 {
     PS_UNUSED(ctx);
-    return sync_fd(pf(f)->fd, 0);
+    return sync_fd(pf(f)->fd, false);
 }
 
-static int posix_size(ps_vfs_ctx *ctx, ps_file *f, uint64_t *out)
+static int posix_size(ps_vfs_ctx *ctx, ps_file *f, u64 *out)
 {
     PS_UNUSED(ctx);
     struct stat st;
     if (fstat(pf(f)->fd, &st) != 0) {
         return err(errno);
     }
-    *out = (uint64_t) st.st_size;
+    *out = (u64) st.st_size;
     return 0;
 }
 
-static int posix_truncate(ps_vfs_ctx *ctx, ps_file *f, uint64_t size)
+static int posix_truncate(ps_vfs_ctx *ctx, ps_file *f, u64 size)
 {
     PS_UNUSED(ctx);
     const int r = check_range(size, 0);
@@ -223,7 +219,7 @@ static int posix_truncate(ps_vfs_ctx *ctx, ps_file *f, uint64_t size)
     return ftruncate_retry(pf(f)->fd, size);
 }
 
-static int posix_preallocate(ps_vfs_ctx *ctx, ps_file *f, uint64_t size)
+static int posix_preallocate(ps_vfs_ctx *ctx, ps_file *f, u64 size)
 {
     PS_UNUSED(ctx);
     int r = check_range(size, 0);
@@ -239,7 +235,7 @@ static int posix_preallocate(ps_vfs_ctx *ctx, ps_file *f, uint64_t size)
     if (fstat(fd, &st) != 0) {
         return err(errno);
     }
-    if ((uint64_t) st.st_size >= size) {
+    if ((u64) st.st_size >= size) {
         return 0;
     }
     /*
@@ -251,7 +247,7 @@ static int posix_preallocate(ps_vfs_ctx *ctx, ps_file *f, uint64_t size)
     fs.fst_flags = F_ALLOCATECONTIG | F_ALLOCATEALL;
     fs.fst_posmode = F_PEOFPOSMODE;
     fs.fst_offset = 0;
-    fs.fst_length = (off_t) (size - (uint64_t) st.st_size);
+    fs.fst_length = (off_t) (size - (u64) st.st_size);
     if (fcntl(fd, F_PREALLOCATE, &fs) == -1) {
         fs.fst_flags = F_ALLOCATEALL;
         if (fcntl(fd, F_PREALLOCATE, &fs) == -1) {
@@ -308,7 +304,7 @@ static int posix_fsync_dir(ps_vfs_ctx *ctx, const char *path)
     if (fd < 0) {
         return rv;
     }
-    rv = sync_fd(fd, 1);
+    rv = sync_fd(fd, true);
     close(fd);
     return rv;
 }
