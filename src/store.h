@@ -365,6 +365,8 @@ void ps_op_begin_format(ps_store *s);
 
 /* Recovery uses this to check whether its callback left an operation open. */
 bool ps_op_active_here(ps_store *s);
+/* Reports an open operation even when another thread owns it. */
+bool ps_op_in_progress(ps_store *s);
 
 /* Test hooks. Quiescent store only. */
 bool ps_test_has_entry(ps_store *s, u32 id);

@@ -1030,6 +1030,16 @@ static int open_existing(ps_wal *w, u64 *segs, usize n)
         rv = seal_at_open(w, newest, end, size);
     }
     const u64 last_lsn = rv == 0 ? last[n - 1] : 0;
+    if (rv == 0 && last_lsn < d) {
+        ps_log(
+            w->store,
+            PS_LOG_WARN,
+            "WAL %s: the last valid LSN %llu is below the store's durable LSN %llu "
+            "(operations not logged, or the newest segments were lost)",
+            w->dir,
+            (unsigned long long) last_lsn,
+            (unsigned long long) d);
+    }
     if (rv == 0) {
         bool clean = false;
         rv = publish(w, newest + 1, last_lsn, &w->seg, &clean);

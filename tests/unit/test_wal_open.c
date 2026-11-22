@@ -168,6 +168,28 @@ static ps_wal_seg_header seg_header(u64 seq)
     return h;
 }
 
+/* Probe the durable size with a one-byte read at off. */
+static bool durable_beyond(u64 seq, u64 off)
+{
+    char p[64];
+    seg_name(p, sizeof(p), seq);
+    u8 b = 0;
+    usize got = 0;
+    T_OK(fault_vfs_read_durable(fv, p, off, &b, 1, &got));
+    return got == 1;
+}
+
+static void truncate_seg(u64 seq, u64 size)
+{
+    char p[64];
+    seg_name(p, sizeof(p), seq);
+    ps_file f;
+    T_OK(vfs->open(vfs->ctx, p, 0, &f));
+    T_OK(vfs->truncate(vfs->ctx, &f, size));
+    T_OK(vfs->fsync(vfs->ctx, &f));
+    vfs->close(vfs->ctx, &f);
+}
+
 /* Number of *.wal files in the WAL directory, and of *.tmp files. */
 struct ps_vfs_list_ctx {
     u32 tmps;
@@ -272,6 +294,37 @@ static u64 check_iter_tagged(
 static u64 check_iter(ps_wal *w, u64 from_lsn, u32 fixed_len, u64 *count)
 {
     return check_iter_tagged(w, from_lsn, fixed_len, UINT64_MAX, 0, count);
+}
+
+/* Record bytes only, without the segment header. */
+static u64 seg_bytes(u64 first, u64 last)
+{
+    u64 n = 0;
+    for (u64 lsn = first; lsn <= last; lsn++) {
+        n += ps_wal_rec_size(rec_len(lsn));
+    }
+    return n;
+}
+
+/* Count records before the first error. ENOENT marks a clean end. */
+static int iter_until_err(ps_wal *w, u64 from_lsn, u64 *count)
+{
+    ps_wal_iter *it = NULL;
+    T_OK(ps_wal_iter_open(w, from_lsn, &it));
+    *count = 0;
+    int rv = 0;
+    for (;;) {
+        u64 lsn = 0;
+        const void *buf = NULL;
+        usize len = 0;
+        rv = ps_wal_iter_next(it, &lsn, &buf, &len);
+        if (rv != 0) {
+            break;
+        }
+        (*count)++;
+    }
+    ps_wal_iter_close(it);
+    return rv;
 }
 
 /* Advance the store LSN independently of the WAL by committing one allocation. */
@@ -786,26 +839,191 @@ static void test_seal_failure(void)
     T_CHECK(saw_ok);
     teardown();
 
-    /* The seal fsync specifically: the open fails and the tail is not sealed. */
+    /*
+     * Find the failure that shortened the live file but left its durable
+     * size unchanged. Losing power here should restore the unsealed tail.
+     */
+    const u64 end = PS_WAL_SEG_HEADER_SIZE + seg_bytes(1, 4);
+    u32 found = 0;
+    bool opened = false;
+    for (u64 k = 1; k <= 40 && !opened; k++) {
+        ps_store *s = setup();
+        ps_wal_config c = wal_config();
+        c.buffer_size = 0;
+        ps_wal *w = open_wal_cfg(s, &c);
+        append_range(w, 1, 4, 0);
+        T_OK(ps_wal_flush(w, 4));
+        close_both(s, w);
+        s = open_store(0);
+        fault_vfs_fail_at(fv, fault_vfs_points(fv) + k, EIO);
+        const int rv = try_open_wal(s, &w);
+        fault_vfs_fail_at(fv, 0, 0);
+        if (rv == 0) {
+            opened = true;
+            close_both(s, w);
+            teardown();
+            break;
+        }
+        T_ERR(rv, EIO);
+        ps_close(s);
+        if (count_files().segs == 1 && seg_size(1) == end && durable_beyond(1, end)) {
+            found++;
+            fault_vfs_reboot(fv, FAULT_DROP_UNSYNCED);
+            T_EQ(seg_size(1), SEG);
+            s = open_store(0);
+            w = open_wal(s);
+            T_EQ(check_iter(w, 1, 0, NULL), 4);
+            T_EQ(seg_size(1), end);
+            close_both(s, w);
+        }
+        teardown();
+    }
+    T_CHECK(opened);
+    T_EQ(found, 1);
+}
+
+static void test_seal_fsyncs_already_truncated(void)
+{
+    /*
+     * Failed rotation leaves the live segment at the right size with
+     * unsynced records. Reopen still needs to sync it.
+     */
     ps_store *s = setup();
     ps_wal_config c = wal_config();
     c.buffer_size = 0;
     ps_wal *w = open_wal_cfg(s, &c);
-    append_range(w, 1, 4, 0);
-    T_OK(ps_wal_flush(w, 4));
-    close_both(s, w);
-    s = open_store(0);
-    /* Points of ps_wal_open here: mkdir (EEXIST), fsync_dir(parent), truncate, fsync, ... */
-    fault_vfs_fail_at(fv, fault_vfs_points(fv) + 4, EIO);
-    T_ERR(try_open_wal(s, &w), EIO);
+    append_range(w, 1, PER_SEG, BIG);
+    /* With buffering disabled, rotation truncates at point 1 and syncs at point 2. */
+    fault_vfs_fail_at(fv, fault_vfs_points(fv) + 2, EIO);
+    T_ERR(append_tagged(w, PER_SEG + 1, BIG, 0), EIO);
     fault_vfs_fail_at(fv, 0, 0);
-    T_EQ(count_files().segs, 1); /* nothing published */
-    ps_close(s);
+    const u64 end = PS_WAL_SEG_HEADER_SIZE + PER_SEG * ps_wal_rec_size(BIG);
+    T_EQ(seg_size(1), end);
+    T_CHECK(durable_beyond(1, end));
+    T_EQ(count_files().segs, 1);
+    close_both(s, w);
+
     s = open_store(0);
     w = open_wal(s);
-    T_EQ(check_iter(w, 1, 0, NULL), 4);
+    T_EQ(check_iter(w, 1, BIG, NULL), PER_SEG);
+    close_both(s, w);
+    fault_vfs_reboot(fv, FAULT_DROP_UNSYNCED);
+    s = open_store(0);
+    w = open_wal(s);
+    u64 cnt = 0;
+    T_EQ(check_iter(w, 1, BIG, &cnt), PER_SEG);
+    T_EQ(cnt, PER_SEG);
     close_both(s, w);
     teardown();
+}
+
+typedef enum iter_change {
+    CH_CORRUPT_RECORD,
+    CH_TRUNCATE_MID_RECORD,
+    CH_TRUNCATE_AT_RECORD,
+    CH_UNLINK,
+    CH_HEADER_PREV,
+    CH_HEADER_CRC,
+    CH_COUNT
+} iter_change;
+
+static void test_iter_detects_change(void)
+{
+    /* Change a validated segment after open to exercise the iterator checks. */
+    const u64 rs = ps_wal_rec_size(BIG);
+    for (u32 ch = 0; ch < CH_COUNT; ch++) {
+        build_segments(2 * PER_SEG + 3);
+        ps_store *s = open_store(0);
+        ps_wal *w = open_wal(s);
+        char p[64];
+        seg_name(p, sizeof(p), 2);
+        u64 want_count = PER_SEG;
+        switch ((iter_change) ch) {
+            case CH_CORRUPT_RECORD:
+                seg_name(p, sizeof(p), 1);
+                T_OK(fault_vfs_corrupt(fv, p, PS_WAL_SEG_HEADER_SIZE + rs + 100, 0x10));
+                want_count = 1;
+                break;
+            case CH_TRUNCATE_MID_RECORD:
+                truncate_seg(2, PS_WAL_SEG_HEADER_SIZE + 3 * rs + 50);
+                want_count = PER_SEG + 3;
+                break;
+            case CH_TRUNCATE_AT_RECORD:
+                truncate_seg(2, PS_WAL_SEG_HEADER_SIZE + 3 * rs);
+                want_count = PER_SEG + 3;
+                break;
+            case CH_UNLINK:
+                unlink_seg(2);
+                break;
+            case CH_HEADER_PREV: {
+                u8 hdr[PS_WAL_SEG_HEADER_SIZE];
+                const ps_wal_seg_header h = {.seq = 2, .prev_lsn = PER_SEG - 1};
+                ps_wal_seg_header_encode(&h, hdr);
+                ps_file f;
+                T_OK(vfs->open(vfs->ctx, p, 0, &f));
+                T_OK(vfs->pwrite(vfs->ctx, &f, hdr, sizeof(hdr), 0));
+                T_OK(vfs->fsync(vfs->ctx, &f));
+                vfs->close(vfs->ctx, &f);
+                break;
+            }
+            case CH_HEADER_CRC:
+                T_OK(fault_vfs_corrupt(fv, p, 33, 0x01));
+                break;
+            case CH_COUNT:
+                break;
+        }
+        u64 n = 0;
+        T_ERR(iter_until_err(w, 1, &n), EBADMSG);
+        T_EQ(n, want_count);
+        close_both(s, w);
+        teardown();
+    }
+}
+
+static void test_crash_truncate(void)
+{
+    /*
+     * Crash through a checkpoint and its truncation hook. Whatever durable
+     * LSN survives, the iterator should return exactly the records after it.
+     */
+    const u64 n = 3 * PER_SEG + 2;
+    u64 crashes = 0;
+    for (u64 p = 1;; p++) {
+        ps_store *s = setup_seed(p);
+        ps_wal *w = open_wal(s);
+        for (u64 lsn = 1; lsn <= n; lsn++) {
+            append_rec(w, lsn, BIG);
+            T_OK(ps_wal_flush(w, lsn));
+            commit_op(s, lsn);
+            if (lsn == PER_SEG + 4) {
+                T_OK(ps_checkpoint(s));
+            }
+        }
+        T_CHECK(!seg_exists(1));
+        fault_vfs_crash_at(fv, fault_vfs_points(fv) + p);
+        const int crv = ps_checkpoint(s);
+        const bool crashed = fault_vfs_crashed(fv);
+        T_CHECK(crv == 0 || crashed);
+        fault_vfs_reboot(fv, FAULT_RANDOM_UNSYNCED);
+        close_both(s, w);
+        s = open_store(0);
+        const u64 d = ps_durable_lsn(s);
+        T_CHECK(d == PER_SEG + 4 || d == n);
+        w = open_wal(s);
+        u64 cnt = 0;
+        u64 last = check_iter(w, d + 1, BIG, &cnt);
+        if (d < n) {
+            T_EQ(last, n);
+        }
+        T_EQ(cnt, n - d);
+        close_both(s, w);
+        teardown();
+        if (!crashed) {
+            break;
+        }
+        crashes++;
+    }
+    T_CHECK(crashes > 20);
 }
 
 static void test_double_crash_no_resurrection(void)
@@ -893,52 +1111,67 @@ static u64 crash_check(ps_wal *w, u64 acked)
     return want - 1;
 }
 
+/*
+ * Crash during the workload at p and during open at q (0 skips it). A successful
+ * open keeps every acknowledged flush, and another power loss keeps that prefix.
+ */
+static bool crash_case(const ps_wal_config *c, u64 p, u64 q, bool *open_crashed)
+{
+    ps_store *s = setup_seed(p * 131 + q);
+    ps_wal *w = open_wal_cfg(s, c);
+    fault_vfs_crash_at(fv, fault_vfs_points(fv) + p);
+    u64 acked = 0;
+    crash_workload(w, &acked);
+    const bool crashed = fault_vfs_crashed(fv);
+    fault_vfs_reboot(fv, p % 3 == 0 ? FAULT_DROP_UNSYNCED : FAULT_RANDOM_UNSYNCED);
+    close_both(s, w);
+
+    *open_crashed = false;
+    s = open_store(0);
+    if (q != 0) {
+        fault_vfs_crash_at(fv, fault_vfs_points(fv) + q);
+    }
+    w = NULL;
+    int rv = try_open_wal_cfg(s, c, &w);
+    if (rv != 0) {
+        T_ERR(rv, EIO);
+        T_CHECK(fault_vfs_crashed(fv));
+        *open_crashed = true;
+        ps_close(s);
+        fault_vfs_reboot(fv, q % 2 == 0 ? FAULT_DROP_UNSYNCED : FAULT_RANDOM_UNSYNCED);
+        s = open_store(0);
+        w = open_wal_cfg(s, c);
+    }
+    fault_vfs_crash_at(fv, 0);
+    const u64 prefix = crash_check(w, acked);
+    close_both(s, w);
+    fault_vfs_reboot(fv, FAULT_RANDOM_UNSYNCED);
+    s = open_store(0);
+    w = open_wal_cfg(s, c);
+    T_EQ(crash_check(w, acked), prefix);
+    close_both(s, w);
+    teardown();
+    return crashed;
+}
+
 static u64 crash_every_point(usize buffer_size)
 {
     ps_wal_config c = wal_config();
     c.buffer_size = buffer_size;
     u64 total = 0;
     for (u64 p = 1;; p++) {
-        ps_store *s = setup_seed(p);
-        ps_wal *w = open_wal_cfg(s, &c);
-        const u64 base = fault_vfs_points(fv);
-        fault_vfs_crash_at(fv, base + p);
-        u64 acked = 0;
-        crash_workload(w, &acked);
-        const bool crashed = fault_vfs_crashed(fv);
-        fault_vfs_reboot(fv, p % 3 == 0 ? FAULT_DROP_UNSYNCED : FAULT_RANDOM_UNSYNCED);
-        close_both(s, w);
-
-        /* Reopen, crashing at point q of the WAL open (0 = no crash). */
-        u64 q = p % 7;
-        u64 prefix = 0;
-        for (;;) {
-            s = open_store(0);
-            if (q != 0) {
-                fault_vfs_crash_at(fv, fault_vfs_points(fv) + q);
-            }
-            w = NULL;
-            const int rv = try_open_wal_cfg(s, &c, &w);
-            if (rv == 0) {
-                fault_vfs_crash_at(fv, 0);
-                prefix = crash_check(w, acked);
-                close_both(s, w);
+        bool crashed = false;
+        u64 q = 0;
+        for (;; q++) {
+            bool open_crashed = false;
+            crashed = crash_case(&c, p, q, &open_crashed);
+            total++;
+            if (q > 0 && !open_crashed) {
                 break;
             }
-            T_ERR(rv, EIO);
-            T_CHECK(fault_vfs_crashed(fv));
-            ps_close(s);
-            fault_vfs_reboot(fv, FAULT_RANDOM_UNSYNCED);
-            q = 0;
         }
-        /* And once more after a power loss: the sealed prefix stays exactly. */
-        fault_vfs_reboot(fv, FAULT_RANDOM_UNSYNCED);
-        s = open_store(0);
-        w = open_wal_cfg(s, &c);
-        T_EQ(crash_check(w, acked), prefix);
-        close_both(s, w);
-        teardown();
-        total++;
+        /* The first clean run follows mkdir, two syncs and six publish points. */
+        T_CHECK(q >= 10);
         if (!crashed) {
             break;
         }
@@ -948,8 +1181,8 @@ static u64 crash_every_point(usize buffer_size)
 
 static void test_crash_every_point(void)
 {
-    T_CHECK(crash_every_point(0) > 100);
-    T_CHECK(crash_every_point(8192) > 20);
+    T_CHECK(crash_every_point(0) > 1000);
+    T_CHECK(crash_every_point(8192) > 200);
 }
 
 int main(int argc, char **argv)
@@ -973,6 +1206,9 @@ int main(int argc, char **argv)
     T_RUN(test_tmp_deleted);
     T_RUN(test_repeated_reopen_no_appends);
     T_RUN(test_seal_failure);
+    T_RUN(test_seal_fsyncs_already_truncated);
+    T_RUN(test_iter_detects_change);
+    T_RUN(test_crash_truncate);
     T_RUN(test_double_crash_no_resurrection);
     T_RUN(test_crash_every_point);
     return t_done();

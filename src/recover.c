@@ -17,13 +17,19 @@ static int recover_misuse(ps_store *s, const char *why)
 
 int ps_recover(ps_store *store, ps_wal *wal, ps_apply_fn apply, ps_apply_ctx *ctx)
 {
-    if (store == NULL || wal == NULL || apply == NULL) {
+    if (store == NULL) {
         return EINVAL;
+    }
+    if (wal == NULL) {
+        return recover_misuse(store, "wal is NULL");
+    }
+    if (apply == NULL) {
+        return recover_misuse(store, "apply is NULL");
     }
     if (ps_wal_store(wal) != store) {
         return recover_misuse(store, "the WAL was opened for another store");
     }
-    if (ps_op_active_here(store)) {
+    if (ps_op_in_progress(store)) {
         return recover_misuse(store, "an operation is in progress");
     }
     const u64 d = ps_durable_lsn(store);

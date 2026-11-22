@@ -141,6 +141,11 @@ bool ps_op_active_here(ps_store *s)
     return op_owner_check(s) == OP_MINE;
 }
 
+bool ps_op_in_progress(ps_store *s)
+{
+    return op_owner_check(s) != OP_NONE;
+}
+
 static void log_not_owner(ps_store *s, op_owner_state st, const char *what)
 {
     if (st == OP_NONE) {

@@ -6,6 +6,9 @@
 #include "util.h"
 
 #include <errno.h>
+#include <pthread.h>
+#include <sched.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -262,6 +265,26 @@ static void test_recover_twice_einval(void)
     fault_vfs_destroy(fv);
 }
 
+/* A thread that holds an operation open until told to abort it. */
+typedef struct op_holder {
+    ps_store *s;
+    u64 lsn;
+    atomic_bool begun;
+    atomic_bool release;
+} op_holder;
+
+static void *hold_op(void *arg)
+{
+    op_holder *h = arg;
+    T_OK(ps_op_begin(h->s, h->lsn));
+    atomic_store(&h->begun, true);
+    while (!atomic_load(&h->release)) {
+        sched_yield();
+    }
+    ps_op_abort(h->s);
+    return NULL;
+}
+
 static void test_recover_misuse(void)
 {
     u32 ids[NREC + 1];
@@ -279,6 +302,19 @@ static void test_recover_misuse(void)
     T_OK(ps_open("/other", &cfg, PS_CREATE, &other));
     T_ERR(ps_recover(other, w, apply_rec, &ctx), EINVAL);
     ps_close(other);
+
+    op_holder h = {.s = s, .lsn = CKPT_LSN + 100};
+    atomic_init(&h.begun, false);
+    atomic_init(&h.release, false);
+    pthread_t t;
+    T_EQ(pthread_create(&t, NULL, hold_op, &h), 0);
+    while (!atomic_load(&h.begun)) {
+        sched_yield();
+    }
+    T_ERR(ps_recover(s, w, apply_rec, &ctx), EINVAL);
+    atomic_store(&h.release, true);
+    T_EQ(pthread_join(t, NULL), 0);
+    T_EQ(ctx.nseen, 0);
 
     T_OK(ps_op_begin(s, CKPT_LSN + 100));
     T_ERR(ps_recover(s, w, apply_rec, &ctx), EINVAL);
