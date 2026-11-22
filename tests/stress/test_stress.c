@@ -152,6 +152,7 @@ static bool hist_lookup(stress *st, u32 id, u64 lsn, u64 *lsn_out)
 /* mu held for writing. */
 static void hist_push(stress *st, u32 id, u64 lsn, bool freed)
 {
+    T_CHECK(id < ID_MAX); /* keeps id_end <= ID_MAX */
     hist *h = &st->ids[id];
     T_CHECK(h->n == 0 || h->v[h->n - 1].lsn < lsn);
     if (h->n == h->cap) {
@@ -446,8 +447,10 @@ static void check_final(stress *st, writer *w, ps_store *s)
     ps_snapshot *sn = NULL;
     T_OK(ps_snapshot_open(s, &sn));
     T_EQ(ps_snapshot_lsn(sn), L);
+    const u32 end = atomic_load(&st->id_end);
+    T_CHECK(end <= ID_MAX);
     u32 n = 0;
-    for (u32 id = 1; id < atomic_load(&st->id_end); id++) {
+    for (u32 id = 1; id < end; id++) {
         u64 want = 0;
         const bool live = hist_lookup(st, id, L, &want);
         T_EQ(live, w->live[id]);
