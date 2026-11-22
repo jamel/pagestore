@@ -48,6 +48,18 @@ void ps_log(ps_store *s, int level, const char *fmt, ...)
     s->cfg.log(s->cfg.log_ctx, level, msg);
 }
 
+const char *ps_strerror(int err, char *buf, usize n)
+{
+#if defined(__GLIBC__) && defined(_GNU_SOURCE)
+    return strerror_r(err, buf, n); /* GNU strerror_r can return a static string. */
+#else
+    if (strerror_r(err, buf, n) != 0) {
+        snprintf(buf, n, "unknown error %d", err);
+    }
+    return buf;
+#endif
+}
+
 /* These checks can run before opening the backend. */
 static int check_config(const ps_config *cfg)
 {
@@ -77,6 +89,9 @@ static void store_free(ps_store *s)
     free(s->op.groups);
     free(s->ckpt_items);
     free(s->ckpt_buf);
+    if (s->mem_init) {
+        ps_ckpt_sync_destroy(s);
+    }
     if (s->reg_init) {
         pthread_mutex_destroy(&s->reg_mu);
     }
@@ -113,6 +128,11 @@ static int init_locks(ps_store *s)
         return rv;
     }
     s->reg_init = true;
+    rv = ps_ckpt_sync_init(s);
+    if (rv != 0) {
+        return rv;
+    }
+    s->mem_init = true;
     return 0;
 }
 
@@ -261,6 +281,7 @@ int ps_open_backend(const ps_backend *be, const ps_config *cfg, u32 flags, ps_st
     atomic_init(&s->snapshots_open, 0);
     atomic_init(&s->snapshots_cut_off, 0);
     atomic_init(&s->snap_bytes, 0);
+    atomic_init(&s->writer_waits, 0);
     atomic_init(&s->ckpt_ref.dead, false);
     s->ckpt_ref.is_ckpt = true;
 
@@ -307,7 +328,12 @@ int ps_open_backend(const ps_backend *be, const ps_config *cfg, u32 flags, ps_st
             rv = load_groups(s, info.num_groups);
         }
     }
+    /* Start the thread only after loading or formatting the store. */
+    if (rv == 0 && cfg->checkpoint_thread) {
+        rv = ps_ckpt_thread_start(s);
+    }
     if (rv != 0) {
+        ps_ckpt_thread_stop(s);
         s->be.close(s->be.ctx);
         store_free(s);
         return rv;
@@ -323,7 +349,11 @@ void ps_close(ps_store *s)
     }
     PS_ASSERT(!atomic_load(&s->op_active));
     PS_ASSERT(atomic_load(&s->snapshots_open) == 0);
+    /* The checkpointer can still be using the backend and cache. */
+    ps_ckpt_thread_stop(s);
+    pthread_mutex_lock(&s->reg_mu);
     PS_ASSERT(!s->ckpt_running && s->reg_head == NULL);
+    pthread_mutex_unlock(&s->reg_mu);
     s->be.close(s->be.ctx);
     store_free(s);
 }
@@ -367,6 +397,7 @@ void ps_stats(const ps_store *s, struct ps_stats *out)
     out->snapshots_cut_off = atomic_load_explicit(&s->snapshots_cut_off, memory_order_relaxed);
     out->checkpoints_run = atomic_load_explicit(&s->checkpoints_run, memory_order_relaxed);
     out->checkpoints_failed = atomic_load_explicit(&s->checkpoints_failed, memory_order_relaxed);
+    out->writer_waits = atomic_load_explicit(&s->writer_waits, memory_order_relaxed);
     out->committed_lsn = ps_committed_lsn(s);
     out->durable_lsn = ps_durable_lsn(s);
     out->failed = atomic_load_explicit(&s->failed, memory_order_acquire);

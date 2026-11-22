@@ -47,7 +47,14 @@ int ps_page_in(ps_store *s, ps_entry *e, ps_vnode *frameless, bool writer, ps_vn
 
     u32 f = PS_NO_FRAME;
     ps_vnode *v = NULL;
-    int rv = ps_mem_frame(s, writer, &f);
+    /*
+     * A failed store reads only from memory because a fatal checkpoint can
+     * leave a partly applied image on disk.
+     */
+    int rv = atomic_load_explicit(&s->failed, memory_order_acquire) ? EIO : 0;
+    if (rv == 0) {
+        rv = ps_mem_frame(s, writer, &f);
+    }
     if (rv == 0 && frameless == NULL) {
         rv = ps_vnode_new(s->pt, &v);
     }

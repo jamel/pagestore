@@ -822,7 +822,7 @@ static void test_merge_back_both_lists(void)
     T_OK(ps_op_begin(s, 2));
     write_text(1, "B");
     ps_op_commit(s);
-    T_EQ(stats().frames_dirty, 4); /* page 1 is on both lists */
+    T_EQ(stats().frames_dirty, 3); /* page 1 is on both lists, counted once */
     T_EQ(stats().frames_retired, 1);
     mb_block_writes(mb, false);
     T_ERR(bg_join(&b), ENOSPC);

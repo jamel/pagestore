@@ -145,5 +145,7 @@ void ps_mark_dirty(ps_store *s, ps_entry *e)
     }
     e->dirty_next[i] = s->dirty_head[i];
     s->dirty_head[i] = e;
-    atomic_fetch_add_explicit(&s->frames_dirty, 1, memory_order_relaxed);
+    if (was == 0) {
+        atomic_fetch_add_explicit(&s->frames_dirty, 1, memory_order_relaxed);
+    }
 }

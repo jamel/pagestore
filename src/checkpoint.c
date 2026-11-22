@@ -5,26 +5,17 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 /*
- * Checkpoint, the reader registry and the log hooks. The
- * retire queue is in snapshot.c.
+ * Checkpoints make a committed image durable. Swapping dirty lists lets
+ * writers keep committing while a checkpoint writes the older image.
  *
- * Locks: a checkpoint holds ckpt_mu for its whole run; it takes reg_mu
- * at its start and end, and page latches one at a time, either alone or
- * inside reg_mu. Backend calls and the hooks run with ckpt_mu only.
- *
- * What keeps the versions a checkpoint at L reads alive and unchanged
- * without holding latches across its I/O:
- * - it is registered as a reader at L, so a commit that replaces a version
- *   visible at L retires it instead of freeing it (op.c), and the retire
- *   queue frees it only after the checkpoint has unregistered;
- * - committed user versions are immutable, and the bitmap
- *   copy rule at commit (op.c) keeps a bitmap version of LSN <= L unchanged;
- * - versions in a dirty set are never evictable (they are not ON_DISK).
+ * The checkpoint registers at its target LSN to keep old user versions
+ * alive across I/O. Commit copies any bitmap the checkpoint can see.
+ * Dirty frames stay resident. Backend calls, log hooks and logging run
+ * with only ckpt_mu held.
  */
-
-/* ---- registry ----------------------------------------------------------- */
 
 /* ---- registry ------------------------------------------------------------ */
 
@@ -74,9 +65,24 @@ bool ps_reg_any_at_or_above(const ps_store *s, u64 c)
 void ps_store_fail(ps_store *s, int err)
 {
     const bool was = atomic_exchange_explicit(&s->failed, true, memory_order_acq_rel);
-    if (!was) {
-        ps_log(s, PS_LOG_ERROR, "store failed (error %d); reopen to recover", err);
+    if (was) {
+        return;
     }
+    /*
+     * If a waiter saw the old flag under mem_mu, this broadcast still
+     * reaches it after it starts waiting.
+     */
+    pthread_mutex_lock(&s->mem_mu);
+    pthread_cond_broadcast(&s->ckpt_wait_cv);
+    pthread_cond_signal(&s->ckpt_thread_cv);
+    pthread_mutex_unlock(&s->mem_mu);
+    char eb[128];
+    ps_log(
+        s,
+        PS_LOG_ERROR,
+        "store failed: %s (error %d); reopen to recover",
+        ps_strerror(err, eb, sizeof(eb)),
+        err);
 }
 
 void ps_set_log_hooks(ps_store *s, const ps_log_hooks *hooks)
@@ -90,12 +96,61 @@ void ps_set_log_hooks(ps_store *s, const ps_log_hooks *hooks)
     pthread_mutex_unlock(&s->ckpt_mu);
 }
 
-int ps_checkpoint(ps_store *s)
+/* ---- checkpoint attempts -------------------------------------------------- */
+
+/* Monotonic time in milliseconds for the retry and periodic timers. */
+static u64 now_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (u64) ts.tv_sec * 1000u + (u64) ts.tv_nsec / 1000000u;
+}
+
+#define PS_BACKOFF_MIN_MS 100u
+#define PS_BACKOFF_MAX_MS 10000u
+
+/*
+ * ckpt_mu serializes attempts. Publish the counter and result under
+ * mem_mu so a waiter can tell when its requested attempt has finished.
+ */
+static int ckpt_attempt(ps_store *s, bool bg)
 {
     pthread_mutex_lock(&s->ckpt_mu);
+    pthread_mutex_lock(&s->mem_mu);
+    s->ckpt_started++;
+    s->ckpt_inflight = true;
+    pthread_mutex_unlock(&s->mem_mu);
+
+    s->ckpt_bg = bg;
     const int rv = ps_checkpoint_run(s);
+    s->ckpt_bg = false;
+
+    pthread_mutex_lock(&s->mem_mu);
+    s->ckpt_done = s->ckpt_started;
+    s->ckpt_inflight = false;
+    s->ckpt_last_err = rv;
+    const u64 now = now_ms();
+    s->ckpt_last_end_ms = now;
+    if (rv == 0) {
+        s->ckpt_backoff_ms = 0;
+        s->ckpt_retry_at_ms = 0;
+    } else {
+        s->ckpt_backoff_ms = s->ckpt_backoff_ms == 0 ?
+            PS_BACKOFF_MIN_MS :
+            PS_MIN(s->ckpt_backoff_ms * 2u, PS_BACKOFF_MAX_MS);
+        s->ckpt_retry_at_ms = now + s->ckpt_backoff_ms;
+    }
+    if (s->ckpt_waiters > 0) {
+        pthread_cond_broadcast(&s->ckpt_wait_cv);
+    }
+    pthread_mutex_unlock(&s->mem_mu);
     pthread_mutex_unlock(&s->ckpt_mu);
     return rv;
+}
+
+int ps_checkpoint(ps_store *s)
+{
+    return ckpt_attempt(s, false);
 }
 
 /* ---- checkpoint ---------------------------------------------------------- */
@@ -120,10 +175,8 @@ static void free_bitmap_copies(ps_store *s)
 }
 
 /*
- * After a non-fatal failure (reg_mu held): moves every entry of the
- * checkpoint's list into next. The next bit is set before the old one
- * is cleared, so the entry never looks clean and is never released. An
- * entry already in next loses one membership.
+ * Set the next dirty bit before clearing the checkpoint bit. A momentary
+ * clean entry could be released. Hold reg_mu throughout the merge.
  */
 static void merge_back(ps_store *s)
 {
@@ -136,9 +189,7 @@ static void merge_back(ps_store *s)
         ps_entry *next = e->dirty_next[c];
         e->dirty_next[c] = NULL;
         const u8 was = atomic_fetch_or_explicit(&e->dirty, nbit, memory_order_relaxed);
-        if ((was & nbit) != 0) {
-            atomic_fetch_sub_explicit(&s->frames_dirty, 1, memory_order_relaxed);
-        } else {
+        if ((was & nbit) == 0) {
             e->dirty_next[n] = s->dirty_head[n];
             s->dirty_head[n] = e;
         }
@@ -171,13 +222,19 @@ static int ckpt_failed(ps_store *s, u64 L, int err, bool fatal, bool began)
     ps_retire_process(s);
     pthread_mutex_unlock(&s->reg_mu);
     atomic_fetch_add_explicit(&s->checkpoints_failed, 1, memory_order_relaxed);
+    /* A background failure has no caller to see it, so log it at ERROR. */
+    char eb[128];
     ps_log(
         s,
-        fatal ? PS_LOG_ERROR : PS_LOG_WARN,
-        "checkpoint at LSN %llu failed (error %d)%s",
+        fatal || s->ckpt_bg ? PS_LOG_ERROR : PS_LOG_WARN,
+        "%scheckpoint at LSN %llu failed: %s (error %d)%s",
+        s->ckpt_bg ? "background " : "",
         (unsigned long long) L,
+        ps_strerror(err, eb, sizeof(eb)),
         err,
-        fatal ? "" : "; will retry");
+        fatal          ? "; the store has failed" :
+            s->ckpt_bg ? "; will retry" :
+                         "");
     return fatal ? EIO : err;
 }
 
@@ -279,8 +336,9 @@ static void mark_written(ps_store *s, u32 n, u8 cbit)
         v->flags |= PS_VF_ON_DISK;
         const u8 was = atomic_fetch_and_explicit(&e->dirty, (u8) ~cbit, memory_order_relaxed);
         PS_ASSERT((was & cbit) != 0);
-        PS_UNUSED(was);
-        atomic_fetch_sub_explicit(&s->frames_dirty, 1, memory_order_relaxed);
+        if ((was & (u8) ~cbit) == 0) {
+            atomic_fetch_sub_explicit(&s->frames_dirty, 1, memory_order_relaxed);
+        }
         ps_drop_lone_head(s, e);
         ps_update_evictable(s, e);
         ps_entry_maybe_release(s->pt, e);
@@ -363,4 +421,191 @@ int ps_checkpoint_run(ps_store *s)
         s->hooks.checkpoint_done(s->hooks.ctx, L);
     }
     return 0;
+}
+
+/* ---- checkpoint thread and waits ----------------------------------------- */
+
+/* Set each wait condition and signal under mem_mu, where waiters check it. */
+
+int ps_ckpt_sync_init(ps_store *s)
+{
+    int rv = pthread_mutex_init(&s->mem_mu, NULL);
+    if (rv != 0) {
+        return rv;
+    }
+    pthread_condattr_t ca;
+    rv = pthread_condattr_init(&ca);
+    if (rv == 0) {
+#ifndef __APPLE__
+        rv = pthread_condattr_setclock(&ca, CLOCK_MONOTONIC);
+#endif
+        if (rv == 0) {
+            rv = pthread_cond_init(&s->ckpt_thread_cv, &ca);
+        }
+        pthread_condattr_destroy(&ca);
+    }
+    if (rv != 0) {
+        pthread_mutex_destroy(&s->mem_mu);
+        return rv;
+    }
+    rv = pthread_cond_init(&s->ckpt_wait_cv, NULL);
+    if (rv != 0) {
+        pthread_cond_destroy(&s->ckpt_thread_cv);
+        pthread_mutex_destroy(&s->mem_mu);
+        return rv;
+    }
+    return 0;
+}
+
+void ps_ckpt_sync_destroy(ps_store *s)
+{
+    pthread_cond_destroy(&s->ckpt_wait_cv);
+    pthread_cond_destroy(&s->ckpt_thread_cv);
+    pthread_mutex_destroy(&s->mem_mu);
+}
+
+/* deadline_ms is monotonic. The caller holds mem_mu. */
+static void thread_sleep_until(ps_store *s, u64 deadline_ms)
+{
+    struct timespec ts;
+#ifdef __APPLE__
+    /* macOS condvars use realtime. Convert the monotonic time remaining. */
+    const u64 now = now_ms();
+    const u64 rel = deadline_ms > now ? deadline_ms - now : 0;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    const u64 ns = (u64) ts.tv_nsec + (rel % 1000u) * 1000000u;
+    ts.tv_sec += (time_t) (rel / 1000u + ns / 1000000000u);
+    ts.tv_nsec = (long) (ns % 1000000000u);
+#else
+    ts.tv_sec = (time_t) (deadline_ms / 1000u);
+    ts.tv_nsec = (long) (deadline_ms % 1000u) * 1000000L;
+#endif
+    pthread_cond_timedwait(&s->ckpt_thread_cv, &s->mem_mu, &ts);
+}
+
+/* True when frames_dirty is above checkpoint_dirty_pct of the cache. */
+static bool dirty_over(const ps_store *s)
+{
+    const u64 dirty = atomic_load_explicit(&s->frames_dirty, memory_order_relaxed);
+    return dirty * 100u > (u64) s->cfg.checkpoint_dirty_pct * s->total_frames;
+}
+
+/*
+ * The thread: sleeps until a trigger (a request or a waiter, the dirty
+ * watermark, the interval timer) and runs an attempt, waiting out the
+ * backoff after a failure first. Idle once the store has failed.
+ */
+static void *ckpt_thread_main(void *arg)
+{
+    ps_store *s = arg;
+    pthread_mutex_lock(&s->mem_mu);
+    while (!s->ckpt_stop) {
+        if (atomic_load_explicit(&s->failed, memory_order_acquire)) {
+            pthread_cond_wait(&s->ckpt_thread_cv, &s->mem_mu);
+            continue;
+        }
+        const u64 now = now_ms();
+        if (s->ckpt_retry_at_ms > now) {
+            thread_sleep_until(s, s->ckpt_retry_at_ms);
+            continue;
+        }
+        const u32 iv = s->cfg.checkpoint_interval_ms;
+        const u64 due_at = s->ckpt_last_end_ms + iv;
+        if (!s->ckpt_want && !(iv != 0 && now >= due_at) && !dirty_over(s)) {
+            if (iv != 0) {
+                thread_sleep_until(s, due_at);
+            } else {
+                pthread_cond_wait(&s->ckpt_thread_cv, &s->mem_mu);
+            }
+            continue;
+        }
+        s->ckpt_want = false;
+        pthread_mutex_unlock(&s->mem_mu);
+        ckpt_attempt(s, true);
+        pthread_mutex_lock(&s->mem_mu);
+    }
+    pthread_mutex_unlock(&s->mem_mu);
+    return NULL;
+}
+
+int ps_ckpt_thread_start(ps_store *s)
+{
+    PS_ASSERT(!s->ckpt_thread_started);
+    pthread_mutex_lock(&s->mem_mu);
+    s->ckpt_stop = false;
+    s->ckpt_last_end_ms = now_ms();
+    pthread_mutex_unlock(&s->mem_mu);
+    const int rv = pthread_create(&s->ckpt_thread, NULL, ckpt_thread_main, s);
+    if (rv != 0) {
+        return rv;
+    }
+    s->ckpt_thread_started = true;
+    return 0;
+}
+
+void ps_ckpt_thread_stop(ps_store *s)
+{
+    if (!s->ckpt_thread_started) {
+        return;
+    }
+    pthread_mutex_lock(&s->mem_mu);
+    s->ckpt_stop = true;
+    pthread_cond_signal(&s->ckpt_thread_cv);
+    pthread_cond_broadcast(&s->ckpt_wait_cv);
+    pthread_mutex_unlock(&s->mem_mu);
+    pthread_join(s->ckpt_thread, NULL);
+    s->ckpt_thread_started = false;
+}
+
+void ps_checkpoint_request(ps_store *s)
+{
+    if (!s->ckpt_thread_started) {
+        return;
+    }
+    pthread_mutex_lock(&s->mem_mu);
+    s->ckpt_want = true;
+    pthread_cond_signal(&s->ckpt_thread_cv);
+    pthread_mutex_unlock(&s->mem_mu);
+}
+
+void ps_ckpt_note_commit(ps_store *s)
+{
+    if (!s->ckpt_thread_started || !dirty_over(s)) {
+        return;
+    }
+    pthread_mutex_lock(&s->mem_mu);
+    pthread_cond_signal(&s->ckpt_thread_cv);
+    pthread_mutex_unlock(&s->mem_mu);
+}
+
+int ps_ckpt_wait(ps_store *s)
+{
+    atomic_fetch_add_explicit(&s->writer_waits, 1, memory_order_relaxed);
+    pthread_mutex_lock(&s->mem_mu);
+    int rv = 0;
+    if (atomic_load_explicit(&s->failed, memory_order_acquire) || s->ckpt_stop) {
+        rv = EIO;
+    } else if (!s->ckpt_inflight && s->ckpt_last_err != 0) {
+        /* Give the caller the last error and let the thread retry after backoff. */
+        rv = s->ckpt_last_err;
+        s->ckpt_want = true;
+        pthread_cond_signal(&s->ckpt_thread_cv);
+    } else {
+        const u64 target = s->ckpt_started + 1; /* the first attempt to start after this call */
+        s->ckpt_want = true;
+        pthread_cond_signal(&s->ckpt_thread_cv);
+        s->ckpt_waiters++;
+        while (s->ckpt_done < target && !s->ckpt_stop &&
+               !atomic_load_explicit(&s->failed, memory_order_acquire)) {
+            pthread_cond_wait(&s->ckpt_wait_cv, &s->mem_mu);
+        }
+        s->ckpt_waiters--;
+        if (atomic_load_explicit(&s->failed, memory_order_acquire) || s->ckpt_done < target) {
+            rv = EIO;
+        } else {
+            rv = s->ckpt_last_err;
+        }
+    }
+    pthread_mutex_unlock(&s->mem_mu);
+    return rv;
 }

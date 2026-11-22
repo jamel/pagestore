@@ -597,6 +597,7 @@ void ps_op_commit(ps_store *s)
 
     op_release(s);
     pthread_mutex_unlock(&s->reg_mu);
+    ps_ckpt_note_commit(s);
     gate_leave(s);
 }
 

@@ -158,6 +158,9 @@ bool ps_snap_cut_off_for_frames(ps_store *s)
 
 int ps_snapshot_open(ps_store *s, ps_snapshot **out)
 {
+    if (atomic_load_explicit(&s->failed, memory_order_acquire)) {
+        return EIO;
+    }
     const u32 cap = s->cfg.snapshot_pin_cap;
     const u64 size = snap_size(cap);
     if (size > SIZE_MAX) {

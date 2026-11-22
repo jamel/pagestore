@@ -4,23 +4,14 @@
 #include <errno.h>
 
 /*
- * Frame requests: free frame, eviction, cut-off, then EAGAIN or
- * ENOBUFS. See store.h for the order.
- *
- * Locks: a request is made with no page latch and without reg_mu.
- * Eviction latches one page at a time; cut-off takes reg_mu (and latches
- * inside it). A request returns EAGAIN if it needs a checkpoint.
+ * Frame requests try the free list, then CLOCK eviction. A writer can
+ * also cut off snapshots, and either caller can wait for a checkpoint.
  */
 
 /*
- * Evicts one clean frame and returns it, still allocated, in *f.
- * The CLOCK hand only proposes a frame; whether it may really go is
- * decided under the latch of the page that owns it. The owner's page id is
- * read first without the latch; once that page is latched the id is read
- * again: a frame owned by that page cannot change owner while its latch is
- * held (frames.h), so a match makes the owner node, and every field the
- * re-check reads, stable. A failed re-check leaves the frame's ref bit set
- * by the proposal, so the next proposals move on to other frames.
+ * On success, *f is still allocated. A CLOCK candidate can change owners
+ * before we latch its page, so recheck the ID under the latch. Proposing a
+ * frame sets its ref bit, so the next pass moves past a rejected one.
  */
 static bool evict_one(ps_store *s, u32 *f)
 {
@@ -80,8 +71,21 @@ int ps_mem_frame(ps_store *s, bool writer, u32 *f)
             continue;
         }
         if (checkpoint_would_help(s)) {
-            /* The caller aborts, runs ps_checkpoint and retries. */
-            return EAGAIN;
+            if (!s->ckpt_thread_started) {
+                return EAGAIN; /* Run ps_checkpoint before retrying. */
+            }
+            /*
+             * Wait for an attempt that starts after this point, then retry.
+             * Each round either frees frames or ends the loop: the writer
+             * commits nothing while it waits, so after a successful attempt
+             * only a reader's request can find new dirty frames (written by
+             * the next attempt); a failure returns its error.
+             */
+            const int rv = ps_ckpt_wait(s);
+            if (rv != 0) {
+                return rv;
+            }
+            continue;
         }
         return ENOBUFS;
     }

@@ -54,7 +54,13 @@ typedef struct ps_config {
     void *cache_memory; /* optional caller-owned buffer, cache_size bytes, aligned to 4096 */
     u32 snapshot_pin_cap; /* pins per snapshot */
     u32 max_pinned_pct; /* share of the cache all snapshots may pin, 1..100 */
-    bool checkpoint_thread; /* run the built-in checkpointer */
+    /*
+     * The thread wakes on a request, a frame wait, the dirty watermark or
+     * the timer. It logs failures at PS_LOG_ERROR and starts retrying after
+     * 100 ms, doubling the delay up to 10 s. With the thread disabled, a
+     * frame request that needs a checkpoint returns EAGAIN.
+     */
+    bool checkpoint_thread;
     u32 checkpoint_interval_ms; /* 0 = no timer */
     u32 checkpoint_dirty_pct; /* dirty watermark, 0..100 */
     ps_log_fn log; /* optional */
@@ -63,11 +69,9 @@ typedef struct ps_config {
 } ps_config;
 
 /*
- * Initializes *cfg with a 64 MiB cache, 64 pins per snapshot, and a 25% total
- * snapshot pin budget. Enables the checkpoint thread with a 5 s interval
- * and a 40% dirty watermark. The store uses the existing page size or
- * 4096 bytes when creating a store. It allocates the cache. ps_open uses
- * the POSIX VFS. Logging is disabled.
+ * Defaults to an internally allocated 64 MiB cache, 64 pins per snapshot and
+ * a 25% total pin budget. The checkpoint thread runs on a 5 s timer and at
+ * a 40% dirty watermark. Uses the default page size and POSIX VFS with logging off.
  */
 void ps_config_init(ps_config *cfg);
 
@@ -84,8 +88,9 @@ int ps_open(const char *dir, const ps_config *cfg, u32 flags, ps_store **out);
 int ps_open_backend(const ps_backend *be, const ps_config *cfg, u32 flags, ps_store **out);
 
 /*
- * Requires no open snapshot and no operation in progress. Does not
- * checkpoint: unflushed operations are recovered from the log.
+ * Close snapshots and end the operation first. Waits for the background
+ * checkpointer. Does not checkpoint, so call ps_checkpoint first to make
+ * recent commits durable.
  */
 void ps_close(ps_store *s);
 
@@ -109,7 +114,8 @@ u64 ps_durable_lsn(const ps_store *s);
 typedef struct ps_pressure {
     u32 op_frames; /* frames held by the current operation */
     u32 op_limit; /* most frames an operation may hold */
-    u32 dirty_frames; /* dirty-set memberships: a checkpoint makes these evictable */
+    /* Counts each dirty page ID once. Free markers count without a frame. */
+    u32 dirty_frames;
     u32 total_frames;
 } ps_pressure;
 
@@ -137,6 +143,11 @@ int ps_free(ps_store *s, u32 id);
 int ps_read(ps_store *s, u32 id, const ps_page **page);
 int ps_write(ps_store *s, u32 id, ps_page **page);
 
+/*
+ * A snapshot sees the committed pages as they were when it opened. Use each
+ * handle from one thread at a time. On a failed store, open returns EIO and
+ * existing snapshots can read only resident pages.
+ */
 int ps_snapshot_open(ps_store *s, ps_snapshot **out);
 u64 ps_snapshot_lsn(const ps_snapshot *snap);
 /*
@@ -154,6 +165,10 @@ void ps_snapshot_close(ps_snapshot *snap);
  * such as ENOSPC, a later checkpoint can retry.
  */
 int ps_checkpoint(ps_store *s);
+/*
+ * Wakes the background checkpointer and returns at once. Any thread. No
+ * effect without the checkpoint thread or on a failed store.
+ */
 void ps_checkpoint_request(ps_store *s);
 
 /* Define struct ps_log_hooks_ctx to pass state to the hooks. */
@@ -175,13 +190,10 @@ typedef struct ps_log_hooks {
 } ps_log_hooks;
 
 /*
- * Installs a copy of *hooks (NULL clears them). Any thread; waits for a
- * running checkpoint, which keeps the hooks it started with.
- *
- * The hooks are called on the checkpointing thread with the store's
- * checkpoint lock held. They must not call ps_checkpoint or
- * ps_set_log_hooks on the same store (that deadlocks); operations,
- * snapshots and the WAL may be used.
+ * Copies *hooks, or clears them for NULL. Any thread. Waits for a running
+ * checkpoint. Hooks run with the checkpoint lock held. They must not call
+ * ps_checkpoint or ps_set_log_hooks, or start operations or snapshot reads
+ * that could wait for the writer or for frames. They may use the WAL.
  */
 void ps_set_log_hooks(ps_store *s, const ps_log_hooks *hooks);
 
@@ -203,7 +215,7 @@ struct ps_stats {
     u64 snapshots_cut_off;
     u64 checkpoints_run;
     u64 checkpoints_failed;
-    u64 writer_waits;
+    u64 writer_waits; /* frame requests (writer or reader) that waited for the checkpointer */
     u64 committed_lsn;
     u64 durable_lsn;
     bool failed;

@@ -1,13 +1,14 @@
 #pragma once
 
 /*
- * Store internals shared by store.c, op.c, pagein.c, versions.c, and mem.c.
+ * Shared store state. The writer owns the operation and allocator state.
+ * reg_mu guards commit publication and the reader registry. A page latch
+ * guards its version chain.
  *
- * Lock order: the op gate (gate_mu; never held while an operation
- * runs), then ckpt_mu, then reg_mu, then one page latch at a time,
- * then leaf mutexes (frame free list, node allocator). reg_mu is never taken
- * while a page latch is held. Nobody waits on a condvar while holding reg_mu
- * or a page latch, except on the latch's own condvar for LOADING.
+ * Lock order: gate_mu, ckpt_mu, reg_mu, one page latch, then the frame
+ * free list, node allocator and mem_mu last. Release gate_mu before running
+ * the operation. Wait for LOADING holding only the page latch, and for
+ * checkpoints or frames holding only mem_mu.
  */
 
 #include "allocator.h"
@@ -149,14 +150,33 @@ struct ps_store {
 
     atomic_bool failed;
 
+    /* mem_mu guards the checkpoint attempt counters and wait conditions. */
+    pthread_mutex_t mem_mu;
+    pthread_cond_t ckpt_thread_cv; /* the thread sleeps here */
+    pthread_cond_t ckpt_wait_cv; /* frame-request waiters sleep here */
+    u64 ckpt_started; /* attempts started */
+    u64 ckpt_done; /* attempts completed */
+    bool ckpt_inflight;
+    int ckpt_last_err; /* result of the last completed attempt */
+    u32 ckpt_waiters;
+    bool ckpt_want; /* a request or a waiter asked for an attempt */
+    bool ckpt_stop; /* ps_close: the thread exits */
+    u64 ckpt_last_end_ms; /* monotonic end time of the last attempt */
+    u32 ckpt_backoff_ms; /* reset after a success */
+    u64 ckpt_retry_at_ms; /* the thread starts no attempt before this */
+    /* Written only by open (before the store is shared) and ps_close (after the join). */
+    bool ckpt_thread_started;
+    pthread_t ckpt_thread;
+    bool ckpt_bg; /* ckpt_mu: the running attempt is the thread's */
+
     ps_op op; /* writer only */
 
     /* Mirrors of the allocator's committed state, for ps_stats from any thread. */
     _Atomic u32 num_groups;
     _Atomic u64 allocated_pages;
 
-    /* Counters. */
-    _Atomic u32 frames_dirty; /* dirty-list memberships (each entry once per list) */
+    /* Each dirty entry counts once, free markers included. */
+    _Atomic u32 frames_dirty;
     _Atomic u32 frames_retired;
     _Atomic u32 frames_pinned; /* resident nodes with pins > 0 */
     _Atomic u64 cache_hits;
@@ -169,14 +189,19 @@ struct ps_store {
     _Atomic u32 snapshots_open; /* open handles, cut-off ones included */
     _Atomic u64 snapshots_cut_off;
     _Atomic u64 snap_bytes; /* open snapshot handles */
+    _Atomic u64 writer_waits; /* frame requests that waited for the checkpointer */
 
     bool gate_init;
     bool ckpt_init;
     bool reg_init;
+    bool mem_init;
 };
 
 /* Sends a formatted message to the configured log callback, if any. */
 void ps_log(ps_store *s, int level, const char *fmt, ...) PS_PRINTF(3, 4);
+
+/* Thread-safe strerror: the message for err, in buf (n bytes) or a static string. */
+const char *ps_strerror(int err, char *buf, usize n);
 
 /* The first page ID in each group belongs to its bitmap. */
 static inline bool ps_is_bitmap_id(const ps_store *s, u32 id)
@@ -202,19 +227,9 @@ static inline ps_page *ps_node_page(const ps_store *s, const ps_vnode *v)
 }
 
 /*
- * Frame requests. Called with no page latch and without
- * reg_mu (the request may latch pages and take reg_mu), and never waits.
- * In order:
- *   1. a free frame;
- *   2. evict a clean frame (CLOCK proposal, then latch and re-check);
- *   3. writer only: if retired versions hold frames and cutting off the
- *      oldest snapshot can release one (ps_snap_cut_off_for_frames), cut it
- *      off and retry;
- *   4. EAGAIN if a checkpoint would release frames (dirty frames exist or
- *      one is running);
- *   5. ENOBUFS.
- * The op limit (ENOBUFS at once) is checked by the writer's callers in
- * op.c, which know whether the frame counts in op_frames.
+ * Call without a page latch or reg_mu, after checking the operation's
+ * budget. May wait for a checkpoint, and a writer may cut off snapshots.
+ * EAGAIN asks for a manual checkpoint. ENOBUFS means no frame can be freed.
  */
 int ps_mem_frame(ps_store *s, bool writer, u32 *f);
 void ps_mem_release(ps_store *s, u32 f);
@@ -276,11 +291,37 @@ void ps_mark_dirty(ps_store *s, ps_entry *e);
 int ps_checkpoint_run(ps_store *s);
 
 /*
- * Puts the store in its failed state and logs err at ERROR.
- * Any thread; it calls the user's log callback, so it must not be called
- * with reg_mu or a page latch held (ckpt_mu is fine).
+ * Wakes frame waiters with EIO and stops further checkpoints. Takes mem_mu
+ * and calls the log callback. Keep reg_mu, page latches and mem_mu free.
  */
 void ps_store_fail(ps_store *s, int err);
+
+/* ---- checkpoint thread and waits (checkpoint.c) ---- */
+
+/* Set up mem_mu and the two condition variables used by the checkpointer. */
+int ps_ckpt_sync_init(ps_store *s);
+void ps_ckpt_sync_destroy(ps_store *s);
+
+/*
+ * Start as the last step of open. Stop joins the thread after its current
+ * checkpoint finishes and is safe when the thread was never started.
+ */
+int ps_ckpt_thread_start(ps_store *s);
+void ps_ckpt_thread_stop(ps_store *s);
+
+/*
+ * Waits for the checkpoint thread to finish an attempt. Call without
+ * a page latch, reg_mu, or mem_mu held. Counts a writer wait. Returns EIO at once if the
+ * store has failed (or is closing), the last attempt's error at once if no
+ * attempt is in flight and the last one failed (fail fast; the thread
+ * retries after its backoff), and otherwise asks the thread for an attempt
+ * and waits until an attempt that started after this call has completed:
+ * 0 or that attempt's error, or EIO if the store fails meanwhile.
+ */
+int ps_ckpt_wait(ps_store *s);
+
+/* Call after commit releases reg_mu. */
+void ps_ckpt_note_commit(ps_store *s);
 
 /* Registry (reg_mu held). r->lsn must be >= every registered lsn. */
 void ps_reg_add(ps_store *s, ps_snapref *r);
