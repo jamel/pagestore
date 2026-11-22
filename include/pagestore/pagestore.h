@@ -95,14 +95,16 @@ u64 ps_committed_lsn(const ps_store *s);
 u64 ps_durable_lsn(const ps_store *s);
 
 /*
- * Memory pressure. op_frames counts the frames the operation
- * holds until it ends: its copies (and, for a page it did not ps_read
- * first, the committed version under the copy, which can no longer be
- * evicted), allocations, distinct ps_read pages, and one spare per bitmap
- * group it touches or creates. op_limit is total_frames minus the snapshot
- * pin budget (max_pinned_pct) minus one resident bitmap page per group; a
- * call that would take the operation past it fails with ENOBUFS at once.
- * Long jobs commit and start a new operation before reaching it.
+ * op_frames includes copies, allocations, distinct ps_read pins and a
+ * spare per group touched or created. A copy also holds its committed
+ * version in memory. Reading a committed page and then writing it costs
+ * two frames in total. op_limit leaves room for the snapshot budget
+ * and one resident bitmap per group. A call beyond the limit returns ENOBUFS.
+ *
+ * The cache must leave at least four frames for an operation. Open returns
+ * EINVAL below that floor. When a full store would cross it by adding a
+ * group, ps_alloc logs at PS_LOG_ERROR and returns ENOBUFS. Reopen with a
+ * larger cache to add groups.
  */
 typedef struct ps_pressure {
     u32 op_frames; /* frames held by the current operation */

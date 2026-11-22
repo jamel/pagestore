@@ -281,7 +281,7 @@ static void mark_written(ps_store *s, u32 n, u8 cbit)
         PS_ASSERT((was & cbit) != 0);
         PS_UNUSED(was);
         atomic_fetch_sub_explicit(&s->frames_dirty, 1, memory_order_relaxed);
-        ps_drop_lone_marker(s, e);
+        ps_drop_lone_head(s, e);
         ps_update_evictable(s, e);
         ps_entry_maybe_release(s->pt, e);
         ps_unlatch(s->pt, id);

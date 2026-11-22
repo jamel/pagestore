@@ -137,7 +137,16 @@ static int init_memory(ps_store *s, u32 page_size)
         return ENOMEM;
     }
     atomic_store_explicit(&s->ckpt_bytes, page_size, memory_order_relaxed);
-    return ps_allocator_create(page_size, &s->alloc);
+    rv = ps_allocator_create(page_size, &s->alloc);
+    if (rv != 0) {
+        return rv;
+    }
+    /* Reserve enough room for an operation before adding more bitmap pages. */
+    const u64 reserved = (u64) s->max_pinned + PS_OP_MIN_FRAMES;
+    ps_allocator_set_group_limit(
+        s->alloc,
+        reserved < s->total_frames ? s->total_frames - (u32) reserved : 0);
+    return 0;
 }
 
 /* Reject undersized caches before loading the resident bitmaps. */

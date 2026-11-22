@@ -31,6 +31,7 @@ typedef struct op_group {
 struct ps_allocator {
     u32 gsize;
     u32 max_groups;
+    u32 group_limit;
 
     /* Committed state. */
     u32 num_groups;
@@ -89,6 +90,7 @@ int ps_allocator_create(u32 page_size, ps_allocator **out)
     }
     a->gsize = ps_group_size(page_size);
     a->max_groups = ps_max_groups(page_size);
+    a->group_limit = a->max_groups;
     PS_ASSERT(a->gsize % 64 == 0);
     /* The last group holds at least one user id for every valid page size. */
     PS_ASSERT(group_nbits(a, a->max_groups - 1) >= 2);
@@ -314,6 +316,14 @@ static int new_group(ps_allocator *a, op_group **out)
     return 0;
 }
 
+void ps_allocator_set_group_limit(ps_allocator *a, u32 n)
+{
+    PS_ASSERT(!a->in_op);
+    a->group_limit = n < a->max_groups ? n : a->max_groups;
+}
+
+/* ---- allocation and free ---- */
+
 int ps_allocator_next(
     ps_allocator *a,
     ps_bitmap_get_fn get,
@@ -369,6 +379,9 @@ int ps_allocator_next(
     if (r == NULL) {
         if (a->op_num_groups >= a->max_groups) {
             return ENOSPC;
+        }
+        if (a->op_num_groups >= a->group_limit) {
+            return ENOBUFS;
         }
         int rv = new_group(a, &r);
         if (rv != 0) {

@@ -207,8 +207,9 @@ static inline ps_page *ps_node_page(const ps_store *s, const ps_vnode *v)
  * In order:
  *   1. a free frame;
  *   2. evict a clean frame (CLOCK proposal, then latch and re-check);
- *   3. writer only: if retired versions hold frames, cut off the oldest
- *      snapshot and retry;
+ *   3. writer only: if retired versions hold frames and cutting off the
+ *      oldest snapshot can release one (ps_snap_cut_off_for_frames), cut it
+ *      off and retry;
  *   4. EAGAIN if a checkpoint would release frames (dirty frames exist or
  *      one is running);
  *   5. ENOBUFS.
@@ -244,13 +245,10 @@ void ps_node_pin(ps_store *s, ps_vnode *v);
 void ps_node_free(ps_store *s, ps_entry *e, ps_vnode *v);
 
 /*
- * A lone, unpinned ON_DISK free marker carries no information. If e's chain is just that and e is on no dirty list, the marker is
- * deleted (the chain becomes empty). The caller then calls
- * ps_entry_maybe_release. Every path that can leave such a marker alone
- * calls it: node free, checkpoint end, abort, and ps_free of an id this op
- * allocated.
+ * Drop a lone disk node or free marker once the durable image can stand
+ * in for it. The caller can then try ps_entry_maybe_release.
  */
-void ps_drop_lone_marker(ps_store *s, ps_entry *e);
+void ps_drop_lone_head(ps_store *s, ps_entry *e);
 
 /*
  * The last unpin can free v and release e. It can also drop a clean frame
@@ -303,14 +301,16 @@ void ps_retire_push(ps_store *s, ps_vnode *v, u64 r);
 void ps_retire_process(ps_store *s);
 
 /*
- * Cuts off the oldest registered snapshot that is not the checkpoint's
- * by setting its dead flag, unregistering it, incrementing
- * snapshots_cut_off, and processing the retire queue, all under reg_mu (taken
- * here: call it with no latch and without reg_mu), then logs at INFO.
- * Returns false if there is no such snapshot. The snapshot's pins stay
- * valid; its next ps_snapshot_read returns ESTALE.
+ * Call without reg_mu or a page latch. Returns false if no snapshot can be
+ * cut off. A cut-off snapshot keeps its pins but new reads return ESTALE.
  */
 bool ps_snap_cut_off_oldest(ps_store *s);
+
+/*
+ * Cut off a snapshot only if doing so can help free a frame. The running
+ * checkpoint still protects versions visible at its LSN.
+ */
+bool ps_snap_cut_off_for_frames(ps_store *s);
 
 /* Format can start an operation at LSN 0 before the store is shared. */
 void ps_op_begin_format(ps_store *s);

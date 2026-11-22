@@ -76,7 +76,7 @@ int ps_mem_frame(ps_store *s, bool writer, u32 *f)
             return 0;
         }
         if (writer && atomic_load_explicit(&s->frames_retired, memory_order_relaxed) > 0 &&
-            ps_snap_cut_off_oldest(s)) {
+            ps_snap_cut_off_for_frames(s)) {
             continue;
         }
         if (checkpoint_would_help(s)) {

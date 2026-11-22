@@ -84,7 +84,37 @@ void ps_retire_process(ps_store *s)
 
 /* ---- cut-off ------------------------------------------------------------- */
 
-/* ---- cut-off ------------------------------------------------------------ */
+/*
+ * Hold reg_mu. A queued version can free a frame only when the oldest
+ * reader reaches its replacement LSN and the version has no pins.
+ */
+static bool retire_frees_frame(ps_store *s, u64 min)
+{
+    for (ps_vnode *v = s->retire_head; v != NULL && v->retire_r <= min; v = v->retire_next) {
+        const u32 id = v->entry->id;
+        ps_latch(s->pt, id);
+        const bool framed = v->frame != PS_NO_FRAME && v->pins == 0;
+        ps_unlatch(s->pt, id);
+        if (framed) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/*
+ * Enter with reg_mu held. Release it before calling the log callback.
+ */
+static void cut_off_unlock(ps_store *s, ps_snapref *r)
+{
+    const u64 lsn = r->lsn;
+    atomic_store_explicit(&r->dead, true, memory_order_release);
+    ps_reg_remove(s, r);
+    atomic_fetch_add_explicit(&s->snapshots_cut_off, 1, memory_order_relaxed);
+    ps_retire_process(s);
+    pthread_mutex_unlock(&s->reg_mu);
+    ps_log(s, PS_LOG_INFO, "snapshot at LSN %llu cut off to free memory", (unsigned long long) lsn);
+}
 
 bool ps_snap_cut_off_oldest(ps_store *s)
 {
@@ -97,14 +127,30 @@ bool ps_snap_cut_off_oldest(ps_store *s)
         pthread_mutex_unlock(&s->reg_mu);
         return false;
     }
-    const u64 lsn = r->lsn;
-    /* Before anything it protected can be freed. */
-    atomic_store_explicit(&r->dead, true, memory_order_release);
-    ps_reg_remove(s, r);
-    atomic_fetch_add_explicit(&s->snapshots_cut_off, 1, memory_order_relaxed);
-    ps_retire_process(s);
-    pthread_mutex_unlock(&s->reg_mu);
-    ps_log(s, PS_LOG_INFO, "snapshot at LSN %llu cut off to free memory", (unsigned long long) lsn);
+    cut_off_unlock(s, r);
+    return true;
+}
+
+bool ps_snap_cut_off_for_frames(ps_store *s)
+{
+    pthread_mutex_lock(&s->reg_mu);
+    ps_snapref *r = s->reg_head;
+    /*
+     * The oldest reader can advance at most to the checkpoint's LSN. Cut off
+     * one snapshot at a time; the caller retries the frame request in between.
+     */
+    u64 reach = UINT64_MAX;
+    for (const ps_snapref *q = r; q != NULL; q = q->next) {
+        if (q->is_ckpt) {
+            reach = q->lsn;
+            break;
+        }
+    }
+    if (r == NULL || r->is_ckpt || !retire_frees_frame(s, reach)) {
+        pthread_mutex_unlock(&s->reg_mu);
+        return false;
+    }
+    cut_off_unlock(s, r);
     return true;
 }
 

@@ -78,6 +78,7 @@ int ps_page_in(ps_store *s, ps_entry *e, ps_vnode *frameless, bool writer, ps_vn
             (frameless->flags & PS_VF_FREE_WHEN_UNPINNED) != 0) {
             ps_node_free(s, e, frameless);
         } else {
+            ps_drop_lone_head(s, e); /* older versions may have gone meanwhile */
             ps_entry_maybe_release(s->pt, e);
         }
         return rv;

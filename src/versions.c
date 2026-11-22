@@ -42,16 +42,20 @@ void ps_node_free(ps_store *s, ps_entry *e, ps_vnode *v)
     drop_frame(s, v);
     ps_vnode_delete(s->pt, v);
 
-    ps_drop_lone_marker(s, e);
+    ps_drop_lone_head(s, e);
     ps_update_evictable(s, e);
     ps_entry_maybe_release(s->pt, e);
 }
 
-void ps_drop_lone_marker(ps_store *s, ps_entry *e)
+void ps_drop_lone_head(ps_store *s, ps_entry *e)
 {
     ps_vnode *h = e->head;
-    if (h != NULL && h->older == NULL && h->kind == PS_V_FREE && (h->flags & PS_VF_ON_DISK) != 0 &&
-        h->pins == 0 && atomic_load_explicit(&e->dirty, memory_order_relaxed) == 0) {
+    if (h == NULL || h->older != NULL || h->pins != 0 || h->flags != PS_VF_ON_DISK ||
+        atomic_load_explicit(&e->dirty, memory_order_relaxed) != 0) {
+        return;
+    }
+    /* The durable bitmap and data file already describe this page. */
+    if (h->kind == PS_V_FREE || h->frame == PS_NO_FRAME) {
         e->head = NULL;
         ps_vnode_delete(s->pt, h);
     }

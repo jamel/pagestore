@@ -16,6 +16,7 @@
 /* State passed to the allocator's bitmap callback. */
 struct ps_bitmap_get_ctx {
     ps_store *s;
+    bool no_room; /* the callback refused a spare under the operation limit */
 };
 
 /* ---- small helpers -------------------------------------------------------- */
@@ -234,6 +235,7 @@ static int bitmap_get(ps_bitmap_get_ctx *ctx, u32 g, const u8 **bits)
     ps_store *s = ctx->s;
     PS_ASSERT(find_group(s, g) == NULL);
     if (!op_room(s, 1)) {
+        ctx->no_room = true;
         return ENOBUFS;
     }
     int rv = reserve_groups(s, s->op.ngroups + 1);
@@ -327,7 +329,7 @@ static int reserve_kit(ps_store *s)
 /* Cancellation cannot fail because the group is already prepared. */
 static void cancel_alloc(ps_store *s, u32 id)
 {
-    ps_bitmap_get_ctx gc = {s};
+    ps_bitmap_get_ctx gc = {s, false};
     bool cancelled = false;
     const int rv = ps_allocator_free(s->alloc, bitmap_get, &gc, id, &cancelled);
     PS_ASSERT(rv == 0 && cancelled);
@@ -644,8 +646,11 @@ void ps_op_abort(ps_store *s)
                 continue;
             }
         }
-        /* A checkpoint may have marked the committed marker under h ON_DISK meanwhile. */
-        ps_drop_lone_marker(s, e);
+        /*
+         * A checkpoint may have made the marker below the operation's head
+         * durable meanwhile, so it can now be dropped.
+         */
+        ps_drop_lone_head(s, e);
         ps_update_evictable(s, e);
         ps_entry_maybe_release(s->pt, e);
         ps_unlatch(s->pt, id);
@@ -889,10 +894,22 @@ int ps_alloc(ps_store *s, u32 *id_out, ps_page **page)
     }
     s->op.frames++;
 
-    ps_bitmap_get_ctx gc = {s};
+    ps_bitmap_get_ctx gc = {s, false};
     u32 id = 0;
     bool new_group = false;
     rv = ps_allocator_next(s->alloc, bitmap_get, &gc, &id, &new_group);
+    if (rv == ENOBUFS && !gc.no_room) {
+        /* The allocator's group limit (set at open): another bitmap page would not fit. */
+        ps_log(
+            s,
+            PS_LOG_ERROR,
+            "ps_alloc: every page of the %u groups is in use and a new group's bitmap page "
+            "would leave an operation fewer than %u of the %u cache frames; reopen with a "
+            "larger cache",
+            ps_allocator_num_groups(s->alloc) + s->op.new_groups,
+            PS_OP_MIN_FRAMES,
+            s->total_frames);
+    }
     if (rv != 0) {
         ps_mem_release(s, f);
         s->op.frames--;
@@ -1055,7 +1072,7 @@ int ps_free(ps_store *s, u32 id)
         return rv;
     }
 
-    ps_bitmap_get_ctx gc = {s};
+    ps_bitmap_get_ctx gc = {s, false};
     bool cancelled = false;
     s->op.reserved = held; /* a spare the callback takes must leave room for it */
     rv = ps_allocator_free(s->alloc, bitmap_get, &gc, id, &cancelled);
@@ -1084,7 +1101,7 @@ int ps_free(ps_store *s, u32 id)
         ps_vnode_delete(s->pt, h);
         s->op.frames--;
         drop_page(s, e);
-        ps_drop_lone_marker(s, e); /* as in abort */
+        ps_drop_lone_head(s, e);
         ps_update_evictable(s, e);
         ps_entry_maybe_release(s->pt, e);
     } else if (h != NULL && (h->flags & PS_VF_IN_OP) != 0) {

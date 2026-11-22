@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define PS 4096u
 #define HDR PS_PAGE_HEADER_SIZE
@@ -464,6 +465,112 @@ static void test_evict_head_keeps_frameless(void)
     close_store();
 }
 
+/*
+ * A frameless head left alone is dropped: after eviction,
+ * once the retired versions below it are freed, and after an aborted free.
+ */
+static void test_lone_frameless_dropped(void)
+{
+    open_store(FRAMES);
+    make_pages(2, 2);
+    ps_snapshot *sn = snap_open();
+    begin();
+    write_stamped(1, 2);
+    ps_op_commit(s);
+    T_OK(ps_checkpoint(s));
+    T_CHECK(ps_test_evict(s, 1));
+    T_EQ(ps_test_chain_len(s, 1), 2);
+    ps_snapshot_close(sn); /* frees the retired version below the frameless head */
+    T_CHECK(!ps_test_has_entry(s, 1));
+
+    begin();
+    T_OK(ps_free(s, 2)); /* clean: its frame is released at once */
+    ps_op_abort(s);
+    T_CHECK(!ps_test_has_entry(s, 2));
+
+    begin();
+    const ps_page *p = NULL;
+    T_OK(ps_read(s, 1, &p));
+    T_CHECK(stamped(p, 1, 2));
+    T_OK(ps_read(s, 2, &p));
+    T_CHECK(stamped(p, 2, 1));
+    ps_op_commit(s);
+    close_store();
+}
+
+static void sleep_ms(u32 ms)
+{
+    struct timespec ts = {(time_t) (ms / 1000), (long) (ms % 1000) * 1000000L};
+    while (nanosleep(&ts, &ts) != 0) {}
+}
+
+static void *bg_checkpoint(void *arg)
+{
+    int *rv = arg;
+    *rv = ps_checkpoint(s);
+    return NULL;
+}
+
+static bool ckpt_running(void)
+{
+    pthread_mutex_lock(&s->reg_mu);
+    const bool r = s->ckpt_running;
+    pthread_mutex_unlock(&s->reg_mu);
+    return r;
+}
+
+/*
+ * Cutting off snapshots cannot free versions retired for a running checkpoint,
+ * so the writer gets EAGAIN and no snapshot is cut off for nothing.
+ */
+static void test_no_cutoff_behind_checkpoint(void)
+{
+    open_store(FRAMES);
+    make_pages(10, 10);
+    begin();
+    write_stamped(10, 2);
+    ps_op_commit(s);
+    mb_block_writes(mb, true);
+    int crv = -1;
+    pthread_t t;
+    T_OK(pthread_create(&t, NULL, bg_checkpoint, &crv));
+    while (!ckpt_running()) {
+        sleep_ms(1);
+    }
+    ps_snapshot *s1 = snap_open();
+    ps_snapshot *s2 = snap_open();
+    int rv = 0;
+    for (u32 round = 0; round < 10 && rv == 0; round++) {
+        begin();
+        for (u32 k = 1; k <= 5 && rv == 0; k++) {
+            ps_page *p = NULL;
+            rv = ps_write(s, k + (round % 2) * 4, &p);
+            if (rv == 0) {
+                stamp(p, k + (round % 2) * 4, (u32) round + 3);
+            }
+        }
+        if (rv == 0) {
+            ps_op_commit(s);
+        } else {
+            ps_op_abort(s);
+        }
+    }
+    T_ERR(rv, EAGAIN);
+    struct ps_stats st = stats();
+    T_EQ(st.snapshots_cut_off, 0);
+    T_CHECK(st.frames_retired > 0);
+    const ps_page *p = NULL;
+    T_OK(ps_snapshot_read(s1, 10, &p)); /* still alive */
+    T_CHECK(stamped(p, 10, 2));
+    mb_block_writes(mb, false);
+    T_OK(pthread_join(t, NULL));
+    T_OK(crv);
+    ps_snapshot_close(s1);
+    ps_snapshot_close(s2);
+    T_EQ(stats().frames_retired, 0);
+    close_store();
+}
+
 static void test_under_inop_not_evicted(void)
 {
     open_store(FRAMES);
@@ -578,6 +685,7 @@ static void test_chunked_job(void)
 /* Bitmap pages take a frame each: open refuses a cache they leave too small. */
 struct ps_log_ctx {
     atomic_int too_small;
+    atomic_int group; /* ps_alloc refused a new group */
 };
 
 static void log_fn(ps_log_ctx *ctx, int level, const char *msg)
@@ -585,12 +693,16 @@ static void log_fn(ps_log_ctx *ctx, int level, const char *msg)
     if (level == PS_LOG_ERROR && strstr(msg, "too small") != NULL) {
         atomic_fetch_add(&ctx->too_small, 1);
     }
+    if (level == PS_LOG_ERROR && strstr(msg, "larger cache") != NULL) {
+        atomic_fetch_add(&ctx->group, 1);
+    }
 }
 
 static void test_open_cache_too_small(void)
 {
     ps_log_ctx lc;
     atomic_init(&lc.too_small, 0);
+    atomic_init(&lc.group, 0);
     ps_config cfg = mb_config(FRAMES);
     cfg.log = log_fn;
     cfg.log_ctx = &lc;
@@ -622,6 +734,60 @@ static void test_open_cache_too_small(void)
     mb_destroy(mb);
     mb = NULL;
     s = NULL;
+}
+
+/* An existing store (durable 9) of ngroups full groups: only bitmap pages on disk. */
+static void inject_full_groups(u32 ngroups)
+{
+    mb = mb_create();
+    ps_backend_info info = {PS, ngroups, 1, 9};
+    mb_set_info(mb, info);
+    u8 *buf = calloc(1, PS);
+    T_CHECK(buf != NULL);
+    for (u32 g = 0; g < ngroups; g++) {
+        memset(buf, 0, PS);
+        ps_page *p = (ps_page *) buf;
+        p->magic = PS_BITMAP_MAGIC;
+        p->page_id = g * ps_group_size(PS);
+        p->flags = PS_PAGE_FLAG_BITMAP;
+        p->lsn = 9;
+        memset(buf + HDR, 0xFF, PS - HDR);
+        mb_seal_page(buf, PS);
+        mb_put(mb, p->page_id, buf);
+    }
+    free(buf);
+}
+
+/*
+ * A group the cache cannot hold is refused: 32 frames - 8 snapshot pins - 4
+ * leave room for 20 bitmap pages, so with 20 full groups ps_alloc gets
+ * ENOBUFS (logged) instead of creating a 21st.
+ */
+static void test_group_limit(void)
+{
+    ps_log_ctx lc;
+    atomic_init(&lc.too_small, 0);
+    atomic_init(&lc.group, 0);
+    ps_config cfg = mb_config(32);
+    cfg.log = log_fn;
+    cfg.log_ctx = &lc;
+    inject_full_groups(20);
+    ps_backend be;
+    mb_backend(mb, &be);
+    T_OK(ps_open_backend(&be, &cfg, 0, &s));
+    next_lsn = 10;
+    T_EQ(stats().num_groups, 20);
+    T_EQ(pressure().op_limit, 4);
+    begin();
+    u32 id = 0;
+    ps_page *p = NULL;
+    T_ERR(ps_alloc(s, &id, &p), ENOBUFS);
+    T_EQ(atomic_load(&lc.group), 1);
+    T_EQ(pressure().op_frames, 0);
+    ps_op_abort(s);
+    T_EQ(stats().num_groups, 20);
+    T_EQ(stats().frames_free, 32 - 20);
+    close_store();
 }
 
 /* ---- concurrent eviction ---- */
@@ -740,10 +906,13 @@ int main(int argc, char **argv)
     T_RUN(test_reader_enobufs);
     T_RUN(test_reload_after_evict);
     T_RUN(test_evict_head_keeps_frameless);
+    T_RUN(test_lone_frameless_dropped);
+    T_RUN(test_no_cutoff_behind_checkpoint);
     T_RUN(test_under_inop_not_evicted);
     T_RUN(test_free_releases_clean_base);
     T_RUN(test_chunked_job);
     T_RUN(test_open_cache_too_small);
+    T_RUN(test_group_limit);
     T_RUN(test_concurrent_eviction);
     return t_done();
 }

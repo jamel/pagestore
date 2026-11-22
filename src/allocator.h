@@ -40,6 +40,10 @@ void ps_allocator_destroy(ps_allocator *a);
  */
 int ps_allocator_init_group(ps_allocator *a, u32 g, const u8 *bits);
 
+/* Set before an operation. The store uses its bitmap cache capacity as the limit. */
+void ps_allocator_set_group_limit(ps_allocator *a, u32 n);
+
+/* Committed group count. */
 u32 ps_allocator_num_groups(const ps_allocator *a);
 /* Counts allocated user pages in the committed state. */
 u64 ps_allocator_allocated(const ps_allocator *a);
@@ -47,10 +51,8 @@ u64 ps_allocator_allocated(const ps_allocator *a);
 void ps_allocator_op_begin(ps_allocator *a);
 
 /*
- * Allocates the next id (see the contract above). *new_group is true if this
- * call created a group (its bitmap page is created at commit). ENOSPC when
- * every possible group is full; ENOMEM; or get's error. On failure nothing
- * changes.
+ * *new_group means the caller will need a bitmap page at commit.
+ * ENOSPC means the ID space is full. ENOBUFS means the group limit was reached.
  */
 int ps_allocator_next(
     ps_allocator *a,
