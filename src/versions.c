@@ -20,9 +20,8 @@ static void drop_frame(ps_store *s, ps_vnode *v)
     if (v->frame == PS_NO_FRAME) {
         return;
     }
-    if ((v->flags & PS_VF_RETIRED) != 0) {
-        atomic_fetch_sub_explicit(&s->frames_retired, 1, memory_order_relaxed);
-    }
+    /* ps_retire_process takes a node off the queue (and uncounts it) before freeing it. */
+    PS_ASSERT((v->flags & PS_VF_RETIRED) == 0);
     ps_mem_release(s, v->frame);
     v->frame = PS_NO_FRAME;
 }

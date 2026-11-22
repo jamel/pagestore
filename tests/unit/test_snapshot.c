@@ -51,13 +51,6 @@ static void sleep_ms(u32 ms)
     while (nanosleep(&ts, &ts) != 0) {}
 }
 
-static u64 now_ms(void)
-{
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (u64) ts.tv_sec * 1000u + (u64) ts.tv_nsec / 1000000u;
-}
-
 static struct ps_stats stats(void)
 {
     struct ps_stats st;
@@ -594,29 +587,68 @@ typedef struct reader {
     u32 id;
     const ps_page *p;
     int rv;
-    atomic_bool started;
 } reader;
 
 static void *reader_main(void *arg)
 {
     reader *r = arg;
-    atomic_store(&r->started, true);
     r->rv = ps_snapshot_read(r->sn, r->id, &r->p);
     return NULL;
 }
 
-static void reader_start(reader *r, ps_snapshot *sn, u32 id)
+static void reader_spawn(reader *r, ps_snapshot *sn, u32 id)
 {
     r->sn = sn;
     r->id = id;
     r->p = NULL;
     r->rv = -1;
-    atomic_init(&r->started, false);
     T_OK(pthread_create(&r->t, NULL, reader_main, r));
-    while (!atomic_load(&r->started)) {
+}
+
+/*
+ * Wait for read_page so the caller can race an operation with id marked
+ * LOADING. Release the read with mb_hold_reads(mb, false).
+ */
+static void reader_start_loading(reader *r, ps_snapshot *sn, u32 id)
+{
+    mb_hold_reads(mb, true);
+    reader_spawn(r, sn, id);
+    mb_wait_held_reads(mb, 1);
+}
+
+static int reader_join(reader *r)
+{
+    T_OK(pthread_join(r->t, NULL));
+    return r->rv;
+}
+
+/* Releases the held reads once n threads wait on id's LOADING. */
+typedef struct releaser {
+    pthread_t t;
+    u32 id;
+    u32 n;
+} releaser;
+
+static void *releaser_main(void *arg)
+{
+    const releaser *r = arg;
+    while (ps_test_waiters(s, r->id) < r->n) {
         sleep_ms(1);
     }
-    sleep_ms(30); /* well inside the read delay: the page is LOADING */
+    mb_hold_reads(mb, false);
+    return NULL;
+}
+
+static void releaser_start(releaser *r, u32 id, u32 n)
+{
+    r->id = id;
+    r->n = n;
+    T_OK(pthread_create(&r->t, NULL, releaser_main, r));
+}
+
+static void releaser_join(releaser *r)
+{
+    T_OK(pthread_join(r->t, NULL));
 }
 
 /* Abort races a page-in of the disk node inserted by the open operation. */
@@ -626,15 +658,13 @@ static void test_abort_waits_for_loading(void)
     T_OK(ps_op_begin(s, 2));
     T_OK(ps_free(s, 5));
     ps_snapshot *sn = snap_open();
-    mb_set_read_delay_ms(mb, 150);
     reader r;
-    reader_start(&r, sn, 5);
-    const u64 t0 = now_ms();
+    reader_start_loading(&r, sn, 5);
+    releaser rel;
+    releaser_start(&rel, 5, 1); /* releases once abort waits */
     ps_op_abort(s);
-    T_CHECK(now_ms() - t0 >= 50);
-    T_OK(pthread_join(r.t, NULL));
-    mb_set_read_delay_ms(mb, 0);
-    T_OK(r.rv);
+    releaser_join(&rel);
+    T_OK(reader_join(&r));
     T_CHECK(has_text(r.p, "P5"));
     T_EQ(ps_test_chain_len(s, 5), 1);
     T_EQ(ps_test_pins(s, 5), 1);
@@ -649,16 +679,16 @@ static void test_writer_waits_for_snapshot_loading(void)
 {
     disk_pages(64, 5);
     ps_snapshot *sn = snap_open();
-    mb_set_read_delay_ms(mb, 150);
     reader r;
-    reader_start(&r, sn, 3);
+    reader_start_loading(&r, sn, 3);
     const u64 misses = stats().cache_misses;
+    releaser rel;
+    releaser_start(&rel, 3, 1); /* releases once ps_read waits */
     T_OK(ps_op_begin(s, 2));
     const ps_page *p = NULL;
     T_OK(ps_read(s, 3, &p));
-    T_OK(pthread_join(r.t, NULL));
-    mb_set_read_delay_ms(mb, 0);
-    T_OK(r.rv);
+    releaser_join(&rel);
+    T_OK(reader_join(&r));
     T_CHECK(p == r.p); /* one load, one version */
     T_EQ(stats().cache_misses, misses + 1);
     T_EQ(ps_test_pins(s, 3), 2);
@@ -678,17 +708,16 @@ static void test_two_snapshots_one_load(void)
     disk_pages(64, 5);
     ps_snapshot *s1 = snap_open();
     ps_snapshot *s2 = snap_open();
-    mb_set_read_delay_ms(mb, 100);
     const u64 misses = stats().cache_misses;
     reader r1;
     reader r2;
-    reader_start(&r1, s1, 4);
-    reader_start(&r2, s2, 4);
-    T_OK(pthread_join(r1.t, NULL));
-    T_OK(pthread_join(r2.t, NULL));
-    mb_set_read_delay_ms(mb, 0);
-    T_OK(r1.rv);
-    T_OK(r2.rv);
+    reader_start_loading(&r1, s1, 4);
+    releaser rel;
+    releaser_start(&rel, 4, 1); /* releases once r2 waits */
+    reader_spawn(&r2, s2, 4);
+    releaser_join(&rel);
+    T_OK(reader_join(&r1));
+    T_OK(reader_join(&r2));
     T_CHECK(r1.p == r2.p);
     T_EQ(stats().cache_misses, misses + 1);
     T_EQ(ps_test_pins(s, 4), 2);
@@ -698,9 +727,147 @@ static void test_two_snapshots_one_load(void)
     close_store();
 }
 
+/* A cut-off while the snapshot is paging in a retired frameless version. */
+static void test_cutoff_during_load(void)
+{
+    disk_pages(64, 5);
+    const u32 free0 = stats().frames_free;
+    ps_snapshot *sn = snap_open();
+    free_with(2, 5); /* the lsn-0 node is retired for sn */
+    reader r;
+    reader_start_loading(&r, sn, 5);
+    T_CHECK(ps_snap_cut_off_oldest(s)); /* the node is freed when the load's pin goes */
+    mb_hold_reads(mb, false);
+    T_ERR(reader_join(&r), ESTALE);
+    T_EQ(stats().frames_retired, 0);
+    T_EQ(stats().frames_free, free0);
+    T_EQ(ps_test_chain_len(s, 5), 1); /* the marker */
+    T_EQ(ps_test_pins(s, 5), 0);
+    ps_snapshot_close(sn);
+    T_EQ(stats().frames_retired, 0);
+    close_store();
+}
+
+/* Commit retires the node before page-in can give it a frame. */
+static void test_commit_during_load(void)
+{
+    disk_pages(64, 5);
+    const u32 free0 = stats().frames_free;
+    ps_snapshot *sn = snap_open();
+    T_OK(ps_op_begin(s, 2));
+    T_OK(ps_free(s, 5));
+    reader r;
+    reader_start_loading(&r, sn, 5);
+    ps_op_commit(s);
+    T_EQ(stats().frames_retired, 0); /* retired, but frameless */
+    mb_hold_reads(mb, false);
+    T_OK(reader_join(&r));
+    T_CHECK(has_text(r.p, "P5"));
+    T_EQ(stats().frames_retired, 1);
+    ps_snapshot_close(sn);
+    T_EQ(stats().frames_retired, 0);
+    T_EQ(stats().frames_free, free0);
+    close_store();
+}
+
+/* Cut-off removes the reader, but page-in still holds a temporary pin. */
+static void test_commit_dead_during_load(void)
+{
+    disk_pages(64, 5);
+    const u32 free0 = stats().frames_free;
+    ps_snapshot *sn = snap_open();
+    T_OK(ps_op_begin(s, 2));
+    T_OK(ps_free(s, 5));
+    reader r;
+    reader_start_loading(&r, sn, 5);
+    T_CHECK(ps_snap_cut_off_oldest(s));
+    ps_op_commit(s); /* nobody registered: freed at the load's last unpin */
+    mb_hold_reads(mb, false);
+    T_ERR(reader_join(&r), ESTALE);
+    T_EQ(stats().frames_retired, 0);
+    T_EQ(stats().frames_free, free0);
+    T_EQ(ps_test_chain_len(s, 5), 1);
+    T_EQ(ps_test_pins(s, 5), 0);
+    ps_snapshot_close(sn);
+    close_store();
+}
+
+/* ps_alloc's load of a retired frameless version waits for a snapshot loading it. */
+static void test_alloc_during_snapshot_load(void)
+{
+    disk_pages(64, 5);
+    ps_snapshot *sn = snap_open();
+    free_with(2, 5);
+    reader r;
+    reader_start_loading(&r, sn, 5);
+    const u64 misses = stats().cache_misses;
+    releaser rel;
+    releaser_start(&rel, 5, 1); /* releases once ps_alloc waits */
+    T_OK(ps_op_begin(s, 3));
+    T_EQ(alloc_text("C"), 5);
+    ps_op_commit(s);
+    releaser_join(&rel);
+    T_OK(reader_join(&r));
+    T_EQ(stats().cache_misses, misses + 1); /* loaded once */
+    T_OK(ps_checkpoint(s));
+    T_CHECK(has_text((const ps_page *) mb_page(mb, 5), "C"));
+    T_CHECK(has_text(r.p, "P5"));
+    snap_check(sn, 5, "P5");
+    T_EQ(stats().frames_retired, 1);
+    ps_snapshot_close(sn);
+    T_EQ(stats().frames_retired, 0);
+    op_check(4, 5, "C");
+    close_store();
+}
+
+/*
+ * Check a too-new disk version in two paths. An empty chain loads a new
+ * node. The chain under a free marker only learns its LSN at page-in.
+ */
+static void test_newer_disk_version_einval(void)
+{
+    open_store(64);
+    T_EQ(alloc_with(10, "A"), 1);
+    ps_snapshot *sn = snap_open();
+    T_EQ(ps_snapshot_lsn(sn), 10);
+    T_OK(ps_op_begin(s, 15));
+    T_EQ(alloc_text("N2"), 2);
+    T_EQ(alloc_text("N3"), 3);
+    ps_op_commit(s);
+    T_OK(ps_checkpoint(s));
+    T_CHECK(ps_test_evict(s, 2));
+    T_CHECK(ps_test_evict(s, 3));
+    T_CHECK(!ps_test_has_entry(s, 2));
+
+    /* Empty chain: loaded, written at 15 > 10. */
+    const ps_page *p = NULL;
+    T_ERR(ps_snapshot_read(sn, 3, &p), EINVAL);
+    T_ERR(ps_snapshot_read(sn, 3, &p), EINVAL); /* resident now */
+    T_EQ(ps_test_pins(s, 3), 0);
+
+    /* lsn-0 node under the free marker, kept for sn. */
+    free_with(20, 2);
+    T_EQ(ps_test_chain_len(s, 2), 2);
+    T_ERR(ps_snapshot_read(sn, 2, &p), EINVAL);
+    T_ERR(ps_snapshot_read(sn, 2, &p), EINVAL); /* its LSN is known now */
+    T_EQ(ps_test_pins(s, 2), 0);
+    T_EQ(stats().frames_retired, 1);
+    snap_check(sn, 1, "A");
+
+    ps_snapshot *s2 = snap_open();
+    T_ERR(ps_snapshot_read(s2, 2, &p), EINVAL); /* freed at 20 */
+    snap_check(s2, 3, "N3");
+    ps_snapshot_close(s2);
+    ps_snapshot_close(sn);
+    T_EQ(stats().frames_retired, 0);
+    T_EQ(ps_test_chain_len(s, 2), 1);
+    close_store();
+}
+
 /* ---- concurrent readers and a writer ---- */
 
-#define CR_PAGES 64u
+#define CR_PAGES 64u /* stable pages 1..CR_PAGES, always allocated */
+#define CR_CHURN 32u /* ids above them that the writer allocates and frees */
 #define CR_READERS 4
 
 typedef struct cr_reader {
@@ -717,6 +884,18 @@ static u64 page_value(const ps_page *p)
     return v;
 }
 
+static void set_value(ps_page *p, u64 v)
+{
+    memcpy((u8 *) p + HDR, &v, sizeof(v));
+}
+
+static void check_read(const ps_page *p, u32 id, u64 S)
+{
+    T_EQ(p->page_id, id);
+    T_CHECK(p->lsn <= S);
+    T_EQ(page_value(p), p->lsn);
+}
+
 static void *cr_main(void *arg)
 {
     cr_reader *r = arg;
@@ -727,9 +906,7 @@ static void *cr_main(void *arg)
         for (u32 id = 1; id <= CR_PAGES; id++) {
             const ps_page *p = NULL;
             T_OK(ps_snapshot_read(sn, id, &p));
-            T_EQ(p->page_id, id);
-            T_CHECK(p->lsn <= S);
-            T_EQ(page_value(p), p->lsn);
+            check_read(p, id, S);
             const ps_page *q = NULL;
             T_OK(ps_snapshot_read(sn, id, &q));
             T_CHECK(p == q);
@@ -737,10 +914,29 @@ static void *cr_main(void *arg)
                 ps_snapshot_unpin(sn, id);
             }
         }
+        /*
+         * A churn page may be unallocated at S: EINVAL while its free marker is in
+         * memory, EBADMSG if it was never written. Check the version on success.
+         */
+        for (u32 id = CR_PAGES + 1; id <= CR_PAGES + CR_CHURN; id++) {
+            const ps_page *p = NULL;
+            const int rv = ps_snapshot_read(sn, id, &p);
+            T_CHECK(rv == 0 || rv == EINVAL || rv == EBADMSG);
+            if (rv == 0) {
+                check_read(p, id, S);
+                ps_snapshot_unpin(sn, id);
+            }
+        }
         ps_snapshot_close(sn);
         r->rounds++;
     }
     return NULL;
+}
+
+static u64 rng_next(u64 *x)
+{
+    *x = *x * 6364136223846793005ull + 1442695040888963407ull;
+    return *x >> 33;
 }
 
 static void test_concurrent_readers(void)
@@ -752,8 +948,7 @@ static void test_concurrent_readers(void)
         ps_page *p = NULL;
         T_OK(ps_alloc(s, &id, &p));
         T_EQ(id, i);
-        const u64 v = 1;
-        memcpy((u8 *) p + HDR, &v, sizeof(v));
+        set_value(p, 1);
     }
     ps_op_commit(s);
     T_OK(ps_checkpoint(s));
@@ -767,23 +962,46 @@ static void test_concurrent_readers(void)
         rs[i].rounds = 0;
         T_OK(pthread_create(&rs[i].t, NULL, cr_main, &rs[i]));
     }
+    bool live[CR_CHURN] = {false}; /* committed allocation state of the churn ids */
     const u64 nops = 300u * t_scale();
     u64 x = 12345;
     for (u64 lsn = 2; lsn < 2 + nops; lsn++) {
+        bool next[CR_CHURN];
+        memcpy(next, live, sizeof(next));
         T_OK(ps_op_begin(s, lsn));
         for (u32 k = 0; k < 3; k++) {
-            x = x * 6364136223846793005ull + 1442695040888963407ull;
-            const u32 id = 1 + (u32) (x >> 33) % CR_PAGES;
+            const u32 id = 1 + (u32) (rng_next(&x) % CR_PAGES);
             ps_page *p = NULL;
             T_OK(ps_write(s, id, &p));
-            memcpy((u8 *) p + HDR, &lsn, sizeof(lsn));
+            set_value(p, lsn);
+        }
+        /* Free a live churn page (rewriting another first), or allocate one. */
+        const u32 c = (u32) (rng_next(&x) % CR_CHURN);
+        if (next[c] && rng_next(&x) % 2 == 0) {
+            T_OK(ps_free(s, CR_PAGES + 1 + c));
+            next[c] = false;
+        } else {
+            u32 n_live = 0;
+            for (u32 i = 0; i < CR_CHURN; i++) {
+                n_live += next[i] ? 1u : 0u;
+            }
+            if (n_live < CR_CHURN) {
+                u32 id = 0;
+                ps_page *p = NULL;
+                T_OK(ps_alloc(s, &id, &p));
+                T_CHECK(id > CR_PAGES && id <= CR_PAGES + CR_CHURN);
+                T_CHECK(!next[id - CR_PAGES - 1]);
+                next[id - CR_PAGES - 1] = true;
+                set_value(p, lsn);
+            }
         }
         if (lsn % 7 == 0) {
             ps_op_abort(s);
             continue;
         }
         ps_op_commit(s);
-        if (lsn % 50 == 0) {
+        memcpy(live, next, sizeof(live));
+        if (lsn % 20 == 0) {
             T_OK(ps_checkpoint(s));
         }
     }
@@ -795,7 +1013,7 @@ static void test_concurrent_readers(void)
     T_EQ(stats().frames_retired, 0);
     T_EQ(stats().frames_pinned, 0);
     T_EQ(stats().snapshots_open, 0);
-    for (u32 id = 1; id <= CR_PAGES; id++) {
+    for (u32 id = 1; id <= CR_PAGES + CR_CHURN; id++) {
         T_EQ(ps_test_pins(s, id), 0);
         T_CHECK(ps_test_chain_len(s, id) <= 1);
     }
@@ -825,6 +1043,11 @@ int main(int argc, char **argv)
     T_RUN(test_abort_waits_for_loading);
     T_RUN(test_writer_waits_for_snapshot_loading);
     T_RUN(test_two_snapshots_one_load);
+    T_RUN(test_cutoff_during_load);
+    T_RUN(test_commit_during_load);
+    T_RUN(test_commit_dead_during_load);
+    T_RUN(test_alloc_during_snapshot_load);
+    T_RUN(test_newer_disk_version_einval);
     T_RUN(test_concurrent_readers);
     return t_done();
 }

@@ -53,7 +53,7 @@ typedef struct ps_config {
     usize cache_size; /* bytes of frame memory, at least 16 frames */
     void *cache_memory; /* optional caller-owned buffer, cache_size bytes, aligned to 4096 */
     u32 snapshot_pin_cap; /* pins per snapshot */
-    u32 max_pinned_pct; /* share of the cache all snapshots may pin, 0..100 */
+    u32 max_pinned_pct; /* share of the cache all snapshots may pin, 1..100 */
     bool checkpoint_thread; /* run the built-in checkpointer */
     u32 checkpoint_interval_ms; /* 0 = no timer */
     u32 checkpoint_dirty_pct; /* dirty watermark, 0..100 */

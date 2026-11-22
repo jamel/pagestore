@@ -187,20 +187,11 @@ int ps_mem_frame(ps_store *s, bool writer, u32 *f);
 void ps_mem_release(ps_store *s, u32 f);
 
 /*
- * Page-in (pagein.c). Called with e's latch held, e not LOADING, and returns
- * with the latch held. Sets PS_E_LOADING and drops the latch for the frame
- * request and the read. frameless is a frameless data node of e to load
- * (kept alive by a temporary pin meanwhile), or NULL when e's chain is empty:
- * then a new committed ON_DISK head node (lsn from the page header) is
- * created (a queued, RETIRED frameless node is counted in frames_retired
- * once it has its frame). Checks that the header's page_id is e->id, that the bitmap flag
- * matches the id, and the CRC32C over the page with the checksum field
- * zeroed (EBADMSG); the in-memory checksum is left 0. Counts a cache miss.
- *
- * On success *out is the now-resident node with one pin taken for the
- * caller (release it with ps_node_unpin). On failure nothing is attached,
- * LOADING is cleared, waiters are woken and e may have been released (the
- * caller must not touch e; it still holds the latch of the id).
+ * Enter with e latched and LOADING clear. Pass a frameless data node or
+ * NULL for an empty chain. LOADING covers the unlocked frame request and
+ * disk read. A temporary pin protects an existing node during that gap.
+ * Returns with the latch held. On success *out owns one pin. On failure
+ * e may have been released, so the caller can only use the page ID.
  */
 int ps_page_in(ps_store *s, ps_entry *e, ps_vnode *frameless, bool writer, ps_vnode **out);
 
@@ -294,3 +285,11 @@ void ps_op_begin_format(ps_store *s);
 bool ps_test_has_entry(ps_store *s, u32 id);
 u32 ps_test_pins(ps_store *s, u32 id); /* total pins on every version of id */
 u32 ps_test_chain_len(ps_store *s, u32 id);
+/* Threads waiting on id's LOADING (or holding its entry). Any time. */
+u32 ps_test_waiters(ps_store *s, u32 id);
+/*
+ * Drops id's version from memory as eviction would if it is a lone,
+ * clean (ON_DISK, not dirty), unpinned, committed user data version; the
+ * chain becomes empty. Returns whether it did.
+ */
+bool ps_test_evict(ps_store *s, u32 id);

@@ -62,7 +62,8 @@ struct mem_backend {
     mb_fault faults[MB_POINTS];
     bool block_writes;
     u32 commit_delay_ms;
-    u32 read_delay_ms;
+    bool hold_reads;
+    u32 reads_held;
 };
 
 static void *xalloc(usize n)
@@ -230,12 +231,14 @@ static int be_read_page(ps_backend_ctx *ctx, u32 id, void *buf)
 {
     mem_backend *mb = ctx->mb;
     pthread_mutex_lock(&mb->mu);
-    const u32 delay = mb->read_delay_ms;
-    pthread_mutex_unlock(&mb->mu);
-    if (delay != 0) {
-        sleep_ms(delay);
+    if (mb->hold_reads) {
+        mb->reads_held++;
+        pthread_cond_broadcast(&mb->cv);
+        while (mb->hold_reads) {
+            pthread_cond_wait(&mb->cv, &mb->mu);
+        }
+        mb->reads_held--;
     }
-    pthread_mutex_lock(&mb->mu);
     int rv = take_fault(mb, MB_READ);
     if (rv == 0) {
         const mb_page_rec *r = find(mb, id);
@@ -468,9 +471,19 @@ void mb_set_commit_delay_ms(mem_backend *mb, u32 ms)
     pthread_mutex_unlock(&mb->mu);
 }
 
-void mb_set_read_delay_ms(mem_backend *mb, u32 ms)
+void mb_hold_reads(mem_backend *mb, bool on)
 {
     pthread_mutex_lock(&mb->mu);
-    mb->read_delay_ms = ms;
+    mb->hold_reads = on;
+    pthread_cond_broadcast(&mb->cv);
+    pthread_mutex_unlock(&mb->mu);
+}
+
+void mb_wait_held_reads(mem_backend *mb, u32 n)
+{
+    pthread_mutex_lock(&mb->mu);
+    while (mb->reads_held < n) {
+        pthread_cond_wait(&mb->cv, &mb->mu);
+    }
     pthread_mutex_unlock(&mb->mu);
 }

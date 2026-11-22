@@ -87,6 +87,15 @@ int ps_page_in(ps_store *s, ps_entry *e, ps_vnode *frameless, bool writer, ps_vn
     PS_ASSERT(p->lsn <= atomic_load(&s->committed_lsn));
     if (frameless != NULL) {
         v = frameless;
+        if (v->lsn == 0) {
+            /*
+             * ps_free can leave a disk node without knowing its LSN. The
+             * actual LSN keeps it below all the newer nodes in the chain.
+             */
+            v->lsn = p->lsn;
+        } else {
+            PS_ASSERT(p->lsn == v->lsn); /* a kept version is exactly the disk copy */
+        }
     } else {
         PS_ASSERT(e->head == NULL); /* nobody changes a LOADING entry's chain */
         v->lsn = p->lsn;

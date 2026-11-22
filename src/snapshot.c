@@ -223,6 +223,11 @@ static int pin_visible(ps_snapshot *sn, u32 id, ps_vnode **out, snap_misuse *why
             return EINVAL;
         }
         if (v != NULL && v->frame != PS_NO_FRAME) {
+            if (ps_node_page(s, v)->lsn > S) {
+                ps_unlatch(s->pt, id);
+                *why = MISUSE_NOT_ALLOCATED;
+                return EINVAL;
+            }
             /* Nothing a live snapshot can see is waiting to be freed. */
             PS_ASSERT((v->flags & PS_VF_FREE_WHEN_UNPINNED) == 0);
             ps_node_pin(s, v);
@@ -252,10 +257,11 @@ static int pin_visible(ps_snapshot *sn, u32 id, ps_vnode **out, snap_misuse *why
             ps_unlatch(s->pt, id);
             return ESTALE;
         }
-        /* A kept frameless version is exactly the data-file copy. */
-        PS_ASSERT(v == NULL || ps_node_page(s, got)->lsn <= S);
-        if (got->lsn > S) {
-            /* Loaded from an empty chain, but written after S: not allocated at S. */
+        if (ps_node_page(s, got)->lsn > S) {
+            /*
+             * The disk copy's LSN may only become known after page-in, for
+             * example when ps_free left a disk node with LSN 0.
+             */
             ps_node_unpin(s, e, got);
             ps_unlatch(s->pt, id);
             *why = MISUSE_NOT_ALLOCATED;

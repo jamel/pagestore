@@ -109,6 +109,9 @@ static void test_bad_config(void)
     cfg.max_pinned_pct = 101;
     T_ERR(ps_open_backend(&be, &cfg, PS_CREATE, &s), EINVAL);
     cfg = mb_config(64);
+    cfg.max_pinned_pct = 0; /* snapshots could never pin a page */
+    T_ERR(ps_open_backend(&be, &cfg, PS_CREATE, &s), EINVAL);
+    cfg = mb_config(64);
     cfg.snapshot_pin_cap = 0;
     T_ERR(ps_open_backend(&be, &cfg, PS_CREATE, &s), EINVAL);
 

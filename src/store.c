@@ -57,7 +57,7 @@ static int check_config(const ps_config *cfg)
     if (cfg->page_size != 0 && cfg->cache_size / cfg->page_size < PS_MIN_FRAMES) {
         return EINVAL;
     }
-    if (cfg->snapshot_pin_cap == 0 || cfg->max_pinned_pct > 100 ||
+    if (cfg->snapshot_pin_cap == 0 || cfg->max_pinned_pct == 0 || cfg->max_pinned_pct > 100 ||
         cfg->checkpoint_dirty_pct > 100) {
         return EINVAL;
     }
@@ -373,4 +373,32 @@ u32 ps_test_chain_len(ps_store *s, u32 id)
     }
     ps_unlatch(s->pt, id);
     return n;
+}
+
+u32 ps_test_waiters(ps_store *s, u32 id)
+{
+    ps_latch(s->pt, id);
+    const ps_entry *e = ps_entry_find(s->pt, id);
+    const u32 n = e != NULL ? e->waiters : 0;
+    ps_unlatch(s->pt, id);
+    return n;
+}
+
+bool ps_test_evict(ps_store *s, u32 id)
+{
+    ps_latch(s->pt, id);
+    ps_entry *e = ps_entry_find(s->pt, id);
+    ps_vnode *h = e != NULL ? e->head : NULL;
+    const bool ok = h != NULL && h->older == NULL && h->kind == PS_V_DATA &&
+        h->flags == PS_VF_ON_DISK && h->pins == 0 && h->frame != PS_NO_FRAME &&
+        (e->flags & (PS_E_BITMAP | PS_E_LOADING)) == 0 && atomic_load(&e->dirty) == 0;
+    if (ok) {
+        ps_mem_release(s, h->frame);
+        h->frame = PS_NO_FRAME;
+        e->head = NULL;
+        ps_vnode_delete(s->pt, h);
+        ps_entry_maybe_release(s->pt, e);
+    }
+    ps_unlatch(s->pt, id);
+    return ok;
 }
