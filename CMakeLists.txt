@@ -42,6 +42,7 @@ set(PS_SOURCES
   src/bitmap.c
   src/vfs_posix.c
   src/format.c
+  src/backend_file.c
 )
 
 add_library(pagestore STATIC ${PS_SOURCES})
