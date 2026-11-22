@@ -1,5 +1,6 @@
 #include "store.h"
 
+#include "backend_file.h"
 #include "format.h"
 #include "util.h"
 
@@ -89,6 +90,7 @@ static void store_free(ps_store *s)
     free(s->op.groups);
     free(s->ckpt_items);
     free(s->ckpt_buf);
+    free(s->dir);
     if (s->mem_init) {
         ps_ckpt_sync_destroy(s);
     }
@@ -247,20 +249,34 @@ static int load_groups(ps_store *s, u32 num_groups)
     return 0;
 }
 
-int ps_open_backend(const ps_backend *be, const ps_config *cfg, u32 flags, ps_store **out)
+/* Takes ownership of dir and the backend even if open fails. */
+static int open_store(
+    const ps_backend *be,
+    const ps_config *cfg,
+    u32 flags,
+    char *dir,
+    ps_store **out)
 {
     int rv = check_config(cfg);
     if (rv != 0) {
         be->close(be->ctx);
+        free(dir);
         return rv;
     }
     ps_store *s = calloc(1, sizeof(*s));
     if (s == NULL) {
         be->close(be->ctx);
+        free(dir);
         return ENOMEM;
     }
     s->cfg = *cfg;
     s->cfg.vfs = NULL;
+    if (cfg->vfs != NULL) {
+        s->vfs = *cfg->vfs;
+    } else {
+        ps_vfs_posix_init(&s->vfs);
+    }
+    s->dir = dir;
     s->be = *be;
     atomic_init(&s->op_active, false);
     atomic_init(&s->committed_lsn, 0);
@@ -340,6 +356,52 @@ int ps_open_backend(const ps_backend *be, const ps_config *cfg, u32 flags, ps_st
     }
     *out = s;
     return 0;
+}
+
+int ps_open_backend(const ps_backend *be, const ps_config *cfg, u32 flags, ps_store **out)
+{
+    return open_store(be, cfg, flags, NULL, out);
+}
+
+int ps_open(const char *dir, const ps_config *cfg, u32 flags, ps_store **out)
+{
+    if (dir == NULL || dir[0] == '\0') {
+        return EINVAL;
+    }
+    /* Validate before touching the directory. */
+    int rv = check_config(cfg);
+    if (rv != 0) {
+        return rv;
+    }
+    ps_vfs vfs;
+    if (cfg->vfs != NULL) {
+        vfs = *cfg->vfs;
+    } else {
+        ps_vfs_posix_init(&vfs);
+    }
+    const usize n = strlen(dir) + 1;
+    char *copy = malloc(n);
+    if (copy == NULL) {
+        return ENOMEM;
+    }
+    memcpy(copy, dir, n);
+    ps_backend be;
+    rv = ps_file_backend_new(dir, &vfs, &be);
+    if (rv != 0) {
+        free(copy);
+        return rv;
+    }
+    return open_store(&be, cfg, flags, copy, out);
+}
+
+const char *ps_store_dir(const ps_store *s)
+{
+    return s->dir;
+}
+
+const ps_vfs *ps_store_vfs(const ps_store *s)
+{
+    return &s->vfs;
 }
 
 void ps_close(ps_store *s)

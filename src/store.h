@@ -101,8 +101,11 @@ typedef struct ps_op {
 } ps_op;
 
 struct ps_store {
-    ps_config cfg; /* cfg.vfs is not kept (ps_open copies it into its backend) */
+    ps_config cfg; /* See vfs for the store's VFS copy. */
     ps_backend be;
+    /* The WAL uses the same VFS as the store. */
+    ps_vfs vfs;
+    char *dir; /* owned path from ps_open, NULL for ps_open_backend */
     u32 page_size;
     u32 gsize; /* ids per group */
     u32 max_groups;
@@ -196,6 +199,13 @@ struct ps_store {
     bool reg_init;
     bool mem_init;
 };
+
+/*
+ * The WAL borrows the path and VFS until ps_close. A custom backend has
+ * no path, so ps_store_dir returns NULL for it.
+ */
+const char *ps_store_dir(const ps_store *s);
+const ps_vfs *ps_store_vfs(const ps_store *s);
 
 /* Sends a formatted message to the configured log callback, if any. */
 void ps_log(ps_store *s, int level, const char *fmt, ...) PS_PRINTF(3, 4);

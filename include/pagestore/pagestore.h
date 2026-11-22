@@ -7,6 +7,59 @@
  *
  * Functions returning int use 0 for success and a positive errno on failure.
  * Detected API misuse returns EINVAL and logs at PS_LOG_ERROR in every build.
+ *
+ * An operation that allocates a page and writes its first payload byte:
+ *
+ * Start with the defaults before overriding a setting.
+ *
+ *     ps_config cfg;
+ *     ps_config_init(&cfg);
+ *     cfg.cache_size = 8u << 20;
+ *     ps_store *s;
+ *     int rv = ps_open(dir, &cfg, PS_CREATE, &s);
+ *
+ * Use s only if rv is 0, then close it with ps_close.
+ *
+ * This operation allocates a page and writes its first payload byte.
+ *
+ *     int alloc_byte(ps_store *s, u64 lsn, u32 *id)
+ *     {
+ *         int rv = ps_op_begin(s, lsn);
+ *         if (rv != 0) {
+ *             return rv;
+ *         }
+ *         ps_page *page;
+ *         rv = ps_alloc(s, id, &page);
+ *         if (rv == 0) {
+ *             ((u8 *) page)[PS_PAGE_HEADER_SIZE] = 42;
+ *             ps_op_commit(s);
+ *         } else {
+ *             ps_op_abort(s);
+ *         }
+ *         return rv;
+ *     }
+ *
+ * After alloc_byte succeeds, call ps_checkpoint(s) if the page must be durable.
+ *
+ * Copy out the byte while the snapshot still holds the page.
+ *
+ *     int read_byte(ps_store *s, u32 id, u8 *out)
+ *     {
+ *         ps_snapshot *snap;
+ *         int rv = ps_snapshot_open(s, &snap);
+ *         if (rv != 0) {
+ *             return rv;
+ *         }
+ *         const ps_page *page;
+ *         rv = ps_snapshot_read(snap, id, &page);
+ *         if (rv == 0) {
+ *             *out = ((const u8 *) page)[PS_PAGE_HEADER_SIZE];
+ *         }
+ *         ps_snapshot_close(snap);
+ *         return rv;
+ *     }
+ *     ((u8 *) page)[PS_PAGE_HEADER_SIZE] = 42;
+ *     ps_op_commit(s);
  */
 
 #include "pagestore/backend.h"
@@ -65,7 +118,7 @@ typedef struct ps_config {
     u32 checkpoint_dirty_pct; /* dirty watermark, 0..100 */
     ps_log_fn log; /* optional */
     ps_log_ctx *log_ctx;
-    const ps_vfs *vfs; /* ps_open only; NULL = POSIX. Copied at open. */
+    const ps_vfs *vfs; /* copied at open, NULL selects POSIX */
 } ps_config;
 
 /*
@@ -77,7 +130,12 @@ void ps_config_init(ps_config *cfg);
 
 #define PS_CREATE 0x1u
 
-/* Opens (PS_CREATE: creating or formatting if needed) the store in dir. */
+/*
+ * PS_CREATE creates dir if its parent exists and formats an empty or partly
+ * formatted store. Without it, either case returns ENOENT. EBUSY if any
+ * process has the store open. EINVAL for a bad config or a page size that
+ * differs from the stored one. EBADMSG for corruption.
+ */
 int ps_open(const char *dir, const ps_config *cfg, u32 flags, ps_store **out);
 
 /*
