@@ -75,11 +75,8 @@ int ps_mem_frame(ps_store *s, bool writer, u32 *f)
                 return EAGAIN; /* Run ps_checkpoint before retrying. */
             }
             /*
-             * Wait for an attempt that starts after this point, then retry.
-             * Each round either frees frames or ends the loop: the writer
-             * commits nothing while it waits, so after a successful attempt
-             * only a reader's request can find new dirty frames (written by
-             * the next attempt); a failure returns its error.
+             * A checkpoint already in flight can miss recent commits. A
+             * fresh attempt sees all of them while the writer is blocked.
              */
             const int rv = ps_ckpt_wait(s);
             if (rv != 0) {

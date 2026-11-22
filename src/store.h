@@ -310,13 +310,10 @@ int ps_ckpt_thread_start(ps_store *s);
 void ps_ckpt_thread_stop(ps_store *s);
 
 /*
- * Waits for the checkpoint thread to finish an attempt. Call without
- * a page latch, reg_mu, or mem_mu held. Counts a writer wait. Returns EIO at once if the
- * store has failed (or is closing), the last attempt's error at once if no
- * attempt is in flight and the last one failed (fail fast; the thread
- * retries after its backoff), and otherwise asks the thread for an attempt
- * and waits until an attempt that started after this call has completed:
- * 0 or that attempt's error, or EIO if the store fails meanwhile.
+ * Call with no locks held. Waits for a running or newly requested attempt,
+ * or returns the last error after a failed attempt. EIO if the store has
+ * failed or is closing.
+ * A successful attempt can leave the caller without a usable frame.
  */
 int ps_ckpt_wait(ps_store *s);
 
@@ -367,3 +364,7 @@ u32 ps_test_waiters(ps_store *s, u32 id);
  * Returns whether it did.
  */
 bool ps_test_evict(ps_store *s, u32 id);
+/* Frame requests waiting in ps_ckpt_wait. Any time. */
+u32 ps_test_ckpt_waiters(ps_store *s);
+/* True once ps_close has asked the checkpoint thread to stop. Any time. */
+bool ps_test_ckpt_stopping(ps_store *s);

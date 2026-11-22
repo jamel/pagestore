@@ -483,6 +483,14 @@ static void thread_sleep_until(ps_store *s, u64 deadline_ms)
     pthread_cond_timedwait(&s->ckpt_thread_cv, &s->mem_mu, &ts);
 }
 
+/* Even an empty operation can advance the LSN without dirtying pages. */
+static bool work_pending(const ps_store *s)
+{
+    return atomic_load_explicit(&s->frames_dirty, memory_order_relaxed) > 0 ||
+        atomic_load_explicit(&s->committed_lsn, memory_order_acquire) >
+        atomic_load_explicit(&s->durable_lsn, memory_order_acquire);
+}
+
 /* True when frames_dirty is above checkpoint_dirty_pct of the cache. */
 static bool dirty_over(const ps_store *s)
 {
@@ -491,9 +499,8 @@ static bool dirty_over(const ps_store *s)
 }
 
 /*
- * The thread: sleeps until a trigger (a request or a waiter, the dirty
- * watermark, the interval timer) and runs an attempt, waiting out the
- * backoff after a failure first. Idle once the store has failed.
+ * Failed attempts retry after backoff while work is pending, even with
+ * the interval timer disabled.
  */
 static void *ckpt_thread_main(void *arg)
 {
@@ -511,7 +518,8 @@ static void *ckpt_thread_main(void *arg)
         }
         const u32 iv = s->cfg.checkpoint_interval_ms;
         const u64 due_at = s->ckpt_last_end_ms + iv;
-        if (!s->ckpt_want && !(iv != 0 && now >= due_at) && !dirty_over(s)) {
+        const bool retry = s->ckpt_last_err != 0 && work_pending(s);
+        if (!retry && !s->ckpt_want && !(iv != 0 && now >= due_at) && !dirty_over(s)) {
             if (iv != 0) {
                 thread_sleep_until(s, due_at);
             } else {
@@ -568,6 +576,22 @@ void ps_checkpoint_request(ps_store *s)
     pthread_mutex_unlock(&s->mem_mu);
 }
 
+u32 ps_test_ckpt_waiters(ps_store *s)
+{
+    pthread_mutex_lock(&s->mem_mu);
+    const u32 n = s->ckpt_waiters;
+    pthread_mutex_unlock(&s->mem_mu);
+    return n;
+}
+
+bool ps_test_ckpt_stopping(ps_store *s)
+{
+    pthread_mutex_lock(&s->mem_mu);
+    const bool stop = s->ckpt_stop;
+    pthread_mutex_unlock(&s->mem_mu);
+    return stop;
+}
+
 void ps_ckpt_note_commit(ps_store *s)
 {
     if (!s->ckpt_thread_started || !dirty_over(s)) {
@@ -591,9 +615,13 @@ int ps_ckpt_wait(ps_store *s)
         s->ckpt_want = true;
         pthread_cond_signal(&s->ckpt_thread_cv);
     } else {
-        const u64 target = s->ckpt_started + 1; /* the first attempt to start after this call */
-        s->ckpt_want = true;
-        pthread_cond_signal(&s->ckpt_thread_cv);
+        /* Join an attempt already in flight, or request a new one. */
+        u64 target = s->ckpt_started;
+        if (!s->ckpt_inflight) {
+            target++;
+            s->ckpt_want = true;
+            pthread_cond_signal(&s->ckpt_thread_cv);
+        }
         s->ckpt_waiters++;
         while (s->ckpt_done < target && !s->ckpt_stop &&
                !atomic_load_explicit(&s->failed, memory_order_acquire)) {

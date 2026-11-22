@@ -197,17 +197,28 @@ static int try_commit_alloc(u32 tag, u32 *id)
 
 /* ---- log hooks ---- */
 
-/* ---- log hooks: flush_log records that a checkpoint started ---------------- */
+/* Hold flush_log to keep an attempt in flight while another thread acts. */
 
 struct ps_log_hooks_ctx {
     atomic_uint nflush;
     atomic_int flush_rv;
+    pthread_mutex_t mu;
+    pthread_cond_t cv;
+    bool hold; /* flush_log blocks while set */
+    bool held; /* a flush_log is blocked now */
 };
 
 static int note_flush(ps_log_hooks_ctx *h, u64 lsn)
 {
     PS_UNUSED(lsn);
     atomic_fetch_add(&h->nflush, 1);
+    pthread_mutex_lock(&h->mu);
+    while (h->hold) {
+        h->held = true;
+        pthread_cond_wait(&h->cv, &h->mu);
+    }
+    h->held = false;
+    pthread_mutex_unlock(&h->mu);
     return atomic_load(&h->flush_rv);
 }
 
@@ -215,20 +226,78 @@ static void set_note_hooks(ps_log_hooks_ctx *h)
 {
     atomic_init(&h->nflush, 0);
     atomic_init(&h->flush_rv, 0);
+    pthread_mutex_init(&h->mu, NULL);
+    pthread_cond_init(&h->cv, NULL);
+    h->hold = false;
+    h->held = false;
     const ps_log_hooks hooks = {note_flush, NULL, h};
     ps_set_log_hooks(s, &hooks);
 }
 
-static bool wait_flushes(ps_log_hooks_ctx *h, u32 n, u32 ms)
+/* Close first so the background thread has stopped using these hooks. */
+static void destroy_note_hooks(ps_log_hooks_ctx *h)
 {
-    const u64 end = t_now_ms() + ms;
-    while (atomic_load(&h->nflush) < n) {
-        if (t_now_ms() >= end) {
-            return false;
-        }
+    pthread_cond_destroy(&h->cv);
+    pthread_mutex_destroy(&h->mu);
+}
+
+static void hold_flushes(ps_log_hooks_ctx *h, bool on)
+{
+    pthread_mutex_lock(&h->mu);
+    h->hold = on;
+    pthread_cond_broadcast(&h->cv);
+    pthread_mutex_unlock(&h->mu);
+}
+
+static bool flush_held(ps_log_hooks_ctx *h)
+{
+    pthread_mutex_lock(&h->mu);
+    const bool held = h->held;
+    pthread_mutex_unlock(&h->mu);
+    return held;
+}
+
+/* Wait until the hook is paused so the next step overlaps the checkpoint. */
+static void wait_flush_held(ps_log_hooks_ctx *h)
+{
+    const u64 end = t_now_ms() + 5000;
+    while (!flush_held(h)) {
+        T_CHECK(t_now_ms() < end);
         sleep_ms(1);
     }
-    return true;
+}
+
+/* ps_checkpoint on another thread. */
+typedef struct bg_ckpt {
+    pthread_t t;
+    int rv;
+} bg_ckpt;
+
+static void *bg_ckpt_main(void *arg)
+{
+    bg_ckpt *b = arg;
+    b->rv = ps_checkpoint(s);
+    return NULL;
+}
+
+static void bg_ckpt_start(bg_ckpt *b)
+{
+    b->rv = -1;
+    T_OK(pthread_create(&b->t, NULL, bg_ckpt_main, b));
+}
+
+static int bg_ckpt_join(bg_ckpt *b)
+{
+    T_OK(pthread_join(b->t, NULL));
+    return b->rv;
+}
+
+/* Direct attempts let the test advance backoff without waiting for the timer. */
+static void fail_checkpoints(u32 n, int err)
+{
+    for (u32 i = 0; i < n; i++) {
+        T_ERR(ps_checkpoint(s), err);
+    }
 }
 
 /* ---- tests ---- */
@@ -383,10 +452,10 @@ static void test_waiter_gets_error_then_recovers(void)
     T_EQ(st.writer_waits, 1);
     T_CHECK(!st.failed);
 
-    /* No attempt in flight and the last one failed: fail fast, no new attempt waited for. */
+    /* ENOSPC again, from failing fast or from the thread's retry after its 100 ms backoff. */
     T_ERR(try_commit_alloc(9, &id), ENOSPC);
     st = stats();
-    T_EQ(st.checkpoints_failed, 1);
+    T_CHECK(st.checkpoints_failed >= 1);
     T_EQ(st.writer_waits, 2);
 
     /* The backoff retries by itself once the cause clears. */
@@ -407,6 +476,77 @@ static void test_waiter_gets_error_then_recovers(void)
     T_CHECK(st.checkpoints_run >= 2);
     T_CHECK(ps_durable_lsn(s) >= 2);
     close_store();
+}
+
+static void test_fail_fast(void)
+{
+    open_store((thread_cfg) {16, 100, 0});
+    fill_dirty(7, 7);
+    mb_fail(mb, MB_WRITE, ENOSPC, -1);
+    /* Five failures leave a 1.6 s window before the background retry. */
+    fail_checkpoints(5, ENOSPC);
+    const u64 f0 = stats().checkpoints_failed;
+    const u64 t = t_now_ms();
+    u32 id = 0;
+    T_ERR(try_commit_alloc(9, &id), ENOSPC);
+    T_CHECK(t_now_ms() - t < 1000);
+    T_EQ(stats().checkpoints_failed, f0); /* no attempt was made for it */
+    T_EQ(stats().writer_waits, 1);
+    mb_fail(mb, MB_WRITE, 0, 0);
+    close_store();
+}
+
+/* Releases the held flush_log once a frame request waits in ps_ckpt_wait. */
+static void *release_when_waiting(void *arg)
+{
+    ps_log_hooks_ctx *h = arg;
+    const u64 end = t_now_ms() + 5000;
+    while (ps_test_ckpt_waiters(s) == 0) {
+        T_CHECK(t_now_ms() < end);
+        sleep_ms(1);
+    }
+    hold_flushes(h, false);
+    return NULL;
+}
+
+static void test_waiter_gets_inflight_result(void)
+{
+    /* Make the writer wait on an attempt that started before it arrived. */
+    open_store((thread_cfg) {16, 100, 0});
+    ps_log_hooks_ctx h;
+    set_note_hooks(&h);
+    fill_dirty(7, 7);
+    mb_fail(mb, MB_COMMIT, ENOSPC, -1);
+    fail_checkpoints(5, ENOSPC); /* backoff 1.6 s, 3.2 s after the next failure */
+
+    hold_flushes(&h, true);
+    bg_ckpt b;
+    bg_ckpt_start(&b);
+    wait_flush_held(&h); /* in flight, held in flush_log */
+    const u64 f0 = stats().checkpoints_failed;
+    pthread_t rel;
+    T_OK(pthread_create(&rel, NULL, release_when_waiting, &h));
+
+    const u64 t = t_now_ms();
+    u32 id = 0;
+    T_ERR(try_commit_alloc(9, &id), ENOSPC); /* waits for the held attempt, gets its error */
+    T_CHECK(t_now_ms() - t < 1000);
+    T_EQ(stats().checkpoints_failed, f0 + 1); /* that attempt only */
+    T_EQ(stats().writer_waits, 1);
+    T_OK(pthread_join(rel, NULL));
+    T_ERR(bg_ckpt_join(&b), ENOSPC);
+
+    /* A success of the attempt in flight: the waiter retries and gets a frame. */
+    mb_fail(mb, MB_COMMIT, 0, 0);
+    hold_flushes(&h, true);
+    bg_ckpt_start(&b);
+    wait_flush_held(&h);
+    T_OK(pthread_create(&rel, NULL, release_when_waiting, &h));
+    T_OK(try_commit_alloc(9, &id));
+    T_OK(pthread_join(rel, NULL));
+    T_OK(bg_ckpt_join(&b));
+    close_store();
+    destroy_note_hooks(&h);
 }
 
 static void test_fatal_wakes_waiters(void)
@@ -464,6 +604,7 @@ static void test_flush_log_failure_wakes_waiters(void)
     T_CHECK(stats().failed);
     T_EQ(atomic_load(&h.nflush), 1);
     close_store();
+    destroy_note_hooks(&h);
 }
 
 static void test_log_on_failure(void)
@@ -481,12 +622,31 @@ static void test_log_on_failure(void)
     T_EQ(st.checkpoints_failed, 1);
     T_CHECK(!st.failed);
 
-    /* A later request succeeds (after the backoff). */
-    const u64 c0 = mb_ckpt_count(mb);
-    ps_checkpoint_request(s);
-    T_CHECK(wait_ckpt_count_above(c0, 2000));
-    T_CHECK(wait_durable(1, 1000));
+    /* With no trigger (no timer, no watermark, no request) the thread retries by itself. */
+    T_CHECK(wait_durable(1, 2000));
+    T_EQ(ckpt_errors(), 1);
     close_store();
+}
+
+/* Releases the held flush_log once ps_close has asked the thread to stop. */
+typedef struct close_release {
+    ps_log_hooks_ctx *h;
+    u64 released_ms;
+} close_release;
+
+static void *release_when_closing(void *arg)
+{
+    close_release *cr = arg;
+    const u64 end = t_now_ms() + 5000;
+    while (!ps_test_ckpt_stopping(s)) {
+        T_CHECK(t_now_ms() < end);
+        sleep_ms(1);
+    }
+    sleep_ms(50);
+    T_CHECK(flush_held(cr->h)); /* still in flight while close waits */
+    cr->released_ms = t_now_ms();
+    hold_flushes(cr->h, false);
+    return NULL;
 }
 
 static void test_close_during_checkpoint(void)
@@ -497,18 +657,35 @@ static void test_close_during_checkpoint(void)
     commit_alloc(1);
     commit_alloc(2);
     const u64 c0 = mb_ckpt_count(mb);
-    mb_set_commit_delay_ms(mb, 300);
+    hold_flushes(&h, true);
     ps_checkpoint_request(s);
-    T_CHECK(wait_flushes(&h, 1, 2000)); /* the checkpoint is in flight */
-    sleep_ms(50);
+    wait_flush_held(&h); /* the thread's checkpoint is in flight */
+    close_release cr = {&h, 0};
+    pthread_t rel;
+    T_OK(pthread_create(&rel, NULL, release_when_closing, &cr));
     const u64 t = t_now_ms();
     ps_close(s);
+    const u64 done = t_now_ms();
+    T_OK(pthread_join(rel, NULL));
     s = NULL;
-    T_CHECK(t_now_ms() - t < 2000);
+    T_CHECK(cr.released_ms != 0 && done >= cr.released_ms); /* close waited for the attempt */
+    T_CHECK(done - t < 2000);
     T_EQ(mb_ckpt_count(mb), c0 + 1); /* it finished before the store was torn down */
     T_EQ(mb_info(mb).durable_lsn, 2);
     mb_destroy(mb);
     mb = NULL;
+    destroy_note_hooks(&h);
+}
+
+static void test_close_during_backoff(void)
+{
+    open_store((thread_cfg) {64, 100, 0});
+    commit_alloc(1);
+    mb_fail(mb, MB_WRITE, ENOSPC, -1);
+    fail_checkpoints(7, ENOSPC); /* backoff 6.4 s */
+    const u64 t = t_now_ms();
+    close_store();
+    T_CHECK(t_now_ms() - t < 1000);
 }
 
 static void test_close_idle_thread(void)
@@ -590,10 +767,13 @@ int main(int argc, char **argv)
     T_RUN(test_writer_waits);
     T_RUN(test_reader_waits);
     T_RUN(test_waiter_gets_error_then_recovers);
+    T_RUN(test_fail_fast);
+    T_RUN(test_waiter_gets_inflight_result);
     T_RUN(test_fatal_wakes_waiters);
     T_RUN(test_flush_log_failure_wakes_waiters);
     T_RUN(test_log_on_failure);
     T_RUN(test_close_during_checkpoint);
+    T_RUN(test_close_during_backoff);
     T_RUN(test_close_idle_thread);
     T_RUN(test_close_failed_no_leak);
     T_RUN(test_open_error_no_thread);
