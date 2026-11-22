@@ -1,6 +1,7 @@
 set(PS_TESTSUPPORT_SOURCES
   support/test.c
   support/fault_vfs.c
+  support/mem_backend.c
 )
 
 add_library(ps_testsupport STATIC ${PS_TESTSUPPORT_SOURCES})
@@ -57,3 +58,4 @@ ps_add_test(NAME test_backend_file LABEL unit SOURCES unit/test_backend_file.c)
 ps_add_test(NAME test_frames LABEL unit SOURCES unit/test_frames.c)
 ps_add_test(NAME test_ptable LABEL unit SOURCES unit/test_ptable.c)
 ps_add_test(NAME test_allocator LABEL unit SOURCES unit/test_allocator.c)
+ps_add_test(NAME test_ops LABEL unit SOURCES unit/test_ops.c)

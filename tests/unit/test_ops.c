@@ -1,0 +1,808 @@
+#include "allocator.h"
+#include "mem_backend.h"
+#include "pagestore/pagestore.h"
+#include "store.h"
+#include "test.h"
+
+#include <errno.h>
+#include <pthread.h>
+#include <stdatomic.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+#define PS 4096u
+#define HDR PS_PAGE_HEADER_SIZE
+
+static mem_backend *mb;
+static ps_store *s;
+
+static void open_store(u32 frames)
+{
+    mb = mb_create();
+    T_OK(mb_open(mb, frames, PS_CREATE, &s));
+}
+
+static void close_store(void)
+{
+    ps_close(s);
+    s = NULL;
+    mb_destroy(mb);
+    mb = NULL;
+}
+
+static bool all_zero(const void *p, usize n)
+{
+    const u8 *b = p;
+    for (usize i = 0; i < n; i++) {
+        if (b[i] != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static void sleep_ms(u32 ms)
+{
+    struct timespec ts = {(time_t) (ms / 1000), (long) (ms % 1000) * 1000000L};
+    while (nanosleep(&ts, &ts) != 0) {}
+}
+
+/* Create a committed page in its own operation at lsn. */
+static u32 alloc_with(u64 lsn, const char *text)
+{
+    T_OK(ps_op_begin(s, lsn));
+    u32 id = 0;
+    ps_page *p = NULL;
+    T_OK(ps_alloc(s, &id, &p));
+    memcpy((u8 *) p + HDR, text, strlen(text) + 1);
+    ps_op_commit(s);
+    return id;
+}
+
+static void check_text(u32 id, const char *text)
+{
+    const ps_page *p = NULL;
+    T_OK(ps_read(s, id, &p));
+    T_EQ(strcmp((const char *) p + HDR, text), 0);
+}
+
+struct ps_log_ctx {
+    atomic_int errors;
+};
+
+static void count_log(ps_log_ctx *ctx, int level, const char *msg)
+{
+    PS_UNUSED(msg);
+    if (level == PS_LOG_ERROR) {
+        atomic_fetch_add(&ctx->errors, 1);
+    }
+}
+
+static void test_config_defaults(void)
+{
+    ps_config c;
+    ps_config_init(&c);
+    T_EQ(c.page_size, 0);
+    T_EQ(c.cache_size, 64u << 20);
+    T_CHECK(c.cache_memory == NULL);
+    T_EQ(c.snapshot_pin_cap, 64);
+    T_EQ(c.max_pinned_pct, 25);
+    T_EQ(c.checkpoint_thread, true);
+    T_EQ(c.checkpoint_interval_ms, 5000);
+    T_EQ(c.checkpoint_dirty_pct, 40);
+    T_CHECK(c.log == NULL && c.log_ctx == NULL && c.vfs == NULL);
+}
+
+static void test_bad_config(void)
+{
+    mb = mb_create();
+    ps_backend be;
+    ps_config cfg = mb_config(64);
+
+    cfg.page_size = 2048;
+    mb_backend(mb, &be);
+    T_ERR(ps_open_backend(&be, &cfg, PS_CREATE, &s), EINVAL);
+    cfg.page_size = 6000;
+    T_ERR(ps_open_backend(&be, &cfg, PS_CREATE, &s), EINVAL);
+    cfg = mb_config(64);
+    cfg.max_pinned_pct = 101;
+    T_ERR(ps_open_backend(&be, &cfg, PS_CREATE, &s), EINVAL);
+    cfg = mb_config(64);
+    cfg.snapshot_pin_cap = 0;
+    T_ERR(ps_open_backend(&be, &cfg, PS_CREATE, &s), EINVAL);
+
+    T_ERR(mb_open(mb, 8, PS_CREATE, &s), EINVAL);
+    T_ERR(mb_open(mb, 15, PS_CREATE, &s), EINVAL);
+    mb_destroy(mb);
+
+    mb = mb_create();
+    T_ERR(mb_open(mb, 64, 0, &s), ENOENT);
+    /* A seq 0 header is an interrupted format. */
+    T_OK(mb_open(mb, 64, PS_CREATE, &s));
+    T_EQ(mb_info(mb).seq, 0);
+    ps_close(s);
+    T_ERR(mb_open(mb, 64, 0, &s), ENOENT);
+    /* ... and is formatted again with it. */
+    T_OK(mb_open(mb, 64, PS_CREATE, &s));
+    T_EQ(ps_committed_lsn(s), 0);
+    close_store();
+
+    mb = mb_create();
+    ps_backend_info info = {8192, 1, 1, 0};
+    mb_set_info(mb, info);
+    cfg = mb_config(64);
+    mb_backend(mb, &be);
+    T_ERR(ps_open_backend(&be, &cfg, 0, &s), EINVAL);
+    mb_destroy(mb);
+    mb = NULL;
+}
+
+static void test_format(void)
+{
+    open_store(64);
+    T_EQ(ps_page_size(s), PS);
+    T_EQ(ps_committed_lsn(s), 0);
+    T_EQ(ps_durable_lsn(s), 0);
+    struct ps_stats st;
+    ps_stats(s, &st);
+    T_EQ(st.num_groups, 1);
+    T_EQ(st.allocated_pages, 0);
+    T_EQ(st.frames_dirty, 1); /* bitmap page 0 */
+    T_EQ(st.frames_free, 63);
+    T_EQ(st.frames_pinned, 0);
+    T_EQ(st.frames_evictable, 0);
+    T_CHECK(!ps_test_has_entry(s, 1)); /* format's cancelled allocation left nothing */
+    T_EQ(ps_test_chain_len(s, 0), 1);
+    T_EQ(ps_test_pins(s, 0), 0);
+    close_store();
+}
+
+static void test_alloc_write_read(void)
+{
+    open_store(64);
+    T_OK(ps_op_begin(s, 1));
+    u32 id = 0;
+    ps_page *p = NULL;
+    T_OK(ps_alloc(s, &id, &p));
+    T_EQ(id, 1);
+    T_EQ(p->page_id, 1);
+    T_EQ(p->lsn, 1);
+    T_EQ(p->magic, 0);
+    T_EQ(p->flags, 0);
+    T_EQ(p->checksum, 0);
+    T_CHECK(all_zero((const u8 *) p + HDR, PS - HDR));
+    memcpy((u8 *) p + HDR, "hello", 6);
+    /* ps_read and ps_write see the operation's own version. */
+    const ps_page *rp = NULL;
+    T_OK(ps_read(s, 1, &rp));
+    T_CHECK(rp == p);
+    ps_page *wp = NULL;
+    T_OK(ps_write(s, 1, &wp));
+    T_CHECK(wp == p);
+    ps_op_commit(s);
+    T_EQ(ps_committed_lsn(s), 1);
+    T_EQ(ps_durable_lsn(s), 0);
+
+    T_OK(ps_op_begin(s, 2));
+    check_text(1, "hello");
+    ps_op_commit(s);
+    T_EQ(ps_committed_lsn(s), 2);
+    T_EQ(ps_test_pins(s, 1), 0);
+    close_store();
+}
+
+static void test_lsn_must_increase(void)
+{
+    open_store(64);
+    T_OK(ps_op_begin(s, 1));
+    ps_op_commit(s);
+    T_ERR(ps_op_begin(s, 1), EINVAL);
+    T_ERR(ps_op_begin(s, 0), EINVAL);
+    /* Gaps are allowed. */
+    T_OK(ps_op_begin(s, 10));
+    ps_op_commit(s);
+    T_EQ(ps_committed_lsn(s), 10);
+    T_ERR(ps_op_begin(s, 9), EINVAL);
+    T_OK(ps_op_begin(s, 11));
+    ps_op_abort(s);
+    T_EQ(ps_committed_lsn(s), 10);
+    T_OK(ps_op_begin(s, 11));
+    ps_op_commit(s);
+    close_store();
+}
+
+/* A nested begin on the same thread returns EINVAL instead of deadlocking. */
+static void test_nested_begin_einval(void)
+{
+    mb = mb_create();
+    ps_log_ctx lc;
+    atomic_init(&lc.errors, 0);
+    ps_config cfg = mb_config(64);
+    cfg.log = count_log;
+    cfg.log_ctx = &lc;
+    ps_backend be;
+    mb_backend(mb, &be);
+    T_OK(ps_open_backend(&be, &cfg, PS_CREATE, &s));
+
+    T_OK(ps_op_begin(s, 1));
+    T_ERR(ps_op_begin(s, 2), EINVAL);
+    T_EQ(atomic_load(&lc.errors), 1);
+    /* A newer LSN still cannot bypass the ownership check. */
+    T_ERR(ps_op_begin(s, 1), EINVAL);
+    u32 id = 0;
+    ps_page *p = NULL;
+    T_OK(ps_alloc(s, &id, &p));
+    ps_op_abort(s);
+    T_EQ(ps_committed_lsn(s), 0);
+    T_OK(ps_op_begin(s, 2));
+    ps_op_commit(s);
+    close_store();
+}
+
+typedef struct waiter_arg {
+    atomic_bool committed;
+    u64 begun_ms;
+    bool saw_commit;
+} waiter_arg;
+
+static void *begin_waiter(void *p)
+{
+    waiter_arg *a = p;
+    T_OK(ps_op_begin(s, 2));
+    a->begun_ms = t_now_ms();
+    a->saw_commit = atomic_load(&a->committed) && ps_committed_lsn(s) == 1;
+    ps_op_commit(s);
+    return NULL;
+}
+
+static void test_begin_waits_for_other_thread(void)
+{
+    open_store(64);
+    waiter_arg a;
+    atomic_init(&a.committed, false);
+    a.begun_ms = 0;
+    a.saw_commit = false;
+
+    T_OK(ps_op_begin(s, 1));
+    const u64 t0 = t_now_ms();
+    pthread_t th;
+    T_OK(pthread_create(&th, NULL, begin_waiter, &a));
+    sleep_ms(100);
+    u32 id = 0;
+    ps_page *p = NULL;
+    T_OK(ps_alloc(s, &id, &p));
+    atomic_store(&a.committed, true);
+    ps_op_commit(s);
+    T_OK(pthread_join(th, NULL));
+    T_CHECK(a.begun_ms >= t0 + 100);
+    T_CHECK(a.saw_commit);
+    T_EQ(ps_committed_lsn(s), 2);
+    close_store();
+}
+
+static void test_write_copies(void)
+{
+    open_store(64);
+    T_EQ(alloc_with(1, "A"), 1);
+
+    T_OK(ps_op_begin(s, 2));
+    const ps_page *old = NULL;
+    T_OK(ps_read(s, 1, &old));
+    ps_page *neu = NULL;
+    T_OK(ps_write(s, 1, &neu));
+    T_CHECK(neu != old);
+    T_EQ(neu->lsn, 2);
+    T_EQ(neu->page_id, 1);
+    T_EQ(neu->checksum, 0);
+    T_EQ(old->lsn, 1);
+    memcpy((u8 *) neu + HDR, "B", 2);
+    T_EQ(strcmp((const char *) old + HDR, "A"), 0);
+    const ps_page *again = NULL;
+    T_OK(ps_read(s, 1, &again));
+    T_CHECK(again == neu);
+    ps_page *w2 = NULL;
+    T_OK(ps_write(s, 1, &w2));
+    T_CHECK(w2 == neu);
+    T_EQ(ps_test_chain_len(s, 1), 2);
+    ps_op_commit(s);
+
+    /* The replaced version was freed at commit (no snapshots), and the op's pin with it. */
+    T_EQ(ps_test_chain_len(s, 1), 1);
+    T_EQ(ps_test_pins(s, 1), 0);
+    T_OK(ps_op_begin(s, 3));
+    check_text(1, "B");
+    ps_op_commit(s);
+    close_store();
+}
+
+static void test_read_pins_once(void)
+{
+    open_store(64);
+    alloc_with(1, "A");
+    struct ps_stats st0;
+    ps_stats(s, &st0);
+
+    T_OK(ps_op_begin(s, 2));
+    const ps_page *a = NULL;
+    const ps_page *b = NULL;
+    T_OK(ps_read(s, 1, &a));
+    T_OK(ps_read(s, 1, &b));
+    T_CHECK(a == b);
+    T_EQ(ps_test_pins(s, 1), 1);
+    struct ps_stats st;
+    ps_stats(s, &st);
+    T_EQ(st.frames_pinned, 1);
+    T_EQ(s->op.frames, 1);
+    ps_op_abort(s);
+    T_EQ(ps_test_pins(s, 1), 0);
+    ps_stats(s, &st);
+    T_EQ(st.frames_pinned, 0);
+    T_EQ(st.frames_free, st0.frames_free);
+    close_store();
+}
+
+/* A version pinned by ps_read and replaced in the same operation is freed when it ends. */
+static void test_read_then_replace(void)
+{
+    open_store(64);
+    alloc_with(1, "A");
+    alloc_with(2, "B");
+    struct ps_stats st0;
+    ps_stats(s, &st0);
+
+    /* Abort drops the pins but leaves the committed versions. */
+    T_OK(ps_op_begin(s, 3));
+    const ps_page *a = NULL;
+    const ps_page *b = NULL;
+    T_OK(ps_read(s, 1, &a));
+    T_OK(ps_read(s, 2, &b));
+    ps_page *w = NULL;
+    T_OK(ps_write(s, 1, &w));
+    T_OK(ps_free(s, 2));
+    T_EQ(ps_test_pins(s, 1), 1);
+    T_EQ(ps_test_pins(s, 2), 1);
+    ps_op_abort(s);
+    T_EQ(ps_test_pins(s, 1), 0);
+    T_EQ(ps_test_pins(s, 2), 0);
+    T_EQ(ps_test_chain_len(s, 1), 1);
+    T_EQ(ps_test_chain_len(s, 2), 1);
+
+    /* Both old pointers stay valid up to commit, including for the freed page. */
+    T_OK(ps_op_begin(s, 4));
+    T_OK(ps_read(s, 1, &a));
+    T_OK(ps_read(s, 2, &b));
+    T_OK(ps_write(s, 1, &w));
+    memcpy((u8 *) w + HDR, "C", 2);
+    T_OK(ps_free(s, 2));
+    T_EQ(strcmp((const char *) a + HDR, "A"), 0);
+    T_EQ(strcmp((const char *) b + HDR, "B"), 0);
+    ps_op_commit(s);
+    T_EQ(ps_test_pins(s, 1), 0);
+    T_EQ(ps_test_chain_len(s, 1), 1);
+    T_EQ(ps_test_chain_len(s, 2), 1); /* the marker */
+    struct ps_stats st;
+    ps_stats(s, &st);
+    T_EQ(st.frames_pinned, 0);
+    T_EQ(st.frames_free, st0.frames_free + 1); /* page 2's frame */
+    T_EQ(st.allocated_pages, 1);
+
+    T_OK(ps_op_begin(s, 5));
+    check_text(1, "C");
+    ps_op_commit(s);
+    close_store();
+}
+
+static void test_abort_discards(void)
+{
+    open_store(64);
+    alloc_with(1, "A");
+    T_OK(ps_op_begin(s, 2));
+    ps_page *p = NULL;
+    T_OK(ps_write(s, 1, &p));
+    memcpy((u8 *) p + HDR, "B", 2);
+    ps_op_commit(s);
+    struct ps_stats st0;
+    ps_stats(s, &st0);
+
+    T_OK(ps_op_begin(s, 3));
+    u32 a = 0;
+    u32 b = 0;
+    T_OK(ps_alloc(s, &a, &p));
+    T_OK(ps_alloc(s, &b, &p));
+    T_EQ(a, 2);
+    T_EQ(b, 3);
+    T_OK(ps_write(s, 1, &p));
+    memcpy((u8 *) p + HDR, "C", 2);
+    T_OK(ps_free(s, 1));
+    ps_op_abort(s);
+
+    struct ps_stats st;
+    ps_stats(s, &st);
+    T_EQ(st.frames_free, st0.frames_free);
+    T_EQ(st.frames_pinned, 0);
+    T_EQ(st.allocated_pages, 1);
+    T_CHECK(!ps_test_has_entry(s, a));
+    T_CHECK(!ps_test_has_entry(s, b));
+    T_EQ(ps_test_chain_len(s, 1), 1);
+
+    T_OK(ps_op_begin(s, 4));
+    check_text(1, "B");
+    u32 a2 = 0;
+    u32 b2 = 0;
+    T_OK(ps_alloc(s, &a2, &p));
+    T_OK(ps_alloc(s, &b2, &p));
+    T_EQ(a2, a);
+    T_EQ(b2, b);
+    ps_op_commit(s);
+    ps_stats(s, &st);
+    T_EQ(st.allocated_pages, 3);
+    close_store();
+}
+
+static void test_freed_page_einval(void)
+{
+    open_store(64);
+    alloc_with(1, "A");
+    T_OK(ps_op_begin(s, 2));
+    T_OK(ps_free(s, 1));
+    /* Within the freeing op too. */
+    const ps_page *rp = NULL;
+    ps_page *wp = NULL;
+    T_ERR(ps_read(s, 1, &rp), EINVAL);
+    T_ERR(ps_write(s, 1, &wp), EINVAL);
+    T_ERR(ps_free(s, 1), EINVAL);
+    ps_op_commit(s);
+    T_EQ(ps_test_chain_len(s, 1), 1); /* the marker, until a checkpoint */
+
+    T_OK(ps_op_begin(s, 3));
+    T_ERR(ps_read(s, 1, &rp), EINVAL);
+    T_ERR(ps_write(s, 1, &wp), EINVAL);
+    T_ERR(ps_free(s, 1), EINVAL);
+    T_ERR(ps_read(s, 5, &rp), EINVAL);
+    T_ERR(ps_write(s, 5, &wp), EINVAL);
+    T_ERR(ps_free(s, 5), EINVAL);
+    T_CHECK(!ps_test_has_entry(s, 5));
+    /* Commit makes the freed ID eligible for reuse. */
+    u32 id = 0;
+    T_OK(ps_alloc(s, &id, &wp));
+    T_EQ(id, 1);
+    T_EQ(wp->lsn, 3);
+    T_CHECK(all_zero((const u8 *) wp + HDR, PS - HDR));
+    ps_op_commit(s);
+    T_EQ(ps_test_chain_len(s, 1), 1); /* the marker was replaced and freed */
+    close_store();
+}
+
+static void test_free_in_op(void)
+{
+    open_store(64);
+    alloc_with(1, "A");
+    alloc_with(2, "B");
+    struct ps_stats st0;
+    ps_stats(s, &st0);
+
+    T_OK(ps_op_begin(s, 3));
+    /* Allocated and freed in the op: cancelled, nothing remains. */
+    u32 id = 0;
+    ps_page *p = NULL;
+    T_OK(ps_alloc(s, &id, &p));
+    T_EQ(id, 3);
+    T_OK(ps_free(s, id));
+    T_CHECK(!ps_test_has_entry(s, id));
+    /* Written then freed: the copy becomes the marker. */
+    T_OK(ps_write(s, 1, &p));
+    T_OK(ps_free(s, 1));
+    T_EQ(ps_test_chain_len(s, 1), 2);
+    T_EQ(s->op.frames, 1); /* the spare for group 0 */
+    /* The cursor does not move back: the next allocation is 4. */
+    T_OK(ps_alloc(s, &id, &p));
+    T_EQ(id, 4);
+    ps_op_commit(s);
+
+    struct ps_stats st;
+    ps_stats(s, &st);
+    T_EQ(st.allocated_pages, 2); /* 2 and 4 */
+    T_EQ(ps_test_chain_len(s, 1), 1);
+    T_EQ(st.frames_free, st0.frames_free); /* -1 for page 1, +1 for page 4 */
+
+    T_OK(ps_op_begin(s, 4));
+    T_OK(ps_alloc(s, &id, &p));
+    T_EQ(id, 1);
+    T_OK(ps_alloc(s, &id, &p));
+    T_EQ(id, 3);
+    ps_op_commit(s);
+    close_store();
+}
+
+static void test_bitmap_ids_einval(void)
+{
+    open_store(64);
+    alloc_with(1, "A");
+    T_OK(ps_op_begin(s, 2));
+    const ps_page *rp = NULL;
+    ps_page *wp = NULL;
+    T_ERR(ps_read(s, 0, &rp), EINVAL);
+    T_ERR(ps_write(s, 0, &wp), EINVAL);
+    T_ERR(ps_free(s, 0), EINVAL);
+    const u32 g1 = ps_group_size(PS);
+    T_EQ(g1, 32576);
+    T_ERR(ps_read(s, g1, &rp), EINVAL);
+    T_ERR(ps_write(s, g1, &wp), EINVAL);
+    T_ERR(ps_free(s, g1), EINVAL);
+    T_ERR(ps_read(s, g1 + 1, &rp), EINVAL); /* in a group that does not exist */
+    T_ERR(ps_free(s, g1 + 1), EINVAL);
+    T_ERR(ps_read(s, UINT32_MAX, &rp), EINVAL);
+    T_ERR(ps_free(s, UINT32_MAX), EINVAL);
+    check_text(1, "A");
+    ps_op_commit(s);
+    close_store();
+}
+
+static void test_outside_op_einval(void)
+{
+    open_store(64);
+    alloc_with(1, "A");
+    const ps_page *rp = NULL;
+    ps_page *wp = NULL;
+    u32 id = 0;
+    T_ERR(ps_read(s, 1, &rp), EINVAL);
+    T_ERR(ps_write(s, 1, &wp), EINVAL);
+    T_ERR(ps_alloc(s, &id, &wp), EINVAL);
+    T_ERR(ps_free(s, 1), EINVAL);
+    T_EQ(ps_committed_lsn(s), 1);
+    close_store();
+}
+
+/* Seal a fixture page so it can be read back from the backend. */
+static void make_page(u8 *buf, u32 id, u64 lsn, const char *text)
+{
+    memset(buf, 0, PS);
+    ps_page *p = (ps_page *) buf;
+    p->magic = 0x1234;
+    p->page_id = id;
+    p->lsn = lsn;
+    strcpy((char *) buf + HDR, text);
+    mb_seal_page(buf, PS);
+}
+
+/* Seed three pages at LSN 9. Page 2 has the wrong ID and page 3 a bad CRC. */
+static void setup_pagein_store(void)
+{
+    mb = mb_create();
+    ps_backend_info info = {PS, 1, 1, 9};
+    mb_set_info(mb, info);
+    u8 *buf = calloc(1, PS);
+    T_CHECK(buf != NULL);
+    ps_page *p = (ps_page *) buf;
+    p->magic = PS_BITMAP_MAGIC;
+    p->page_id = 0;
+    p->flags = PS_PAGE_FLAG_BITMAP;
+    p->lsn = 9;
+    buf[HDR] = 0x0F; /* bits 0..3 */
+    mb_seal_page(buf, PS);
+    mb_put(mb, 0, buf);
+
+    make_page(buf, 1, 5, "one");
+    mb_put(mb, 1, buf);
+    make_page(buf, 7, 6, "two");
+    mb_put(mb, 2, buf);
+    make_page(buf, 3, 7, "three");
+    buf[100] ^= 1;
+    mb_put(mb, 3, buf);
+    free(buf);
+}
+
+static void test_pagein_checks(void)
+{
+    setup_pagein_store();
+    T_OK(mb_open(mb, 64, 0, &s));
+    T_EQ(ps_committed_lsn(s), 9);
+    T_EQ(ps_durable_lsn(s), 9);
+    struct ps_stats st;
+    ps_stats(s, &st);
+    T_EQ(st.allocated_pages, 3);
+    const u64 misses0 = st.cache_misses;
+    T_EQ(misses0, 1); /* the bitmap page */
+
+    T_OK(ps_op_begin(s, 10));
+    const ps_page *p = NULL;
+    T_OK(ps_read(s, 1, &p));
+    T_EQ(strcmp((const char *) p + HDR, "one"), 0);
+    T_EQ(p->checksum, 0);
+    T_EQ(p->lsn, 5);
+    T_EQ(p->magic, 0x1234);
+    T_ERR(ps_read(s, 2, &p), EBADMSG);
+    T_ERR(ps_read(s, 3, &p), EBADMSG);
+    ps_page *wp = NULL;
+    T_ERR(ps_write(s, 3, &wp), EBADMSG);
+    T_CHECK(!ps_test_has_entry(s, 2));
+    T_CHECK(!ps_test_has_entry(s, 3));
+    ps_stats(s, &st);
+    T_EQ(st.cache_misses, misses0 + 4);
+    ps_op_abort(s);
+
+    T_OK(ps_op_begin(s, 10));
+    T_OK(ps_read(s, 1, &p));
+    T_EQ(strcmp((const char *) p + HDR, "one"), 0);
+    ps_stats(s, &st);
+    T_EQ(st.cache_misses, misses0 + 4); /* resident: a hit */
+    T_EQ(st.cache_hits, 1);
+    u32 id = 0;
+    T_OK(ps_alloc(s, &id, &wp));
+    T_EQ(id, 4);
+    ps_op_commit(s);
+    T_EQ(ps_committed_lsn(s), 10);
+    close_store();
+}
+
+static void test_pagein_read_error(void)
+{
+    setup_pagein_store();
+    T_OK(mb_open(mb, 64, 0, &s));
+    T_OK(ps_op_begin(s, 10));
+    mb_fail(mb, MB_READ, EIO, 1);
+    const ps_page *p = NULL;
+    T_ERR(ps_read(s, 1, &p), EIO);
+    T_CHECK(!ps_test_has_entry(s, 1));
+    T_OK(ps_read(s, 1, &p));
+    ps_op_commit(s);
+    close_store();
+
+    setup_pagein_store();
+    u8 *buf = calloc(1, PS);
+    T_CHECK(buf != NULL);
+    memcpy(buf, mb_page(mb, 0), PS);
+    buf[HDR + 1] ^= 1;
+    mb_put(mb, 0, buf);
+    free(buf);
+    T_ERR(mb_open(mb, 64, 0, &s), EBADMSG);
+    mb_destroy(mb);
+    mb = NULL;
+}
+
+/* Free can install a marker without reading the old data page. */
+static void test_free_unloaded(void)
+{
+    setup_pagein_store();
+    T_OK(mb_open(mb, 64, 0, &s));
+    struct ps_stats st0;
+    ps_stats(s, &st0);
+    T_OK(ps_op_begin(s, 10));
+    T_OK(ps_free(s, 1));
+    T_EQ(ps_test_chain_len(s, 1), 2);
+    ps_op_abort(s);
+    T_CHECK(!ps_test_has_entry(s, 1));
+
+    T_OK(ps_op_begin(s, 11));
+    T_OK(ps_free(s, 1));
+    ps_op_commit(s);
+    T_EQ(ps_test_chain_len(s, 1), 1); /* no snapshot: the disk node was freed */
+    struct ps_stats st;
+    ps_stats(s, &st);
+    T_EQ(st.allocated_pages, 2);
+    T_EQ(st.cache_misses, st0.cache_misses); /* free does not load */
+    T_OK(ps_op_begin(s, 12));
+    const ps_page *p = NULL;
+    T_ERR(ps_read(s, 1, &p), EINVAL);
+    ps_op_commit(s);
+    close_store();
+}
+
+static void test_cache_full_enobufs(void)
+{
+    open_store(16);
+    struct ps_stats st0;
+    ps_stats(s, &st0);
+    T_OK(ps_op_begin(s, 1));
+    u32 n = 0;
+    int rv = 0;
+    for (;;) {
+        u32 id = 0;
+        ps_page *p = NULL;
+        rv = ps_alloc(s, &id, &p);
+        if (rv != 0) {
+            break;
+        }
+        n++;
+        T_EQ(id, n);
+    }
+    T_ERR(rv, ENOBUFS);
+    /* 16 frames: the bitmap page, group 0's spare, 14 pages. */
+    T_EQ(n, 14);
+    ps_op_abort(s);
+    struct ps_stats st;
+    ps_stats(s, &st);
+    T_EQ(st.frames_free, st0.frames_free);
+
+    T_OK(ps_op_begin(s, 1));
+    u32 id = 0;
+    ps_page *p = NULL;
+    T_OK(ps_alloc(s, &id, &p));
+    T_EQ(id, 1);
+    ps_op_commit(s);
+    close_store();
+}
+
+static void test_stats_basic(void)
+{
+    open_store(64);
+    T_OK(ps_op_begin(s, 1));
+    for (u32 i = 0; i < 3; i++) {
+        u32 id = 0;
+        ps_page *p = NULL;
+        T_OK(ps_alloc(s, &id, &p));
+    }
+    struct ps_stats st;
+    ps_stats(s, &st);
+    T_EQ(st.allocated_pages, 0); /* not committed yet */
+    ps_op_commit(s);
+    ps_stats(s, &st);
+    T_EQ(st.page_size, PS);
+    T_EQ(st.num_groups, 1);
+    T_EQ(st.allocated_pages, 3);
+    T_EQ(st.committed_lsn, 1);
+    T_EQ(st.durable_lsn, 0);
+    T_EQ(st.frames_total, 64);
+    T_EQ(st.frames_free, 64 - 4); /* bitmap + 3 pages; the spare was returned */
+    T_EQ(st.frames_dirty, 4);
+    T_EQ(st.frames_pinned, 0);
+    T_EQ(st.frames_evictable, 0); /* dirty */
+    T_EQ(st.frames_retired, 0);
+    T_EQ(st.snapshots_open, 0);
+    T_EQ(st.checkpoints_run, 0);
+    T_CHECK(!st.failed);
+    T_CHECK(st.bookkeeping_bytes > 0);
+    close_store();
+}
+
+static void test_clean_page_evictable(void)
+{
+    setup_pagein_store();
+    T_OK(mb_open(mb, 64, 0, &s));
+    T_OK(ps_op_begin(s, 10));
+    const ps_page *p = NULL;
+    T_OK(ps_read(s, 1, &p));
+    struct ps_stats st;
+    ps_stats(s, &st);
+    T_EQ(st.frames_evictable, 0); /* pinned by the operation */
+    ps_op_commit(s);
+    ps_stats(s, &st);
+    T_EQ(st.frames_evictable, 1); /* clean, on disk, unpinned; bitmap pages never are */
+    T_OK(ps_op_begin(s, 11));
+    ps_page *wp = NULL;
+    T_OK(ps_write(s, 1, &wp));
+    ps_stats(s, &st);
+    T_EQ(st.frames_evictable, 0); /* under the operation's copy */
+    ps_op_commit(s);
+    ps_stats(s, &st);
+    T_EQ(st.frames_evictable, 0); /* the new head is dirty */
+    close_store();
+}
+
+int main(int argc, char **argv)
+{
+    t_init(argc, argv);
+    T_RUN(test_config_defaults);
+    T_RUN(test_bad_config);
+    T_RUN(test_format);
+    T_RUN(test_alloc_write_read);
+    T_RUN(test_lsn_must_increase);
+    T_RUN(test_nested_begin_einval);
+    T_RUN(test_begin_waits_for_other_thread);
+    T_RUN(test_write_copies);
+    T_RUN(test_read_pins_once);
+    T_RUN(test_read_then_replace);
+    T_RUN(test_abort_discards);
+    T_RUN(test_freed_page_einval);
+    T_RUN(test_free_in_op);
+    T_RUN(test_bitmap_ids_einval);
+    T_RUN(test_outside_op_einval);
+    T_RUN(test_pagein_checks);
+    T_RUN(test_pagein_read_error);
+    T_RUN(test_free_unloaded);
+    T_RUN(test_cache_full_enobufs);
+    T_RUN(test_stats_basic);
+    T_RUN(test_clean_page_evictable);
+    return t_done();
+}
