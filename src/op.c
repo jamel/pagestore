@@ -690,16 +690,6 @@ static int writer_head(
     for (;;) {
         ps_entry *e = latch_find(s, id);
         ps_vnode *h = e != NULL ? e->head : NULL;
-        if (h == NULL && !checked) {
-            /* Nothing in memory: the committed bitmap says whether id exists. */
-            ps_unlatch(s->pt, id);
-            if (!committed_allocated(s, id)) {
-                ps_log(s, PS_LOG_ERROR, "%s: page %u is not allocated", what, id);
-                return EINVAL;
-            }
-            checked = true;
-            continue;
-        }
         if (h != NULL && h->kind == PS_V_FREE) {
             ps_unlatch(s->pt, id);
             ps_log(s, PS_LOG_ERROR, "%s: page %u is freed", what, id);
@@ -709,6 +699,20 @@ static int writer_head(
             *eo = e;
             *vo = h;
             return 0;
+        }
+        if (!checked) {
+            /*
+             * The bitmap decides whether the ID exists. A snapshot may have
+             * loaded stale bytes for a freed ID after its marker was dropped.
+             * Only this writer can change the bitmap, so check it once.
+             */
+            ps_unlatch(s->pt, id);
+            if (!committed_allocated(s, id)) {
+                ps_log(s, PS_LOG_ERROR, "%s: page %u is not allocated", what, id);
+                return EINVAL;
+            }
+            checked = true;
+            continue;
         }
         const bool counted = h != NULL && (h->flags & PS_VF_OP_PIN) != 0;
         if (!op_room(s, (counted ? 0u : 1u) + (for_write ? 1u : 0u))) {

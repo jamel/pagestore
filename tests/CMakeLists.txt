@@ -2,6 +2,8 @@ set(PS_TESTSUPPORT_SOURCES
   support/test.c
   support/fault_vfs.c
   support/mem_backend.c
+  support/model.c
+  support/workload.c
 )
 
 add_library(ps_testsupport STATIC ${PS_TESTSUPPORT_SOURCES})
@@ -37,7 +39,7 @@ function(ps_add_test)
     ${PROJECT_SOURCE_DIR}/tests/support)
   target_link_libraries(${T_NAME} PRIVATE ps_testsupport pagestore Threads::Threads)
   add_test(NAME ${T_NAME} COMMAND ${T_NAME})
-  if(T_LABEL STREQUAL "crash" OR T_LABEL STREQUAL "stress")
+  if(T_LABEL STREQUAL "crash" OR T_LABEL STREQUAL "stress" OR T_LABEL STREQUAL "model")
     set(timeout 900)
   else()
     set(timeout 120)
@@ -68,3 +70,4 @@ ps_add_test(NAME test_crash_store LABEL crash SOURCES crash/test_crash_store.c)
 ps_add_test(NAME test_wal_write LABEL unit SOURCES unit/test_wal_write.c)
 ps_add_test(NAME test_wal_open LABEL unit SOURCES unit/test_wal_open.c)
 ps_add_test(NAME test_recover LABEL unit SOURCES unit/test_recover.c)
+ps_add_test(NAME test_model LABEL model SOURCES model/test_model.c)
