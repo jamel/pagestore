@@ -563,8 +563,8 @@ void ps_op_commit(ps_store *s)
     atomic_store_explicit(&s->committed_lsn, op->lsn, memory_order_release);
 
     /*
-     * Retire replaced versions that the running checkpoint can see. Free
-     * the others now, or at their last unpin if still pinned.
+     * Registration shares reg_mu with commit, so a reader cannot register
+     * at an old LSN after we decide which versions to keep.
      */
     for (u32 i = 0; i < op->npages; i++) {
         ps_entry *e = op->pages[i];
@@ -581,6 +581,7 @@ void ps_op_commit(ps_store *s)
         }
         ps_unlatch(s->pt, id);
     }
+    ps_retire_process(s);
 
     op_release(s);
     pthread_mutex_unlock(&s->reg_mu);
@@ -604,6 +605,11 @@ void ps_op_abort(ps_store *s)
         }
         const u32 id = e->id;
         ps_latch(s->pt, id);
+        /*
+         * A snapshot can be loading a version below the operation's head.
+         * Wait before changing the chain it will return to.
+         */
+        wait_loaded(s, e);
         ps_vnode *h = e->head;
         PS_ASSERT(h != NULL && (h->flags & PS_VF_IN_OP) != 0 && h->pins == 0);
         e->head = h->older;
@@ -613,8 +619,17 @@ void ps_op_abort(ps_store *s)
         ps_vnode_delete(s->pt, h);
         ps_vnode *b = e->head;
         if (b != NULL && (b->flags & PS_VF_OP_BASE) != 0) {
-            e->head = b->older;
-            ps_vnode_delete(s->pt, b);
+            /*
+             * With the free cancelled, the disk node is the committed head
+             * again. Keep it while pinned so later readers can still find it.
+             */
+            PS_ASSERT(b->older == NULL && (b->flags & PS_VF_RETIRED) == 0);
+            b->flags &= (u8) ~PS_VF_OP_BASE;
+            if (b->pins == 0) {
+                ps_node_free(s, e, b);
+                ps_unlatch(s->pt, id);
+                continue;
+            }
         }
         /* A checkpoint may have marked the committed marker under h ON_DISK meanwhile. */
         ps_drop_lone_marker(s, e);
@@ -785,6 +800,42 @@ int ps_write(ps_store *s, u32 id, ps_page **page)
     return 0;
 }
 
+/*
+ * The ps_alloc rule: a frameless data version still in
+ * e's chain (the lsn-0 disk node of a freed page, kept for a snapshot) is
+ * exactly the data-file copy, which the checkpoint after this op overwrites.
+ * Loads every such version (waiting for a load in flight). e's latch held;
+ * it is dropped for the I/O and held again on return, e stays valid (held)
+ * and the caller calls ps_entry_maybe_release if it gives up. The frame is
+ * the retired version's, not the op's (not counted in op_frames).
+ */
+static int load_frameless(ps_store *s, ps_entry *e)
+{
+    for (;;) {
+        wait_loaded(s, e);
+        ps_vnode *v = e->head;
+        while (v != NULL &&
+               !(v->kind == PS_V_DATA && v->frame == PS_NO_FRAME &&
+                 (v->flags & PS_VF_FREE_WHEN_UNPINNED) == 0)) {
+            v = v->older;
+        }
+        if (v == NULL) {
+            return 0;
+        }
+        hold(e); /* a failed page-in may free v and so empty the chain */
+        ps_vnode *got = NULL;
+        const int rv = ps_page_in(s, e, v, true, &got);
+        if (rv == 0) {
+            ps_node_unpin(s, e, got);
+        }
+        PS_ASSERT(e->waiters > 0);
+        e->waiters--;
+        if (rv != 0) {
+            return rv;
+        }
+    }
+}
+
 int ps_alloc(ps_store *s, u32 *id_out, ps_page **page)
 {
     int rv = op_enter(s, "ps_alloc");
@@ -869,6 +920,16 @@ int ps_alloc(ps_store *s, u32 *id_out, ps_page **page)
         }
     }
     PS_ASSERT(e->head == NULL || (e->head->flags & PS_VF_IN_OP) == 0);
+    rv = load_frameless(s, e);
+    if (rv != 0) {
+        ps_entry_maybe_release(s->pt, e);
+        ps_unlatch(s->pt, id);
+        cancel_alloc(s, id);
+        ps_mem_release(s, f);
+        s->op.frames--;
+        ps_vnode_delete(s->pt, v);
+        return rv;
+    }
     ps_page *p = (ps_page *) ps_frame(s->frames, f);
     memset(p, 0, s->page_size);
     p->page_id = id;

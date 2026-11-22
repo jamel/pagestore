@@ -62,6 +62,7 @@ struct mem_backend {
     mb_fault faults[MB_POINTS];
     bool block_writes;
     u32 commit_delay_ms;
+    u32 read_delay_ms;
 };
 
 static void *xalloc(usize n)
@@ -219,9 +220,21 @@ static int be_open(ps_backend_ctx *ctx, bool create, u32 page_size, ps_backend_i
     return rv;
 }
 
+static void sleep_ms(u32 ms)
+{
+    struct timespec ts = {(time_t) (ms / 1000), (long) (ms % 1000) * 1000000L};
+    while (nanosleep(&ts, &ts) != 0) {}
+}
+
 static int be_read_page(ps_backend_ctx *ctx, u32 id, void *buf)
 {
     mem_backend *mb = ctx->mb;
+    pthread_mutex_lock(&mb->mu);
+    const u32 delay = mb->read_delay_ms;
+    pthread_mutex_unlock(&mb->mu);
+    if (delay != 0) {
+        sleep_ms(delay);
+    }
     pthread_mutex_lock(&mb->mu);
     int rv = take_fault(mb, MB_READ);
     if (rv == 0) {
@@ -282,12 +295,6 @@ static int be_ckpt_write(ps_backend_ctx *ctx, u32 id, const void *page)
     }
     pthread_mutex_unlock(&mb->mu);
     return rv;
-}
-
-static void sleep_ms(u32 ms)
-{
-    struct timespec ts = {(time_t) (ms / 1000), (long) (ms % 1000) * 1000000L};
-    while (nanosleep(&ts, &ts) != 0) {}
 }
 
 static int be_ckpt_commit(ps_backend_ctx *ctx, bool *fatal)
@@ -458,5 +465,12 @@ void mb_set_commit_delay_ms(mem_backend *mb, u32 ms)
 {
     pthread_mutex_lock(&mb->mu);
     mb->commit_delay_ms = ms;
+    pthread_mutex_unlock(&mb->mu);
+}
+
+void mb_set_read_delay_ms(mem_backend *mb, u32 ms)
+{
+    pthread_mutex_lock(&mb->mu);
+    mb->read_delay_ms = ms;
     pthread_mutex_unlock(&mb->mu);
 }

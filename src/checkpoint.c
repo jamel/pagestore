@@ -7,8 +7,8 @@
 #include <string.h>
 
 /*
- * Checkpoint, the reader registry, the retire queue and the log
- * hooks.
+ * Checkpoint, the reader registry and the log hooks. The
+ * retire queue is in snapshot.c.
  *
  * Locks: a checkpoint holds ckpt_mu for its whole run; it takes reg_mu
  * at its start and end, and page latches one at a time, either alone or
@@ -67,44 +67,6 @@ u64 ps_reg_min(const ps_store *s)
 bool ps_reg_any_at_or_above(const ps_store *s, u64 c)
 {
     return s->reg_tail != NULL && s->reg_tail->lsn >= c;
-}
-
-/* ---- retire queue ------------------------------------------------------- */
-
-void ps_retire_push(ps_store *s, ps_vnode *v, u64 r)
-{
-    PS_ASSERT((v->flags & PS_VF_RETIRED) == 0 && v != v->entry->head);
-    PS_ASSERT(s->retire_tail == NULL || s->retire_tail->retire_r <= r);
-    v->flags |= PS_VF_RETIRED;
-    if (v->frame != PS_NO_FRAME) {
-        atomic_fetch_add_explicit(&s->frames_retired, 1, memory_order_relaxed);
-    }
-    v->retire_r = r;
-    v->retire_next = NULL;
-    if (s->retire_tail != NULL) {
-        s->retire_tail->retire_next = v;
-    } else {
-        s->retire_head = v;
-    }
-    s->retire_tail = v;
-}
-
-void ps_retire_process(ps_store *s)
-{
-    const u64 min = ps_reg_min(s);
-    while (s->retire_head != NULL && s->retire_head->retire_r <= min) {
-        ps_vnode *v = s->retire_head;
-        s->retire_head = v->retire_next;
-        if (s->retire_head == NULL) {
-            s->retire_tail = NULL;
-        }
-        v->retire_next = NULL;
-        ps_entry *e = v->entry;
-        const u32 id = e->id;
-        ps_latch(s->pt, id);
-        ps_node_free(s, e, v); /* frames_retired drops with its frame */
-        ps_unlatch(s->pt, id);
-    }
 }
 
 /* ---- failed state and log hooks ------------------------------------------- */

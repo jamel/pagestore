@@ -66,6 +66,8 @@ void mb_fail(mem_backend *mb, mb_point p, int err, i32 count);
 void mb_block_writes(mem_backend *mb, bool on);
 /* ckpt_commit sleeps this long before committing. */
 void mb_set_commit_delay_ms(mem_backend *mb, u32 ms);
+/* read_page sleeps this long (without holding mb's lock) before reading. */
+void mb_set_read_delay_ms(mem_backend *mb, u32 ms);
 
 /* Seal a page before mb_put when the store should accept it on page-in. */
 void mb_seal_page(void *page, u32 page_size);

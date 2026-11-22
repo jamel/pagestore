@@ -229,6 +229,10 @@ int ps_open_backend(const ps_backend *be, const ps_config *cfg, u32 flags, ps_st
     atomic_init(&s->ckpt_bytes, 0);
     atomic_init(&s->checkpoints_run, 0);
     atomic_init(&s->checkpoints_failed, 0);
+    atomic_init(&s->snap_pins, 0);
+    atomic_init(&s->snapshots_open, 0);
+    atomic_init(&s->snapshots_cut_off, 0);
+    atomic_init(&s->snap_bytes, 0);
     atomic_init(&s->ckpt_ref.dead, false);
     s->ckpt_ref.is_ckpt = true;
 
@@ -287,6 +291,7 @@ void ps_close(ps_store *s)
         return;
     }
     PS_ASSERT(!atomic_load(&s->op_active));
+    PS_ASSERT(atomic_load(&s->snapshots_open) == 0);
     PS_ASSERT(!s->ckpt_running && s->reg_head == NULL);
     s->be.close(s->be.ctx);
     store_free(s);
@@ -323,9 +328,12 @@ void ps_stats(const ps_store *s, struct ps_stats *out)
     out->frames_pinned = atomic_load_explicit(&s->frames_pinned, memory_order_relaxed);
     out->bookkeeping_bytes = ps_ptable_bytes(s->pt) +
         atomic_load_explicit(&s->op_bytes, memory_order_relaxed) +
-        atomic_load_explicit(&s->ckpt_bytes, memory_order_relaxed) + sizeof(*s);
+        atomic_load_explicit(&s->ckpt_bytes, memory_order_relaxed) +
+        atomic_load_explicit(&s->snap_bytes, memory_order_relaxed) + sizeof(*s);
     out->cache_hits = atomic_load_explicit(&s->cache_hits, memory_order_relaxed);
     out->cache_misses = atomic_load_explicit(&s->cache_misses, memory_order_relaxed);
+    out->snapshots_open = atomic_load_explicit(&s->snapshots_open, memory_order_relaxed);
+    out->snapshots_cut_off = atomic_load_explicit(&s->snapshots_cut_off, memory_order_relaxed);
     out->checkpoints_run = atomic_load_explicit(&s->checkpoints_run, memory_order_relaxed);
     out->checkpoints_failed = atomic_load_explicit(&s->checkpoints_failed, memory_order_relaxed);
     out->committed_lsn = ps_committed_lsn(s);

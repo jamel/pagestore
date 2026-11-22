@@ -46,7 +46,8 @@ typedef struct ps_op_group {
 typedef struct ps_snapref {
     u64 lsn;
     bool is_ckpt;
-    atomic_bool dead; /* cut off */
+    /* Set under reg_mu before unregistering a cut-off snapshot. */
+    atomic_bool dead;
     struct ps_snapref *prev;
     struct ps_snapref *next;
 } ps_snapref;
@@ -154,6 +155,10 @@ struct ps_store {
     _Atomic u64 ckpt_bytes; /* checkpoint array capacity and I/O buffer */
     _Atomic u64 checkpoints_run;
     _Atomic u64 checkpoints_failed;
+    _Atomic u32 snap_pins; /* pins held by all snapshots, at most max_pinned */
+    _Atomic u32 snapshots_open; /* open handles, cut-off ones included */
+    _Atomic u64 snapshots_cut_off;
+    _Atomic u64 snap_bytes; /* open snapshot handles */
 
     bool gate_init;
     bool ckpt_init;
@@ -187,7 +192,8 @@ void ps_mem_release(ps_store *s, u32 f);
  * request and the read. frameless is a frameless data node of e to load
  * (kept alive by a temporary pin meanwhile), or NULL when e's chain is empty:
  * then a new committed ON_DISK head node (lsn from the page header) is
- * created. Checks that the header's page_id is e->id, that the bitmap flag
+ * created (a queued, RETIRED frameless node is counted in frames_retired
+ * once it has its frame). Checks that the header's page_id is e->id, that the bitmap flag
  * matches the id, and the CRC32C over the page with the checksum field
  * zeroed (EBADMSG); the in-memory checksum is left 0. Counts a cache miss.
  *
@@ -261,15 +267,25 @@ u64 ps_reg_min(const ps_store *s);
 /* A version at c can only be visible if some reader has reached c. */
 bool ps_reg_any_at_or_above(const ps_store *s, u64 c);
 
+/* ---- snapshots, retire queue, cut-off (snapshot.c) ---- */
+
 /*
- * Retire queue. ps_retire_push: reg_mu and v's latch held;
- * marks v RETIRED (counted in frames_retired while it has a frame) and
- * queues it with replacing LSN r, which must be >= every queued r.
- * ps_retire_process: reg_mu held, no latch; frees (ps_node_free, so pins
- * are respected) every queued node with r <= ps_reg_min.
+ * Hold reg_mu for both. Push also needs v's latch; r is the replacing LSN.
+ * Process takes page latches itself and drops versions once every
+ * registered reader has reached r. Pinned versions live until unpin.
  */
 void ps_retire_push(ps_store *s, ps_vnode *v, u64 r);
 void ps_retire_process(ps_store *s);
+
+/*
+ * Cuts off the oldest registered snapshot that is not the checkpoint's
+ * by setting its dead flag, unregistering it, incrementing
+ * snapshots_cut_off, and processing the retire queue, all under reg_mu (taken
+ * here: call it with no latch and without reg_mu), then logs at INFO.
+ * Returns false if there is no such snapshot. The snapshot's pins stay
+ * valid; its next ps_snapshot_read returns ESTALE.
+ */
+bool ps_snap_cut_off_oldest(ps_store *s);
 
 /* Format can start an operation at LSN 0 before the store is shared. */
 void ps_op_begin_format(ps_store *s);
