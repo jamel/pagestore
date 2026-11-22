@@ -119,13 +119,13 @@ static void test_bad_config(void)
     mb = mb_create();
     T_ERR(mb_open(mb, 64, 0, &s), ENOENT);
     /* A seq 0 header is an interrupted format. */
-    T_OK(mb_open(mb, 64, PS_CREATE, &s));
-    T_EQ(mb_info(mb).seq, 0);
-    ps_close(s);
+    const ps_backend_info seq0 = {PS, 1, 0, 0};
+    mb_set_info(mb, seq0);
     T_ERR(mb_open(mb, 64, 0, &s), ENOENT);
-    /* ... and is formatted again with it. */
+    /* PS_CREATE resumes by formatting from scratch. */
     T_OK(mb_open(mb, 64, PS_CREATE, &s));
     T_EQ(ps_committed_lsn(s), 0);
+    T_EQ(mb_info(mb).seq, 1);
     close_store();
 
     mb = mb_create();
@@ -148,7 +148,7 @@ static void test_format(void)
     ps_stats(s, &st);
     T_EQ(st.num_groups, 1);
     T_EQ(st.allocated_pages, 0);
-    T_EQ(st.frames_dirty, 1); /* bitmap page 0 */
+    T_EQ(st.frames_dirty, 0); /* format's checkpoint wrote bitmap page 0 */
     T_EQ(st.frames_free, 63);
     T_EQ(st.frames_pinned, 0);
     T_EQ(st.frames_evictable, 0);
@@ -750,7 +750,7 @@ static void test_stats_basic(void)
     T_EQ(st.frames_evictable, 0); /* dirty */
     T_EQ(st.frames_retired, 0);
     T_EQ(st.snapshots_open, 0);
-    T_EQ(st.checkpoints_run, 0);
+    T_EQ(st.checkpoints_run, 1); /* format's */
     T_CHECK(!st.failed);
     T_CHECK(st.bookkeeping_bytes > 0);
     close_store();

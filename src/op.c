@@ -452,7 +452,11 @@ static void op_release(ps_store *s)
     op->frames = 0;
 }
 
-/* Applies the op's allocator changes to group r's bitmap page (commit, reg_mu held). */
+/*
+ * Hold reg_mu. A checkpoint can select a bitmap before it copies the
+ * bytes. Put the update in the reserved frame when the checkpoint can
+ * see the head, so its original image stays intact.
+ */
 static void commit_group(ps_store *s, ps_op_group *r)
 {
     const u64 lsn = s->op.lsn;
@@ -483,8 +487,26 @@ static void commit_group(ps_store *s, ps_op_group *r)
             ps_unlatch(s->pt, id);
             return;
         }
-        p = ps_node_page(s, v);
-        v->flags &= (u8) ~PS_VF_ON_DISK;
+        if (s->ckpt_running && v->lsn <= s->ckpt_lsn) {
+            ps_vnode *c = r->spare_node;
+            PS_ASSERT(c != NULL && r->spare != PS_NO_FRAME);
+            p = (ps_page *) ps_frame(s->frames, r->spare);
+            memcpy(p, ps_node_page(s, v), s->page_size);
+            c->entry = e;
+            c->kind = PS_V_DATA;
+            c->flags = 0;
+            attach_frame(s, c, r->spare);
+            c->older = v;
+            e->head = c;
+            v->retire_next = s->bmcopy_head;
+            s->bmcopy_head = v;
+            r->spare_node = NULL; /* The operation's pin stays on the old version. */
+            r->spare = PS_NO_FRAME;
+            v = c;
+        } else {
+            p = ps_node_page(s, v);
+            v->flags &= (u8) ~PS_VF_ON_DISK;
+        }
     }
     ps_allocator_apply(s->alloc, r->g, (u8 *) p + PS_PAGE_HEADER_SIZE);
     p->lsn = lsn;
@@ -541,7 +563,8 @@ void ps_op_commit(ps_store *s)
     atomic_store_explicit(&s->committed_lsn, op->lsn, memory_order_release);
 
     /*
-     * Free replaced versions. A pinned version is freed at its last unpin.
+     * Retire replaced versions that the running checkpoint can see. Free
+     * the others now, or at their last unpin if still pinned.
      */
     for (u32 i = 0; i < op->npages; i++) {
         ps_entry *e = op->pages[i];
@@ -551,7 +574,9 @@ void ps_op_commit(ps_store *s)
         const u32 id = e->id;
         ps_latch(s->pt, id);
         ps_vnode *old = e->head->older;
-        if (old != NULL) {
+        if (old != NULL && ps_reg_any_at_or_above(s, old->lsn)) {
+            ps_retire_push(s, old, op->lsn);
+        } else if (old != NULL) {
             ps_node_free(s, e, old); /* e is dirty, so it stays */
         }
         ps_unlatch(s->pt, id);

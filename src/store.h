@@ -39,6 +39,25 @@ typedef struct ps_op_group {
     ps_vnode *spare_node;
 } ps_op_group;
 
+/*
+ * Snapshots and checkpoints join at the committed LSN, so insertion order
+ * is also LSN order. reg_mu guards the links. Readers check dead atomically.
+ */
+typedef struct ps_snapref {
+    u64 lsn;
+    bool is_ckpt;
+    atomic_bool dead; /* cut off */
+    struct ps_snapref *prev;
+    struct ps_snapref *next;
+} ps_snapref;
+
+/* A dirty entry paired with the version visible to this checkpoint. */
+typedef struct ps_ckpt_item {
+    ps_entry *e;
+    ps_vnode *v;
+    bool data; /* false for a free marker, kept only for bookkeeping */
+} ps_ckpt_item;
+
 /* Only the writer thread touches this state. */
 typedef struct ps_op {
     u64 lsn;
@@ -88,12 +107,34 @@ struct ps_store {
     atomic_bool op_active;
     pthread_t op_owner;
 
-    /* Registry lock: committed LSN, dirty lists. */
+    /* Held for a whole checkpoint, so hooks and scratch belong to one attempt. */
+    pthread_mutex_t ckpt_mu;
+    ps_log_hooks hooks;
+    ps_ckpt_item *ckpt_items; /* the running checkpoint's pages, sorted by id */
+    u32 ckpt_cap;
+    u8 *ckpt_buf; /* page-sized I/O buffer */
+
+    /* Guards the registry, LSN publication, dirty lists and retired nodes. */
     pthread_mutex_t reg_mu;
     _Atomic u64 committed_lsn; /* written under reg_mu */
-    _Atomic u64 durable_lsn;
-    ps_entry *dirty_head[2]; /* intrusive lists through ps_entry.dirty_next (reg_mu) */
-    u32 next_idx; /* list commits add to (reg_mu) */
+    _Atomic u64 durable_lsn; /* written under reg_mu */
+    /*
+     * Commits add entries to next_idx. A running checkpoint owns the other
+     * list and can walk its links after releasing reg_mu.
+     */
+    ps_entry *dirty_head[2];
+    u32 next_idx;
+    u32 ckpt_idx;
+    ps_snapref *reg_head; /* registry, oldest (lowest lsn) first */
+    ps_snapref *reg_tail;
+    ps_snapref ckpt_ref; /* the running checkpoint's registration */
+    bool ckpt_running;
+    u64 ckpt_lsn; /* LSN of the running checkpoint */
+    /* Old bitmap versions held for the running checkpoint. */
+    ps_vnode *bmcopy_head; /* through ps_vnode.retire_next */
+    /* Retire queue, FIFO through ps_vnode.retire_next, ordered by retire_r. */
+    ps_vnode *retire_head;
+    ps_vnode *retire_tail;
 
     atomic_bool failed;
 
@@ -109,9 +150,13 @@ struct ps_store {
     _Atomic u32 frames_pinned; /* resident nodes with pins > 0 */
     _Atomic u64 cache_hits;
     _Atomic u64 cache_misses;
-    _Atomic u64 op_bytes; /* capacity of the op's arrays */
+    _Atomic u64 op_bytes; /* capacity of the operation's arrays */
+    _Atomic u64 ckpt_bytes; /* checkpoint array capacity and I/O buffer */
+    _Atomic u64 checkpoints_run;
+    _Atomic u64 checkpoints_failed;
 
     bool gate_init;
+    bool ckpt_init;
     bool reg_init;
 };
 
@@ -183,6 +228,35 @@ void ps_update_evictable(ps_store *s, ps_entry *e);
  * Hold reg_mu and e's latch. Dirty list links are preallocated in e.
  */
 void ps_mark_dirty(ps_store *s, ps_entry *e);
+
+/* ---- checkpoint, registry, retire queue (checkpoint.c) ---- */
+
+/*
+ * Enter with only ckpt_mu held. A retryable failure puts dirty entries
+ * back on the next list. A fatal failure returns EIO and fails the store.
+ */
+int ps_checkpoint_run(ps_store *s);
+
+/* Puts the store in its failed state and logs err at ERROR. Any thread, any locks. */
+void ps_store_fail(ps_store *s, int err);
+
+/* Registry (reg_mu held). r->lsn must be >= every registered lsn. */
+void ps_reg_add(ps_store *s, ps_snapref *r);
+void ps_reg_remove(ps_store *s, ps_snapref *r);
+/* Lowest registered lsn, UINT64_MAX if none. */
+u64 ps_reg_min(const ps_store *s);
+/* A version at c can only be visible if some reader has reached c. */
+bool ps_reg_any_at_or_above(const ps_store *s, u64 c);
+
+/*
+ * Retire queue. ps_retire_push: reg_mu and v's latch held;
+ * marks v RETIRED (counted in frames_retired while it has a frame) and
+ * queues it with replacing LSN r, which must be >= every queued r.
+ * ps_retire_process: reg_mu held, no latch; frees (ps_node_free, so pins
+ * are respected) every queued node with r <= ps_reg_min.
+ */
+void ps_retire_push(ps_store *s, ps_vnode *v, u64 r);
+void ps_retire_process(ps_store *s);
 
 /* Format can start an operation at LSN 0 before the store is shared. */
 void ps_op_begin_format(ps_store *s);

@@ -75,8 +75,13 @@ static void store_free(ps_store *s)
     free(s->op.pages);
     free(s->op.pins);
     free(s->op.groups);
+    free(s->ckpt_items);
+    free(s->ckpt_buf);
     if (s->reg_init) {
         pthread_mutex_destroy(&s->reg_mu);
+    }
+    if (s->ckpt_init) {
+        pthread_mutex_destroy(&s->ckpt_mu);
     }
     if (s->gate_init) {
         pthread_cond_destroy(&s->gate_cv);
@@ -98,6 +103,11 @@ static int init_locks(ps_store *s)
         return rv;
     }
     s->gate_init = true;
+    rv = pthread_mutex_init(&s->ckpt_mu, NULL);
+    if (rv != 0) {
+        return rv;
+    }
+    s->ckpt_init = true;
     rv = pthread_mutex_init(&s->reg_mu, NULL);
     if (rv != 0) {
         return rv;
@@ -123,13 +133,17 @@ static int init_memory(ps_store *s, u32 page_size)
     if (rv != 0) {
         return rv;
     }
+    s->ckpt_buf = malloc(page_size);
+    if (s->ckpt_buf == NULL) {
+        return ENOMEM;
+    }
+    atomic_store_explicit(&s->ckpt_bytes, page_size, memory_order_relaxed);
     return ps_allocator_create(page_size, &s->alloc);
 }
 
 /*
- * Format: an internal operation at LSN 0 creates group 0
- * through ps_alloc's group-creation path; the allocation it makes (id 1) is
- * cancelled again, leaving bitmap page 0 with only its own bit set.
+ * Reuse ps_alloc to create group 0. Freeing its first user page leaves just
+ * the bitmap. The checkpoint advances the header from seq 0 to seq 1.
  */
 static int format(ps_store *s)
 {
@@ -147,7 +161,7 @@ static int format(ps_store *s)
     }
     ps_op_commit(s);
     PS_ASSERT(ps_allocator_num_groups(s->alloc) == 1);
-    return 0;
+    return ps_checkpoint(s);
 }
 
 /* Register groups from the bitmap pages and keep their frames resident. */
@@ -212,6 +226,11 @@ int ps_open_backend(const ps_backend *be, const ps_config *cfg, u32 flags, ps_st
     atomic_init(&s->cache_hits, 0);
     atomic_init(&s->cache_misses, 0);
     atomic_init(&s->op_bytes, 0);
+    atomic_init(&s->ckpt_bytes, 0);
+    atomic_init(&s->checkpoints_run, 0);
+    atomic_init(&s->checkpoints_failed, 0);
+    atomic_init(&s->ckpt_ref.dead, false);
+    s->ckpt_ref.is_ckpt = true;
 
     rv = init_locks(s);
     ps_backend_info info = {0};
@@ -268,6 +287,7 @@ void ps_close(ps_store *s)
         return;
     }
     PS_ASSERT(!atomic_load(&s->op_active));
+    PS_ASSERT(!s->ckpt_running && s->reg_head == NULL);
     s->be.close(s->be.ctx);
     store_free(s);
 }
@@ -302,9 +322,12 @@ void ps_stats(const ps_store *s, struct ps_stats *out)
     out->frames_retired = atomic_load_explicit(&s->frames_retired, memory_order_relaxed);
     out->frames_pinned = atomic_load_explicit(&s->frames_pinned, memory_order_relaxed);
     out->bookkeeping_bytes = ps_ptable_bytes(s->pt) +
-        atomic_load_explicit(&s->op_bytes, memory_order_relaxed) + sizeof(*s);
+        atomic_load_explicit(&s->op_bytes, memory_order_relaxed) +
+        atomic_load_explicit(&s->ckpt_bytes, memory_order_relaxed) + sizeof(*s);
     out->cache_hits = atomic_load_explicit(&s->cache_hits, memory_order_relaxed);
     out->cache_misses = atomic_load_explicit(&s->cache_misses, memory_order_relaxed);
+    out->checkpoints_run = atomic_load_explicit(&s->checkpoints_run, memory_order_relaxed);
+    out->checkpoints_failed = atomic_load_explicit(&s->checkpoints_failed, memory_order_relaxed);
     out->committed_lsn = ps_committed_lsn(s);
     out->durable_lsn = ps_durable_lsn(s);
     out->failed = atomic_load_explicit(&s->failed, memory_order_acquire);

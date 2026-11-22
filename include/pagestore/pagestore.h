@@ -130,8 +130,38 @@ int ps_snapshot_read(ps_snapshot *snap, u32 id, const ps_page **page);
 void ps_snapshot_unpin(ps_snapshot *snap, u32 id);
 void ps_snapshot_close(ps_snapshot *snap);
 
+/*
+ * Makes the pages as of the current committed LSN durable, on this thread.
+ * A fatal failure returns EIO and fails the store. After a nonfatal error
+ * such as ENOSPC, a later checkpoint can retry.
+ */
 int ps_checkpoint(ps_store *s);
 void ps_checkpoint_request(ps_store *s);
+
+/* Define struct ps_log_hooks_ctx to pass state to the hooks. */
+typedef struct ps_log_hooks_ctx ps_log_hooks_ctx;
+
+/*
+ * Runs before checkpoint page writes. Return 0 once the log is durable
+ * through lsn. Any other return fails the store.
+ */
+typedef int (*ps_flush_log_fn)(ps_log_hooks_ctx *ctx, u64 lsn);
+/* Runs after the checkpoint is durable. Log records through lsn can be dropped. */
+typedef void (*ps_checkpoint_done_fn)(ps_log_hooks_ctx *ctx, u64 lsn);
+
+/* Either log hook may be NULL. */
+typedef struct ps_log_hooks {
+    ps_flush_log_fn flush_log;
+    ps_checkpoint_done_fn checkpoint_done;
+    ps_log_hooks_ctx *ctx;
+} ps_log_hooks;
+
+/*
+ * Installs a copy of *hooks (NULL clears them). Any thread; waits for a
+ * running checkpoint, which keeps the hooks it started with. The hooks are
+ * called on the checkpointing thread.
+ */
+void ps_set_log_hooks(ps_store *s, const ps_log_hooks *hooks);
 
 /* The struct tag leaves the name ps_stats available to the C function. */
 struct ps_stats {
