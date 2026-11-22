@@ -76,6 +76,9 @@ int ps_allocator_free(
  * the operation.
  */
 u32 ps_allocator_op_groups(const ps_allocator *a, const u32 **groups);
+/* Pass a group from ps_allocator_op_groups. New groups always need a bitmap. */
+bool ps_allocator_group_unchanged(const ps_allocator *a, u32 g);
+/* True for groups created within the current operation. */
 bool ps_allocator_group_is_new(const ps_allocator *a, u32 g);
 
 /*

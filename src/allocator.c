@@ -460,6 +460,24 @@ bool ps_allocator_group_is_new(const ps_allocator *a, u32 g)
     return a->in_op && g >= a->num_groups && g < a->op_num_groups;
 }
 
+bool ps_allocator_group_unchanged(const ps_allocator *a, u32 g)
+{
+    PS_ASSERT(a->in_op);
+    const op_group *r = find_rec(a, g);
+    PS_ASSERT(r != NULL && r->changed);
+    if (r->is_new) {
+        return false;
+    }
+    for (usize off = 0; off < delta_bytes(a); off += 8) {
+        u64 d;
+        memcpy(&d, r->delta + off, 8);
+        if (d != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
 void ps_allocator_apply(const ps_allocator *a, u32 g, u8 *bits)
 {
     PS_ASSERT(a->in_op);

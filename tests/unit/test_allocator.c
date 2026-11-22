@@ -569,6 +569,38 @@ static void test_cursor_regression(void)
     fx_close(&f);
 }
 
+static void test_group_unchanged(void)
+{
+    fx f;
+    fx_open(&f, 4096);
+    fx_add_group(&f, false);
+    fx_alloc_n(&f, 2);
+
+    fx_begin(&f);
+    T_EQ(fx_next(&f), 3);
+    T_CHECK(fx_free(&f, 3));
+    T_CHECK(ps_allocator_group_unchanged(f.a, 0));
+    T_CHECK(!fx_free(&f, 1));
+    T_CHECK(!ps_allocator_group_unchanged(f.a, 0));
+    ps_allocator_op_abort(f.a);
+
+    /* A new group still needs its bitmap page after cancellation. */
+    fx_begin(&f);
+    T_EQ(fx_next(&f), 3);
+    T_CHECK(!ps_allocator_group_unchanged(f.a, 0));
+    ps_allocator_op_abort(f.a);
+    fx_close(&f);
+
+    fx_open(&f, 4096);
+    fx_add_group(&f, true);
+    fx_begin(&f);
+    T_EQ(fx_next(&f), G4K + 1);
+    T_CHECK(fx_free(&f, G4K + 1));
+    T_CHECK(!ps_allocator_group_unchanged(f.a, 1));
+    ps_allocator_op_abort(f.a);
+    fx_close(&f);
+}
+
 int main(int argc, char **argv)
 {
     t_init(argc, argv);
@@ -587,5 +619,6 @@ int main(int argc, char **argv)
     T_RUN(test_last_group_tail);
     T_RUN(test_enospc);
     T_RUN(test_cursor_regression);
+    T_RUN(test_group_unchanged);
     return t_done();
 }

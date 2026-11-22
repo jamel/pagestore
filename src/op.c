@@ -117,14 +117,41 @@ static void unhold(ps_store *s, ps_entry *e)
     ps_entry_maybe_release(s->pt, e);
 }
 
-/* Checks the caller is inside its operation and the store is healthy. */
+typedef enum op_owner_state {
+    OP_NONE,
+    OP_OTHER,
+    OP_MINE
+} op_owner_state;
+
+/* Call with no other locks held. gate_mu protects op_owner even on misuse. */
+static op_owner_state op_owner_check(ps_store *s)
+{
+    pthread_mutex_lock(&s->gate_mu);
+    op_owner_state st = OP_NONE;
+    if (atomic_load_explicit(&s->op_active, memory_order_relaxed)) {
+        st = pthread_equal(s->op_owner, pthread_self()) ? OP_MINE : OP_OTHER;
+    }
+    pthread_mutex_unlock(&s->gate_mu);
+    return st;
+}
+
+static void log_not_owner(ps_store *s, op_owner_state st, const char *what)
+{
+    if (st == OP_NONE) {
+        ps_log(s, PS_LOG_ERROR, "%s outside an operation", what);
+    } else {
+        ps_log(s, PS_LOG_ERROR, "%s from a thread that does not own the operation", what);
+    }
+}
+
+/* Validate ownership before touching the writer's state. */
 static int op_enter(ps_store *s, const char *what)
 {
-    if (!atomic_load_explicit(&s->op_active, memory_order_acquire)) {
-        ps_log(s, PS_LOG_ERROR, "%s outside an operation", what);
+    const op_owner_state st = op_owner_check(s);
+    if (st != OP_MINE) {
+        log_not_owner(s, st, what);
         return EINVAL;
     }
-    PS_ASSERT(pthread_equal(s->op_owner, pthread_self()));
     if (atomic_load_explicit(&s->failed, memory_order_acquire)) {
         return EIO;
     }
@@ -451,6 +478,11 @@ static void commit_group(ps_store *s, ps_op_group *r)
         r->spare = PS_NO_FRAME;
     } else {
         PS_ASSERT(e->head == v);
+        if (ps_allocator_group_unchanged(s->alloc, r->g)) {
+            /* Cancelled allocations alone leave the bitmap's LSN as it was. */
+            ps_unlatch(s->pt, id);
+            return;
+        }
         p = ps_node_page(s, v);
         v->flags &= (u8) ~PS_VF_ON_DISK;
     }
@@ -464,12 +496,12 @@ static void commit_group(ps_store *s, ps_op_group *r)
 
 void ps_op_commit(ps_store *s)
 {
-    if (!atomic_load_explicit(&s->op_active, memory_order_acquire)) {
-        PS_ASSERT(!"ps_op_commit outside an operation");
-        ps_log(s, PS_LOG_ERROR, "ps_op_commit outside an operation");
+    const op_owner_state st = op_owner_check(s);
+    if (st != OP_MINE) {
+        log_not_owner(s, st, "ps_op_commit");
+        PS_ASSERT(!"ps_op_commit without owning an operation");
         return;
     }
-    PS_ASSERT(pthread_equal(s->op_owner, pthread_self()));
     ps_op *op = &s->op;
 
     pthread_mutex_lock(&s->reg_mu);
@@ -532,12 +564,12 @@ void ps_op_commit(ps_store *s)
 
 void ps_op_abort(ps_store *s)
 {
-    if (!atomic_load_explicit(&s->op_active, memory_order_acquire)) {
-        PS_ASSERT(!"ps_op_abort outside an operation");
-        ps_log(s, PS_LOG_ERROR, "ps_op_abort outside an operation");
+    const op_owner_state st = op_owner_check(s);
+    if (st != OP_MINE) {
+        log_not_owner(s, st, "ps_op_abort");
+        PS_ASSERT(!"ps_op_abort without owning an operation");
         return;
     }
-    PS_ASSERT(pthread_equal(s->op_owner, pthread_self()));
     ps_op *op = &s->op;
 
     for (u32 i = op->npages; i-- > 0;) {

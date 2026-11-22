@@ -780,6 +780,291 @@ static void test_clean_page_evictable(void)
     close_store();
 }
 
+/* ---- groups beyond 0 ---- */
+
+/* An existing store (durable 9) whose group 0 is full; pages 1..nuser are on disk. */
+static void setup_full_group0(u32 nuser)
+{
+    mb = mb_create();
+    ps_backend_info info = {PS, 1, 1, 9};
+    mb_set_info(mb, info);
+    u8 *buf = calloc(1, PS);
+    T_CHECK(buf != NULL);
+    ps_page *p = (ps_page *) buf;
+    p->magic = PS_BITMAP_MAGIC;
+    p->page_id = 0;
+    p->flags = PS_PAGE_FLAG_BITMAP;
+    p->lsn = 9;
+    memset(buf + HDR, 0xFF, PS - HDR);
+    mb_seal_page(buf, PS);
+    mb_put(mb, 0, buf);
+    for (u32 i = 1; i <= nuser; i++) {
+        make_page(buf, i, 5, "x");
+        mb_put(mb, i, buf);
+    }
+    free(buf);
+}
+
+/* Returns the resident bitmap bytes after the page header. */
+static const u8 *group_bits(u32 g, u64 *lsn)
+{
+    const u32 id = g * ps_group_size(PS);
+    ps_latch(s->pt, id);
+    const ps_entry *e = ps_entry_find(s->pt, id);
+    T_CHECK(e != NULL && e->head != NULL && e->head->frame != PS_NO_FRAME);
+    const ps_page *p = ps_node_page(s, e->head);
+    T_EQ(p->page_id, id);
+    T_EQ(p->flags, PS_PAGE_FLAG_BITMAP);
+    T_EQ(p->magic, PS_BITMAP_MAGIC);
+    T_EQ(p->lsn, e->head->lsn);
+    *lsn = p->lsn;
+    ps_unlatch(s->pt, id);
+    return (const u8 *) p + HDR;
+}
+
+static void test_new_group_commit(void)
+{
+    setup_full_group0(0);
+    T_OK(mb_open(mb, 64, 0, &s));
+    const u32 G = ps_group_size(PS);
+    struct ps_stats st0;
+    ps_stats(s, &st0);
+    T_EQ(st0.allocated_pages, G - 1);
+
+    T_OK(ps_op_begin(s, 10));
+    u32 id = 0;
+    ps_page *p = NULL;
+    T_OK(ps_alloc(s, &id, &p));
+    T_EQ(id, G + 1);
+    T_EQ(p->page_id, G + 1);
+    T_EQ(s->op.frames, 2); /* the page and the new bitmap page */
+    T_CHECK(ps_test_has_entry(s, G)); /* the group's reserved entry */
+    T_EQ(ps_test_chain_len(s, G), 0);
+    ps_op_commit(s);
+
+    struct ps_stats st;
+    ps_stats(s, &st);
+    T_EQ(st.num_groups, 2);
+    T_EQ(st.allocated_pages, G);
+    T_EQ(st.frames_free, st0.frames_free - 2);
+    T_EQ(st.frames_dirty, 2); /* bitmap 0 untouched */
+    T_EQ(st.frames_pinned, 0);
+    T_EQ(ps_test_chain_len(s, G), 1);
+    T_EQ(ps_test_pins(s, G), 0);
+    T_CHECK(!ps_test_has_entry(s, 2 * G)); /* the kit for group 2 was not taken */
+    u64 lsn = 0;
+    const u8 *bits = group_bits(1, &lsn);
+    T_EQ(lsn, 10);
+    T_EQ(bits[0], 0x03); /* bit 0 (itself) and G + 1 */
+    T_CHECK(all_zero(bits + 1, PS - HDR - 1));
+    T_EQ(group_bits(0, &lsn)[0], 0xFF);
+    T_EQ(lsn, 9);
+
+    /* The new group is an existing one now: spare taken and returned. */
+    T_OK(ps_op_begin(s, 11));
+    T_OK(ps_alloc(s, &id, &p));
+    T_EQ(id, G + 2);
+    T_OK(ps_free(s, G + 1));
+    T_EQ(s->op.frames, 2); /* the page and group 1's spare */
+    ps_op_commit(s);
+    ps_stats(s, &st);
+    T_EQ(st.allocated_pages, G);
+    T_EQ(st.frames_free, st0.frames_free - 2);
+    bits = group_bits(1, &lsn);
+    T_EQ(lsn, 11);
+    T_EQ(bits[0], 0x05);
+
+    T_OK(ps_op_begin(s, 12));
+    T_OK(ps_alloc(s, &id, &p));
+    T_EQ(id, G + 1);
+    ps_op_abort(s);
+    ps_stats(s, &st);
+    T_EQ(st.frames_free, st0.frames_free - 2);
+    close_store();
+}
+
+static void test_new_group_abort(void)
+{
+    setup_full_group0(0);
+    T_OK(mb_open(mb, 64, 0, &s));
+    const u32 G = ps_group_size(PS);
+    struct ps_stats st0;
+    ps_stats(s, &st0);
+
+    T_OK(ps_op_begin(s, 10));
+    u32 id = 0;
+    ps_page *p = NULL;
+    T_OK(ps_alloc(s, &id, &p));
+    T_EQ(id, G + 1);
+    T_OK(ps_alloc(s, &id, &p));
+    T_EQ(id, G + 2);
+    T_OK(ps_free(s, G + 1));
+    T_CHECK(ps_test_has_entry(s, 2 * G)); /* reserve for a group 2 */
+    ps_op_abort(s);
+
+    struct ps_stats st;
+    ps_stats(s, &st);
+    T_EQ(st.num_groups, 1);
+    T_EQ(st.allocated_pages, G - 1);
+    T_EQ(st.frames_free, st0.frames_free);
+    T_EQ(st.frames_dirty, 0);
+    T_CHECK(!ps_test_has_entry(s, G));
+    T_CHECK(!ps_test_has_entry(s, G + 1));
+    T_CHECK(!ps_test_has_entry(s, G + 2));
+    T_CHECK(!ps_test_has_entry(s, 2 * G));
+
+    T_OK(ps_op_begin(s, 10));
+    T_OK(ps_alloc(s, &id, &p));
+    T_EQ(id, G + 1);
+    ps_op_commit(s);
+    ps_stats(s, &st);
+    T_EQ(st.num_groups, 2);
+    close_store();
+}
+
+/*
+ * The new group's bitmap frame cannot be had: the page's frame becomes the
+ * bitmap's and the allocation is cancelled, so both abort and (an erroneous)
+ * commit stay consistent.
+ */
+static void test_new_group_frame_steal(void)
+{
+    setup_full_group0(14);
+    T_OK(mb_open(mb, 16, 0, &s));
+    const u32 G = ps_group_size(PS);
+    const ps_page *rp = NULL;
+    u32 id = 0;
+    ps_page *p = NULL;
+    struct ps_stats st;
+
+    T_OK(ps_op_begin(s, 10));
+    for (u32 i = 1; i <= 14; i++) {
+        T_OK(ps_read(s, i, &rp));
+    }
+    ps_stats(s, &st);
+    T_EQ(st.frames_free, 1);
+    T_ERR(ps_alloc(s, &id, &p), ENOBUFS); /* group 1 created, its frame stolen */
+    T_EQ(s->op.frames, 15);
+    ps_stats(s, &st);
+    T_EQ(st.frames_free, 0);
+    T_ERR(ps_alloc(s, &id, &p), ENOBUFS); /* no frame for a page at all */
+    ps_op_abort(s);
+    ps_stats(s, &st);
+    T_EQ(st.frames_free, 1);
+    T_EQ(st.frames_evictable, 14);
+    T_EQ(st.frames_pinned, 0);
+    T_EQ(st.num_groups, 1);
+    T_EQ(st.allocated_pages, G - 1);
+    T_CHECK(!ps_test_has_entry(s, G));
+    T_CHECK(!ps_test_has_entry(s, G + 1));
+    T_CHECK(!ps_test_has_entry(s, 2 * G));
+
+    T_OK(ps_op_begin(s, 11));
+    for (u32 i = 1; i <= 14; i++) {
+        T_OK(ps_read(s, i, &rp));
+    }
+    T_ERR(ps_alloc(s, &id, &p), ENOBUFS);
+    ps_op_commit(s);
+    ps_stats(s, &st);
+    T_EQ(st.num_groups, 2);
+    T_EQ(st.allocated_pages, G - 1);
+    T_EQ(st.frames_free, 0);
+    T_EQ(st.frames_pinned, 0);
+    T_EQ(st.frames_dirty, 1); /* the new bitmap page */
+    T_CHECK(!ps_test_has_entry(s, G + 1));
+    T_CHECK(!ps_test_has_entry(s, 2 * G));
+    u64 lsn = 0;
+    const u8 *bits = group_bits(1, &lsn);
+    T_EQ(lsn, 11);
+    T_EQ(bits[0], 0x01);
+    T_CHECK(all_zero(bits + 1, PS - HDR - 1));
+    close_store();
+}
+
+/* Cancelling all allocations in the operation leaves the bitmap clean. */
+static void test_cancelled_only_bitmap_clean(void)
+{
+    setup_pagein_store();
+    T_OK(mb_open(mb, 64, 0, &s));
+    T_OK(ps_op_begin(s, 10));
+    u32 id = 0;
+    ps_page *p = NULL;
+    T_OK(ps_alloc(s, &id, &p));
+    T_EQ(id, 4);
+    T_OK(ps_free(s, 4));
+    ps_op_commit(s);
+    struct ps_stats st;
+    ps_stats(s, &st);
+    T_EQ(st.frames_dirty, 0);
+    T_EQ(st.allocated_pages, 3);
+    u64 lsn = 0;
+    T_EQ(group_bits(0, &lsn)[0], 0x0F);
+    T_EQ(lsn, 9);
+    T_EQ(ps_committed_lsn(s), 10);
+    close_store();
+}
+
+/* ---- operation ownership ---- */
+
+typedef struct intruder_arg {
+    int rv[4];
+} intruder_arg;
+
+static void *intruder(void *argp)
+{
+    intruder_arg *a = argp;
+    const ps_page *rp = NULL;
+    ps_page *wp = NULL;
+    u32 id = 0;
+    a->rv[0] = ps_read(s, 1, &rp);
+    a->rv[1] = ps_write(s, 1, &wp);
+    a->rv[2] = ps_alloc(s, &id, &wp);
+    a->rv[3] = ps_free(s, 1);
+    return NULL;
+}
+
+static void test_non_owner_einval(void)
+{
+    mb = mb_create();
+    ps_log_ctx lc;
+    atomic_init(&lc.errors, 0);
+    ps_config cfg = mb_config(64);
+    cfg.log = count_log;
+    cfg.log_ctx = &lc;
+    ps_backend be;
+    mb_backend(mb, &be);
+    T_OK(ps_open_backend(&be, &cfg, PS_CREATE, &s));
+    alloc_with(1, "A");
+    struct ps_stats st0;
+    ps_stats(s, &st0);
+
+    T_OK(ps_op_begin(s, 2));
+    intruder_arg a;
+    pthread_t th;
+    T_OK(pthread_create(&th, NULL, intruder, &a));
+    T_OK(pthread_join(th, NULL));
+    for (u32 i = 0; i < 4; i++) {
+        T_ERR(a.rv[i], EINVAL);
+    }
+    T_EQ(atomic_load(&lc.errors), 4);
+    T_EQ(s->op.frames, 0);
+    T_EQ(s->op.npages, 0);
+    check_text(1, "A");
+    ps_op_commit(s);
+    struct ps_stats st;
+    ps_stats(s, &st);
+    T_EQ(st.allocated_pages, 1);
+    T_EQ(st.frames_free, st0.frames_free);
+
+    T_OK(pthread_create(&th, NULL, intruder, &a));
+    T_OK(pthread_join(th, NULL));
+    for (u32 i = 0; i < 4; i++) {
+        T_ERR(a.rv[i], EINVAL);
+    }
+    T_EQ(atomic_load(&lc.errors), 8);
+    close_store();
+}
+
 int main(int argc, char **argv)
 {
     t_init(argc, argv);
@@ -804,5 +1089,10 @@ int main(int argc, char **argv)
     T_RUN(test_cache_full_enobufs);
     T_RUN(test_stats_basic);
     T_RUN(test_clean_page_evictable);
+    T_RUN(test_new_group_commit);
+    T_RUN(test_new_group_abort);
+    T_RUN(test_new_group_frame_steal);
+    T_RUN(test_cancelled_only_bitmap_clean);
+    T_RUN(test_non_owner_einval);
     return t_done();
 }
