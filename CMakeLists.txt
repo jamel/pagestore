@@ -40,6 +40,7 @@ endif()
 set(PS_SOURCES
   src/crc32c.c
   src/bitmap.c
+  src/vfs_posix.c
 )
 
 add_library(pagestore STATIC ${PS_SOURCES})
