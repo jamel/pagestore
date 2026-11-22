@@ -44,6 +44,7 @@ set(PS_SOURCES
   src/format.c
   src/backend_file.c
   src/frames.c
+  src/ptable.c
 )
 
 add_library(pagestore STATIC ${PS_SOURCES})
