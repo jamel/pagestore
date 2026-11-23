@@ -300,7 +300,7 @@ int w_apply_store_begin(ps_store *s, const w_op *op)
                 rv = ps_alloc(s, &id, &p);
                 if (rv == 0) {
                     T_EQ(id.raw, a->id.raw);
-                    T_EQ(p->page_id.raw, id.raw);
+                    T_EQ(p->id.raw, id.raw);
                     T_EQ(p->lsn, op->lsn);
                 }
                 break;
@@ -312,7 +312,7 @@ int w_apply_store_begin(ps_store *s, const w_op *op)
                 T_CHECK((u64) a->off + a->len <= cs);
                 rv = ps_write(s, a->id, &p);
                 if (rv == 0) {
-                    T_EQ(p->page_id.raw, a->id.raw);
+                    T_EQ(p->id.raw, a->id.raw);
                     w_pattern_fill(
                         a->fill,
                         a->off,
@@ -427,7 +427,7 @@ void w_check_store(ps_store *s, const model *m)
         T_CHECK(model_page_at(m, lsn, id, &mp));
         const ps_page *p = NULL;
         T_OK(check_read(s, sn, id, &p));
-        T_EQ(p->page_id.raw, id.raw);
+        T_EQ(p->id.raw, id.raw);
         T_EQ(p->lsn, mp.lsn);
         T_EQ(p->flags, 0);
         T_EQ(p->checksum, 0);

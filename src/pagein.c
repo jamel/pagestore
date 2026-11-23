@@ -12,8 +12,8 @@
 /* Check the disk image before attaching it to the version chain. */
 static int check_page(ps_store *s, ps_page_id id, ps_page *p)
 {
-    if (!ps_page_id_eq(p->page_id, id)) {
-        ps_log(s, PS_LOG_ERROR, "page %u: header has page_id %u", id.raw, p->page_id.raw);
+    if (!ps_page_id_eq(p->id, id)) {
+        ps_log(s, PS_LOG_ERROR, "page %u: header has id %u", id.raw, p->id.raw);
         return EBADMSG;
     }
     const u32 stored = p->checksum;

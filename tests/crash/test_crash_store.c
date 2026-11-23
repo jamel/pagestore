@@ -75,7 +75,7 @@ static void fill(ps_page *p, ps_page_id id, u64 lsn)
 
 static void check_content(const ps_page *p, ps_page_id id, u64 lsn)
 {
-    T_EQ(p->page_id.raw, id.raw);
+    T_EQ(p->id.raw, id.raw);
     T_EQ(p->lsn, lsn);
     const u8 *b = (const u8 *) p;
     for (u32 j = HDR; j < PS; j++) {

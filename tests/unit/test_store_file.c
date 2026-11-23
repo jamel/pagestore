@@ -57,7 +57,7 @@ static void check_text(ps_store *s, ps_page_id id, const char *text)
     T_OK(ps_snapshot_open(s, &snap));
     const ps_page *p = NULL;
     T_OK(ps_snapshot_read(snap, id, &p));
-    T_EQ(p->page_id.raw, id.raw);
+    T_EQ(p->id.raw, id.raw);
     T_CHECK(strcmp((const char *) p + HDR, text) == 0);
     ps_snapshot_close(snap);
 }

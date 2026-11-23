@@ -76,7 +76,7 @@ static bool stamped(const ps_page *p, ps_page_id id, u32 tag)
     u32 t = 0;
     memcpy(&i, b + HDR, 4);
     memcpy(&t, b + HDR + 4, 4);
-    if (i != id.raw || t != tag || !ps_page_id_eq(p->page_id, id) || p->checksum != 0) {
+    if (i != id.raw || t != tag || !ps_page_id_eq(p->id, id) || p->checksum != 0) {
         return false;
     }
     const u8 want = (u8) ((id.raw * 31u + tag) & 0xFFu);
@@ -758,12 +758,12 @@ static void inject_full_groups(u32 ngroups)
         memset(buf, 0, PS);
         ps_page *p = (ps_page *) buf;
         p->magic = PS_BITMAP_MAGIC;
-        p->page_id = ps_page_id_from(g * ps_group_size(PS));
+        p->id = ps_page_id_from(g * ps_group_size(PS));
         p->flags = PS_PAGE_FLAG_BITMAP;
         p->lsn = 9;
         memset(buf + HDR, 0xFF, PS - HDR);
         mb_seal_page(buf, PS);
-        mb_put(mb, p->page_id, buf);
+        mb_put(mb, p->id, buf);
     }
     free(buf);
 }

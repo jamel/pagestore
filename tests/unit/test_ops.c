@@ -170,7 +170,7 @@ static void test_alloc_write_read(void)
     ps_page *p = NULL;
     T_OK(ps_alloc(s, &id, &p));
     T_EQ(id.raw, 1);
-    T_EQ(p->page_id.raw, 1);
+    T_EQ(p->id.raw, 1);
     T_EQ(p->lsn, 1);
     T_EQ(p->magic, 0);
     T_EQ(p->flags, 0);
@@ -297,7 +297,7 @@ static void test_write_copies(void)
     T_OK(ps_write(s, ps_page_id_from(1), &neu));
     T_CHECK(neu != old);
     T_EQ(neu->lsn, 2);
-    T_EQ(neu->page_id.raw, 1);
+    T_EQ(neu->id.raw, 1);
     T_EQ(neu->checksum, 0);
     T_EQ(old->lsn, 1);
     memcpy((u8 *) neu + HDR, "B", 2);
@@ -566,7 +566,7 @@ static void make_page(u8 *buf, ps_page_id id, u64 lsn, const char *text)
     memset(buf, 0, PS);
     ps_page *p = (ps_page *) buf;
     p->magic = 0x1234;
-    p->page_id = id;
+    p->id = id;
     p->lsn = lsn;
     strcpy((char *) buf + HDR, text);
     mb_seal_page(buf, PS);
@@ -582,7 +582,7 @@ static void setup_pagein_store(void)
     T_CHECK(buf != NULL);
     ps_page *p = (ps_page *) buf;
     p->magic = PS_BITMAP_MAGIC;
-    p->page_id = ps_page_id_from(0);
+    p->id = ps_page_id_from(0);
     p->flags = PS_PAGE_FLAG_BITMAP;
     p->lsn = 9;
     buf[HDR] = 0x0F; /* bits 0..3 */
@@ -798,7 +798,7 @@ static void setup_full_group0(u32 nuser)
     T_CHECK(buf != NULL);
     ps_page *p = (ps_page *) buf;
     p->magic = PS_BITMAP_MAGIC;
-    p->page_id = ps_page_id_from(0);
+    p->id = ps_page_id_from(0);
     p->flags = PS_PAGE_FLAG_BITMAP;
     p->lsn = 9;
     memset(buf + HDR, 0xFF, PS - HDR);
@@ -819,7 +819,7 @@ static const u8 *group_bits(u32 g, u64 *lsn)
     const ps_entry *e = ps_entry_find(s->pt, id);
     T_CHECK(e != NULL && e->head != NULL && e->head->frame != PS_NO_FRAME);
     const ps_page *p = ps_node_page(s, e->head);
-    T_EQ(p->page_id.raw, id.raw);
+    T_EQ(p->id.raw, id.raw);
     T_EQ(p->flags, PS_PAGE_FLAG_BITMAP);
     T_EQ(p->magic, PS_BITMAP_MAGIC);
     T_EQ(p->lsn, e->head->lsn);
@@ -842,7 +842,7 @@ static void test_new_group_commit(void)
     ps_page *p = NULL;
     T_OK(ps_alloc(s, &id, &p));
     T_EQ(id.raw, G + 1);
-    T_EQ(p->page_id.raw, G + 1);
+    T_EQ(p->id.raw, G + 1);
     T_EQ(s->op.frames, 2); /* the page and the new bitmap page */
     T_CHECK(ps_test_has_entry(s, ps_page_id_from(G))); /* the group's reserved entry */
     T_EQ(ps_test_chain_len(s, ps_page_id_from(G)), 0);

@@ -490,7 +490,7 @@ static void commit_group(ps_store *s, ps_op_group *r)
         p = (ps_page *) ps_frame(s->frames, r->spare);
         memset(p, 0, s->page_size);
         p->magic = PS_BITMAP_MAGIC;
-        p->page_id = id;
+        p->id = id;
         p->flags = PS_PAGE_FLAG_BITMAP;
         v->entry = e;
         v->kind = PS_V_DATA;
@@ -987,7 +987,7 @@ int ps_alloc(ps_store *s, ps_page_id *id_out, ps_page **page)
     }
     ps_page *p = (ps_page *) ps_frame(s->frames, f);
     memset(p, 0, s->page_size);
-    p->page_id = id;
+    p->id = id;
     p->lsn = s->op.lsn;
     v->lsn = s->op.lsn;
     v->entry = e;

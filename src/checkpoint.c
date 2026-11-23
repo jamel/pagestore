@@ -312,7 +312,7 @@ static int write_pages(ps_store *s, u32 n)
         memcpy(s->ckpt_buf, ps_node_page(s, it->v), s->page_size);
         ps_unlatch(s->pt, id);
         ps_page *p = (ps_page *) s->ckpt_buf;
-        PS_ASSERT(ps_page_id_eq(p->page_id, id) && p->checksum == 0);
+        PS_ASSERT(ps_page_id_eq(p->id, id) && p->checksum == 0);
         p->checksum = ps_crc32c(0, s->ckpt_buf, s->page_size);
         const int rv = s->be.ckpt_write(s->be.ctx, id, s->ckpt_buf);
         if (rv != 0) {

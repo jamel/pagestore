@@ -84,7 +84,7 @@ static u64 next_lsn(run *t)
 
 static void check_page(const model *m, const ps_page *p, ps_page_id id, const model_page *mp)
 {
-    T_EQ(p->page_id.raw, id.raw);
+    T_EQ(p->id.raw, id.raw);
     T_EQ(p->lsn, mp->lsn);
     T_EQ(p->flags, 0);
     T_EQ(p->checksum, 0);
@@ -222,7 +222,7 @@ static int misuse_read(run *t, snap_rec *sr, ps_page_id id)
     } else if (rv == EBADMSG) {
         t->t->misuse_ebadmsg++;
     } else {
-        T_EQ(p->page_id.raw, id.raw);
+        T_EQ(p->id.raw, id.raw);
         T_EQ(p->flags, 0);
         T_EQ(p->checksum, 0);
         ps_snapshot_unpin(sr->sn, id);

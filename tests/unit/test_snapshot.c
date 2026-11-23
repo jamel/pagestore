@@ -109,7 +109,7 @@ static const ps_page *snap_get(ps_snapshot *sn, ps_page_id id)
     const ps_page *p = NULL;
     T_OK(ps_snapshot_read(sn, id, &p));
     T_CHECK(p != NULL);
-    T_EQ(p->page_id.raw, id.raw);
+    T_EQ(p->id.raw, id.raw);
     T_EQ(p->checksum, 0);
     T_CHECK(p->lsn <= ps_snapshot_lsn(sn));
     return p;
@@ -892,7 +892,7 @@ static void set_value(ps_page *p, u64 v)
 
 static void check_read(const ps_page *p, ps_page_id id, u64 S)
 {
-    T_EQ(p->page_id.raw, id.raw);
+    T_EQ(p->id.raw, id.raw);
     T_CHECK(p->lsn <= S);
     T_EQ(page_value(p), p->lsn);
 }

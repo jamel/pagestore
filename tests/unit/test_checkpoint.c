@@ -281,7 +281,7 @@ static void test_format_seq1(void)
     T_EQ(ps_durable_lsn(s), 0);
     const ps_page *p = (const ps_page *) mb_page(mb, ps_page_id_from(0));
     T_CHECK(p != NULL);
-    T_EQ(p->page_id.raw, 0);
+    T_EQ(p->id.raw, 0);
     T_EQ(p->flags, PS_PAGE_FLAG_BITMAP);
     T_EQ(p->magic, PS_BITMAP_MAGIC);
     T_EQ(p->lsn, 0);
@@ -915,7 +915,7 @@ static void test_checksums(void)
         dp->checksum = 0;
         T_EQ(ps_crc32c(0, buf, PS), stored);
         T_NE(stored, 0);
-        T_EQ(dp->page_id.raw, id.raw);
+        T_EQ(dp->id.raw, id.raw);
         if (i != 0) {
             const ps_page *p = NULL;
             T_OK(ps_read(s, id, &p));
@@ -966,7 +966,7 @@ static void test_group_growth_persists(void)
     const ps_page *g1 = (const ps_page *) mb_page(mb, ps_page_id_from(G));
     T_CHECK(g1 != NULL);
     T_EQ(g1->flags, PS_PAGE_FLAG_BITMAP);
-    T_EQ(g1->page_id.raw, G);
+    T_EQ(g1->id.raw, G);
     T_EQ(((const u8 *) g1)[HDR], 0x03);
     check_durable_text(ps_page_id_from(G + 1), "g1");
 

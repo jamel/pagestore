@@ -155,7 +155,7 @@ static bool stamped(const ps_page *p, ps_page_id id, u32 tag)
     u32 t = 0;
     memcpy(&i, b + HDR, 4);
     memcpy(&t, b + HDR + 4, 4);
-    if (i != id.raw || t != tag || !ps_page_id_eq(p->page_id, id) || p->checksum != 0) {
+    if (i != id.raw || t != tag || !ps_page_id_eq(p->id, id) || p->checksum != 0) {
         return false;
     }
     const u8 want = (u8) ((id.raw * 31u + tag) & 0xFFu);

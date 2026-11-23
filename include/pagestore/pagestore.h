@@ -62,7 +62,7 @@ typedef struct ps_snapshot ps_snapshot;
 /* Every page starts with this 24-byte header. The rest belongs to the caller. */
 typedef struct ps_page {
     u32 magic; /* caller's page type */
-    ps_page_id page_id; /* store-owned */
+    ps_page_id id; /* store-owned */
     u32 checksum; /* CRC32C on disk, always 0 in memory */
     u32 flags; /* store-owned, see PS_PAGE_FLAG_* */
     u64 lsn; /* store-owned, set by the operation that produced this version */

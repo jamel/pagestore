@@ -100,7 +100,7 @@ static void stamp(ps_page *p, u32 id, u64 lsn)
 /* Validate the payload against its header LSN. The caller checks visibility. */
 static bool self_valid(const ps_page *p, u32 id)
 {
-    if (p->magic != MAGIC || p->page_id.raw != id || p->checksum != 0 || p->flags != 0) {
+    if (p->magic != MAGIC || p->id.raw != id || p->checksum != 0 || p->flags != 0) {
         return false;
     }
     u8 want[CALLER];
@@ -779,7 +779,7 @@ static void test_group_growth_full(void)
     const ps_page *g1 = (const ps_page *) mb_page(mb, ps_page_id_from(G));
     T_CHECK(g1 != NULL);
     T_EQ(g1->flags, PS_PAGE_FLAG_BITMAP);
-    T_EQ(g1->page_id.raw, G);
+    T_EQ(g1->id.raw, G);
     T_EQ(((const u8 *) g1)[HDR], 0x03); /* the bitmap page itself and G + 1 */
 
     reopen(&cfg);

@@ -71,7 +71,7 @@ static void fill_page(u64 seed, ps_page *p, u32 id, u64 lsn)
 /* The page must be the version of id written at lsn, byte for byte. */
 static void check_page(u64 seed, const ps_page *p, u32 id, u64 lsn)
 {
-    T_EQ(p->page_id.raw, id);
+    T_EQ(p->id.raw, id);
     T_EQ(p->lsn, lsn);
     T_EQ(p->magic, MAGIC);
     T_EQ(p->flags, 0);

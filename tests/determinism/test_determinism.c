@@ -97,7 +97,7 @@ static void compare_memory(dstore *d, const model *m)
         for (u32 k = 0; k < NSTORES; k++) {
             T_OK(snap_read(d[k].s, sn[k], ids[i], &p[k]));
         }
-        T_EQ(p[0]->page_id.raw, ids[i].raw);
+        T_EQ(p[0]->id.raw, ids[i].raw);
         for (u32 k = 1; k < NSTORES; k++) {
             T_MEMEQ(p[k], p[0], PS);
         }
