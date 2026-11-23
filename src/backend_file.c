@@ -6,6 +6,11 @@
  *
  * Reopen can finish a checkpoint from a durable journal even if the data
  * pages or header were only partly written.
+ *
+ * The journal's own fsync doesn't make its directory entry durable. If the
+ * entry is lost, recovery finds no journal and keeps the torn pages. Each open
+ * therefore syncs the directory once, before its first checkpoint, which also
+ * covers an earlier open that created the journal or data and then failed.
  */
 
 #include "backend_file.h"
@@ -48,6 +53,7 @@ struct ps_backend_ctx {
     bool have_data;
     bool have_journal;
     bool opened;
+    bool dir_synced; /* the journal and data entries are durable */
 
     /* read_page uses this field and the data handle, both set at open. */
     u32 page_size;
@@ -251,17 +257,12 @@ static int truncate_journal(ps_backend_ctx *c)
     return c->vfs.truncate(c->vfs.ctx, &c->journal, 0);
 }
 
-/* A newly created journal needs a directory sync before it can be used. */
+/* Create a missing journal. The first checkpoint syncs its directory entry. */
 static int open_journal(ps_backend_ctx *c)
 {
     int rv = c->vfs.open(c->vfs.ctx, c->journal_path, 0, &c->journal);
     if (rv == ENOENT) {
         rv = c->vfs.open(c->vfs.ctx, c->journal_path, PS_VFS_CREATE, &c->journal);
-        if (rv != 0) {
-            return rv;
-        }
-        c->have_journal = true;
-        return c->vfs.fsync_dir(c->vfs.ctx, c->dir);
     }
     if (rv == 0) {
         c->have_journal = true;
@@ -300,10 +301,12 @@ static int format_data(ps_backend_ctx *c, u32 page_size)
     if (rv != 0) {
         return rv;
     }
+    /* This also syncs the journal entry created above. */
     rv = c->vfs.fsync_dir(c->vfs.ctx, c->dir);
     if (rv != 0) {
         return rv;
     }
+    c->dir_synced = true;
     rv = c->vfs.open(c->vfs.ctx, c->data_path, 0, &c->data);
     if (rv != 0) {
         return rv;
@@ -486,6 +489,14 @@ static int fb_ckpt_begin(ps_backend_ctx *c, u64 lsn, u32 num_groups, u32 count)
     PS_ASSERT(c->opened && c->state == FB_IDLE && num_groups > 0);
     if (!c->opened || c->state != FB_IDLE || num_groups == 0) {
         return EINVAL;
+    }
+    /* Nothing is written yet, so a failed sync can be retried. */
+    if (!c->dir_synced) {
+        const int rv = c->vfs.fsync_dir(c->vfs.ctx, c->dir);
+        if (rv != 0) {
+            return rv;
+        }
+        c->dir_synced = true;
     }
     /* Old trailing bytes would invalidate the new journal's length check. */
     u64 size = 0;

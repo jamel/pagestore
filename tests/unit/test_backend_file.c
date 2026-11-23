@@ -102,7 +102,10 @@ static u8 page_byte(ps_backend *be, u32 id)
     return buf[0];
 }
 
-/* *fatal is false when an earlier error kept us from calling commit. */
+/*
+ * *fatal is false when an earlier error kept us from calling commit. Like
+ * the store, abort after a non-fatal error that follows a successful begin.
+ */
 static int checkpoint_ng(
     ps_backend *be,
     u64 lsn,
@@ -118,14 +121,17 @@ static int checkpoint_ng(
     if (rv != 0) {
         return rv;
     }
-    for (u32 i = 0; i < n; i++) {
+    for (u32 i = 0; i < n && rv == 0; i++) {
         memset(page, fills[i], sizeof(page));
         rv = be->ckpt_write(be->ctx, ids[i], page);
-        if (rv != 0) {
-            return rv;
-        }
     }
-    return be->ckpt_commit(be->ctx, fatal);
+    if (rv == 0) {
+        rv = be->ckpt_commit(be->ctx, fatal);
+    }
+    if (rv != 0 && !*fatal) {
+        be->ckpt_abort(be->ctx);
+    }
+    return rv;
 }
 
 static int checkpoint(ps_backend *be, u64 lsn, const u32 *ids, const u8 *fills, u32 n, bool *fatal)
@@ -415,7 +421,6 @@ static void test_journal_enospc_nonfatal(void)
     bool fatal = true;
     T_ERR(ckpt_b(&be, &fatal), ENOSPC);
     T_CHECK(!fatal);
-    be.ckpt_abort(be.ctx);
     T_EQ(page_byte(&be, 2), 0xA2);
     be_close(&be);
 
@@ -451,12 +456,12 @@ static u64 ckpt_b_points(void)
 
 static void test_fsync_failure_fatal(void)
 {
-    /* Point 1 writes the buffered journal. Fail point 2 to hit its fsync. */
+    /* Point 1 syncs the directory and point 2 writes the journal. Fail its fsync. */
     setup_image_a(1);
     ps_backend be;
     ps_backend_info info;
     T_OK(be_open(&be, false, &info));
-    fault_vfs_fail_at(fv, fault_vfs_points(fv) + 2, EIO);
+    fault_vfs_fail_at(fv, fault_vfs_points(fv) + 3, EIO);
     bool fatal = false;
     T_ERR(ckpt_b(&be, &fatal), EIO);
     T_CHECK(fatal);
@@ -465,12 +470,12 @@ static void test_fsync_failure_fatal(void)
     teardown();
 
     /*
-     * A journal write can be retried. Failures starting at the journal
-     * fsync require reopening, except the final truncation after commit.
-     * Reopen must yield a whole checkpoint.
+     * The directory sync and the journal write can be retried. Failures
+     * starting at the journal fsync require reopening, except the final
+     * truncation after commit. Reopen must yield a whole checkpoint.
      */
     const u64 n = ckpt_b_points();
-    T_CHECK(n >= 5);
+    T_CHECK(n >= 6);
     for (u64 k = 1; k <= n; k++) {
         setup_image_a(1);
         T_OK(be_open(&be, false, &info));
@@ -482,15 +487,12 @@ static void test_fsync_failure_fatal(void)
             T_CHECK(!fatal);
         } else {
             T_ERR(rv, EIO);
-            T_EQ(fatal, k >= 2);
-            if (!fatal) {
-                be.ckpt_abort(be.ctx);
-            }
+            T_EQ(fatal, k >= 3);
         }
         be_close(&be);
         T_OK(be_open(&be, false, &info));
         check_image_a_or_b(&be, &info);
-        if (k >= 2) {
+        if (k >= 3) {
             T_EQ(info.seq, 2); /* even an fsync error leaves replayable bytes before a power loss */
         }
         be_close(&be);
@@ -524,7 +526,7 @@ static void test_recovery_table(void)
     /* Crash after journal fsync, at the first in-place write. */
     setup_image_a(1);
     T_OK(be_open(&be, false, &info));
-    fault_vfs_crash_at(fv, fault_vfs_points(fv) + 3);
+    fault_vfs_crash_at(fv, fault_vfs_points(fv) + 4);
     bool fatal = false;
     T_ERR(ckpt_b(&be, &fatal), EIO);
     T_CHECK(fatal);
@@ -598,6 +600,39 @@ static void test_recovery_table(void)
     teardown();
 }
 
+static void test_journal_creation_sync_retry(void)
+{
+    setup_image_a(1);
+    T_OK(v->unlink(v->ctx, DIR "/journal"));
+    T_OK(v->fsync_dir(v->ctx, DIR));
+
+    ps_backend be;
+    ps_backend_info info;
+    /* Recreating the journal doesn't sync the directory, so the open does no syncs. */
+    const u64 p0 = fault_vfs_points(fv);
+    T_OK(be_open(&be, false, &info));
+    T_EQ(fault_vfs_points(fv) - p0, 1);
+
+    /* A failed directory sync leaves the checkpoint retryable. */
+    fault_vfs_fail_at(fv, fault_vfs_points(fv) + 1, EIO);
+    bool fatal = true;
+    T_ERR(ckpt_b(&be, &fatal), EIO);
+    T_CHECK(!fatal);
+
+    /* The retry syncs. Crash at the second in-place write, after the journal file sync. */
+    fault_vfs_crash_at(fv, fault_vfs_points(fv) + 5);
+    T_ERR(ckpt_b(&be, &fatal), EIO);
+    T_CHECK(fatal);
+    be_close(&be);
+    fault_vfs_reboot(fv, FAULT_DROP_UNSYNCED);
+
+    T_OK(be_open(&be, false, &info));
+    check_info(&info, PS, 1, 2, 2);
+    check_image_a_or_b(&be, &info);
+    be_close(&be);
+    teardown();
+}
+
 /* k counts from the start of checkpoint B, after image A is durable. */
 static bool crash_ckpt_run(u64 k, fault_mode mode, u64 seed)
 {
@@ -609,9 +644,6 @@ static bool crash_ckpt_run(u64 k, fault_mode mode, u64 seed)
     bool fatal = false;
     const int rv = ckpt_b(&be, &fatal);
     const bool crashed = fault_vfs_crashed(fv);
-    if (rv != 0 && !fatal) {
-        be.ckpt_abort(be.ctx);
-    }
     be_close(&be);
     if (crashed) {
         fault_vfs_reboot(fv, mode);
@@ -763,6 +795,7 @@ int main(int argc, char **argv)
     T_RUN(test_journal_enospc_nonfatal);
     T_RUN(test_fsync_failure_fatal);
     T_RUN(test_recovery_table);
+    T_RUN(test_journal_creation_sync_retry);
     T_RUN(test_crash_every_point_checkpoint);
     T_RUN(test_crash_every_point_format);
     T_RUN(test_read_concurrent_with_checkpoint);
