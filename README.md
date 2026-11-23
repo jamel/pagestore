@@ -4,7 +4,10 @@ PageStore is a C11 library for managing fixed-size pages in an embedded storage
 engine. It handles page allocation and caching, groups updates into operations
 that callers can commit or abort, and checkpoints committed changes to disk.
 The public API is in [`pagestore.h`](include/pagestore/pagestore.h).
-[`examples/btree`](examples/btree) builds a B+tree and a key-value tool on it.
+
+See examples implemented on top of PageStore:
+ - [`examples/btree`](examples/btree) builds a B+tree and a key-value tool on it.
+ - [`examples/queue`](examples/queue) builds a durable message queue for threads.
 
 ## Development
 
