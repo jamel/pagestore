@@ -103,6 +103,14 @@ def make_parser():
             help="maximum parallel jobs for build and test steps",
         )
 
+    example_help = {
+        configure: "configure the examples too",
+        build: "build the examples too",
+        test: "build and test the examples too",
+    }
+    for command, text in example_help.items():
+        command.add_argument("--example", action="store_true", help=text)
+
     build.add_argument("--target", metavar="NAME", help="build a specific target")
     test.add_argument("filter", nargs="?", metavar="FILTER", help="test name regex")
     test.add_argument("--label", metavar="REGEX", help="CTest label regex")
@@ -191,7 +199,9 @@ def run_preset(args, preset):
         clean_preset(preset)
         return
 
-    configure = ["cmake", "--preset", preset]
+    # Pass the setting every time. CMake would otherwise keep the last one in its cache.
+    examples = "ON" if args.example else "OFF"
+    configure = ["cmake", "--preset", preset, f"-DPS_BUILD_EXAMPLES={examples}"]
     if args.command == "configure":
         run(configure)
         return

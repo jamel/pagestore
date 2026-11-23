@@ -113,3 +113,10 @@ target_link_libraries(pagestore PUBLIC Threads::Threads)
 
 enable_testing()
 add_subdirectory(tests)
+
+# Examples use only the public API. Their tests carry the "example" label.
+# ./dev.py passes this on every configure: ON with --example, OFF without.
+option(PS_BUILD_EXAMPLES "Build the examples and their tests" OFF)
+if(PS_BUILD_EXAMPLES)
+  add_subdirectory(examples/btree)
+endif()
