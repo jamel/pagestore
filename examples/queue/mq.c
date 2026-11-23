@@ -241,7 +241,7 @@ static int apply(mq *q, const u8 *rec, usize len, u64 *first)
             }
             ps_page_id meta;
             const int rv = ml_create(q->store, get64(rec + 1), &meta);
-            return rv == 0 && !ps_page_id_eq(meta, q->log.meta_id) ? EEXIST : rv;
+            return rv == 0 && !ps_page_id_eq(meta, q->log.meta) ? EEXIST : rv;
         }
         case REC_PUSH:
             return apply_push(q, rec, len, first);

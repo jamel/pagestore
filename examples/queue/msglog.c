@@ -123,7 +123,7 @@ static u32 min32(u64 a, u64 b)
 
 /* ---- meta page ------------------------------------------------------------ */
 
-typedef struct meta {
+typedef struct log_meta {
     u64 cap;
     u64 first_seq;
     u64 next_seq;
@@ -135,9 +135,9 @@ typedef struct meta {
     u32 index_height;
     ps_page_id map_root;
     u32 map_height;
-} meta;
+} log_meta;
 
-static int meta_decode(const ps_page *p, meta *m)
+static int meta_decode(const ps_page *p, log_meta *m)
 {
     const u8 *b = (const u8 *) p;
     if (p->magic != META_MAGIC) {
@@ -157,7 +157,7 @@ static int meta_decode(const ps_page *p, meta *m)
     return 0;
 }
 
-static void meta_encode(ps_page *p, const meta *m)
+static void meta_encode(ps_page *p, const log_meta *m)
 {
     u8 *b = (u8 *) p;
     p->magic = META_MAGIC;
@@ -175,7 +175,7 @@ static void meta_encode(ps_page *p, const meta *m)
 }
 
 /* The radix arrays with the roots recorded in m. */
-static rx_array index_of(const ml_log *l, const meta *m)
+static rx_array index_of(const ml_log *l, const log_meta *m)
 {
     rx_array a = l->index;
     a.root = m->index_root;
@@ -183,7 +183,7 @@ static rx_array index_of(const ml_log *l, const meta *m)
     return a;
 }
 
-static rx_array map_of(const ml_log *l, const meta *m)
+static rx_array map_of(const ml_log *l, const log_meta *m)
 {
     rx_array a = l->pages;
     a.root = m->map_root;
@@ -191,7 +191,7 @@ static rx_array map_of(const ml_log *l, const meta *m)
     return a;
 }
 
-static void save_roots(meta *m, const rx_array *index, const rx_array *pages)
+static void save_roots(log_meta *m, const rx_array *index, const rx_array *pages)
 {
     m->index_root = index->root;
     m->index_height = index->height;
@@ -205,22 +205,22 @@ static u64 page_count(const ml_log *l, u64 end_off)
     return end_off / l->data_size + (end_off % l->data_size != 0);
 }
 
-static int snap_meta(const ml_log *l, ps_snapshot *snap, meta *m)
+static int snap_meta(const ml_log *l, ps_snapshot *snap, log_meta *m)
 {
     const ps_page *p;
-    int rv = ps_snapshot_read(snap, l->meta_id, &p);
+    int rv = ps_snapshot_read(snap, l->meta, &p);
     if (rv != 0) {
         return rv;
     }
     rv = meta_decode(p, m);
-    ps_snapshot_unpin(snap, l->meta_id);
+    ps_snapshot_unpin(snap, l->meta);
     return rv;
 }
 
 /* Gets the meta page for writing in the current operation. */
-static int write_meta(ml_log *l, ps_page **p, meta *m)
+static int write_meta(ml_log *l, ps_page **p, log_meta *m)
 {
-    const int rv = ps_write(l->store, l->meta_id, p);
+    const int rv = ps_write(l->store, l->meta, p);
     return rv != 0 ? rv : meta_decode(*p, m);
 }
 
@@ -231,25 +231,25 @@ static bool data_ok(const ps_page *p, u64 logical)
 
 /* ---- create and open ------------------------------------------------------ */
 
-int ml_create(ps_store *s, u64 cap, ps_page_id *meta_id)
+int ml_create(ps_store *s, u64 cap, ps_page_id *meta)
 {
     if (cap == 0) {
         return EINVAL;
     }
     ps_page *p;
-    const int rv = ps_alloc(s, meta_id, &p);
+    const int rv = ps_alloc(s, meta, &p);
     if (rv != 0) {
         return rv;
     }
-    const meta m = {.cap = cap};
+    const log_meta m = {.cap = cap};
     meta_encode(p, &m);
     return 0;
 }
 
-void ml_open(ps_store *s, ps_page_id meta_id, ml_log *l)
+void ml_open(ps_store *s, ps_page_id meta, ml_log *l)
 {
     l->store = s;
-    l->meta_id = meta_id;
+    l->meta = meta;
     l->page_size = ps_page_size(s);
     l->data_size = l->page_size - DATA_PAYLOAD;
     l->max_readers = (l->page_size - META_SLOTS) / SLOT_SIZE;
@@ -264,7 +264,7 @@ void ml_open(ps_store *s, ps_page_id meta_id, ml_log *l)
 /* ---- push ----------------------------------------------------------------- */
 
 /* Copies msg to the end of the byte space, adding data pages as needed. */
-static int append_bytes(ml_log *l, meta *m, rx_array *pages, const u8 *msg, u32 len)
+static int append_bytes(ml_log *l, log_meta *m, rx_array *pages, const u8 *msg, u32 len)
 {
     const u32 d = l->data_size;
     u32 done = 0;
@@ -303,7 +303,7 @@ static int append_bytes(ml_log *l, meta *m, rx_array *pages, const u8 *msg, u32 
 }
 
 /* Drops the messages below new_first and frees the pages only they used. */
-static int trim(ml_log *l, meta *m, rx_array *index, rx_array *pages, u64 new_first)
+static int trim(ml_log *l, log_meta *m, rx_array *index, rx_array *pages, u64 new_first)
 {
     u64 off;
     int rv = rx_get_op(index, l->store, new_first, &off);
@@ -346,7 +346,7 @@ int ml_push(ml_log *l, const void *msg, u32 len, u64 *seq)
         return EINVAL;
     }
     ps_page *mp;
-    meta m;
+    log_meta m;
     int rv = write_meta(l, &mp, &m);
     if (rv != 0) {
         return rv;
@@ -379,7 +379,7 @@ int ml_push(ml_log *l, const void *msg, u32 len, u64 *seq)
 
 int ml_state_get(const ml_log *l, ps_snapshot *snap, ml_state *out)
 {
-    meta m;
+    log_meta m;
     const int rv = snap_meta(l, snap, &m);
     if (rv != 0) {
         return rv;
@@ -438,7 +438,7 @@ int ml_read(const ml_log *l, ps_snapshot *snap, u64 seq, void *buf, u32 cap, u32
     if (buf == NULL && cap > 0) {
         return EINVAL;
     }
-    meta m;
+    log_meta m;
     int rv = snap_meta(l, snap, &m);
     if (rv != 0) {
         return rv;
@@ -505,7 +505,7 @@ int ml_reader_add(ml_log *l, const char *name, u64 pos)
         return EINVAL;
     }
     ps_page *mp;
-    meta m;
+    log_meta m;
     int rv = write_meta(l, &mp, &m);
     if (rv != 0) {
         return rv;
@@ -536,7 +536,7 @@ int ml_reader_remove(ml_log *l, const char *name)
         return ENOENT;
     }
     ps_page *mp;
-    meta m;
+    log_meta m;
     int rv = write_meta(l, &mp, &m);
     u32 i;
     if (rv == 0) {
@@ -558,7 +558,7 @@ int ml_reader_ack(ml_log *l, const char *name, u64 pos)
         return ENOENT;
     }
     ps_page *mp;
-    meta m;
+    log_meta m;
     int rv = write_meta(l, &mp, &m);
     u32 i;
     if (rv == 0) {
@@ -584,7 +584,7 @@ int ml_reader_get(const ml_log *l, ps_snapshot *snap, const char *name, u64 *pos
         return ENOENT;
     }
     const ps_page *p;
-    int rv = ps_snapshot_read(snap, l->meta_id, &p);
+    int rv = ps_snapshot_read(snap, l->meta, &p);
     if (rv != 0) {
         return rv;
     }
@@ -593,7 +593,7 @@ int ml_reader_get(const ml_log *l, ps_snapshot *snap, const char *name, u64 *pos
     if (rv == 0) {
         *pos = get64(slot_at(p, i) + SLOT_POS);
     }
-    ps_snapshot_unpin(snap, l->meta_id);
+    ps_snapshot_unpin(snap, l->meta);
     return rv;
 }
 
@@ -605,7 +605,7 @@ int ml_reader_next(
     u64 *pos)
 {
     const ps_page *p;
-    int rv = ps_snapshot_read(snap, l->meta_id, &p);
+    int rv = ps_snapshot_read(snap, l->meta, &p);
     if (rv != 0) {
         return rv;
     }
@@ -621,7 +621,7 @@ int ml_reader_next(
             rv = 0;
         }
     }
-    ps_snapshot_unpin(snap, l->meta_id);
+    ps_snapshot_unpin(snap, l->meta);
     return rv;
 }
 
@@ -641,7 +641,7 @@ static int fail(char *msg, usize msg_cap, const char *fmt, ...)
 }
 
 /* Checks the counters and the reader table on the meta page. */
-static int check_meta(const ml_log *l, const ps_page *p, const meta *m, char *msg, usize cap)
+static int check_meta(const ml_log *l, const ps_page *p, const log_meta *m, char *msg, usize cap)
 {
     if (m->cap == 0 || m->first_seq > m->next_seq || m->next_seq - m->first_seq > m->cap) {
         return fail(
@@ -709,7 +709,7 @@ static int check_array(
 static int check_offsets(
     const rx_array *index,
     ps_snapshot *snap,
-    const meta *m,
+    const log_meta *m,
     char *msg,
     usize cap)
 {
@@ -741,7 +741,7 @@ static int check_data(
     const ml_log *l,
     const rx_array *pages,
     ps_snapshot *snap,
-    const meta *m,
+    const log_meta *m,
     u64 *count,
     char *msg,
     usize cap)
@@ -793,19 +793,19 @@ int ml_check(const ml_log *l, ps_snapshot *snap, ml_stats *out, char *msg, usize
 {
     *out = (ml_stats) {0};
     const ps_page *p;
-    int rv = ps_snapshot_read(snap, l->meta_id, &p);
+    int rv = ps_snapshot_read(snap, l->meta, &p);
     if (rv != 0) {
         return rv;
     }
-    meta m = {0};
+    log_meta m = {0};
     rv = meta_decode(p, &m);
     if (rv != 0) {
-        rv = fail(msg, msg_cap, "page %u: not a log meta page", l->meta_id.raw);
+        rv = fail(msg, msg_cap, "page %u: not a log meta page", l->meta.raw);
     }
     if (rv == 0) {
         rv = check_meta(l, p, &m, msg, msg_cap);
     }
-    ps_snapshot_unpin(snap, l->meta_id);
+    ps_snapshot_unpin(snap, l->meta);
     if (rv != 0) {
         return rv;
     }

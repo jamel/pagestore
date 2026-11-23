@@ -488,7 +488,7 @@ static void test_log_basic(void)
     T_EQ(st.readers, l.max_readers);
 
     fx_reopen(&f);
-    ml_open(f.s, l.meta_id, &l);
+    ml_open(f.s, l.meta, &l);
     log_checked(&f, &l);
     free(buf);
     fx_destroy(&f);
@@ -652,7 +652,7 @@ static void log_model_run(u64 seed, u64 cap, u32 nops)
         }
         if (op % 97 == 96) {
             fx_reopen(&f);
-            ml_open(f.s, l.meta_id, &l);
+            ml_open(f.s, l.meta, &l);
         }
     }
     log_verify(&f, &l, &m, &r, buf, buf_cap);
@@ -791,10 +791,10 @@ static void test_log_check_finds_damage(void)
     log_checked(&f, &l);
 
     /* With 20 small messages, both radix arrays are a single leaf. */
-    T_EQ(page_u32(&f, l.meta_id, 0x4C), 1);
-    T_EQ(page_u32(&f, l.meta_id, 0x54), 1);
-    const ps_page_id leaf = page_id_at(&f, l.meta_id, 0x48);
-    const ps_page_id data = page_id_at(&f, page_id_at(&f, l.meta_id, 0x50), 0x28);
+    T_EQ(page_u32(&f, l.meta, 0x4C), 1);
+    T_EQ(page_u32(&f, l.meta, 0x54), 1);
+    const ps_page_id leaf = page_id_at(&f, l.meta, 0x48);
+    const ps_page_id data = page_id_at(&f, page_id_at(&f, l.meta, 0x50), 0x28);
 
     /* A data page that claims another logical page number. */
     ps_page *p;
@@ -831,7 +831,7 @@ static void test_log_check_finds_damage(void)
     slots = (u8 *) p + 0x28;
     memcpy(slots + 8 * 4, slots + 8 * 3, 8);
     memcpy(slots + 8 * 3, tmp, 8);
-    T_OK(ps_write(f.s, l.meta_id, &p));
+    T_OK(ps_write(f.s, l.meta, &p));
     ((u8 *) p)[0x44] = 3;
     ps_op_commit(f.s);
     expect_damage(&f, &l, "count says 3");

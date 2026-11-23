@@ -499,14 +499,14 @@ static void meta_encode(ps_page *page, const tree_meta *m)
 static int meta_load(bt_tree *t, tree_meta *m)
 {
     const ps_page *p;
-    const int rv = ps_read(t->store, t->meta_id, &p);
+    const int rv = ps_read(t->store, t->meta, &p);
     return rv != 0 ? rv : meta_decode(p, m);
 }
 
 static int meta_store(bt_tree *t, const tree_meta *m)
 {
     ps_page *p;
-    const int rv = ps_write(t->store, t->meta_id, &p);
+    const int rv = ps_write(t->store, t->meta, &p);
     if (rv == 0) {
         meta_encode(p, m);
     }
@@ -1141,7 +1141,7 @@ int bt_delete(bt_tree *t, const void *key, u32 klen)
 
 /* ---- create and open -------------------------------------------------------------- */
 
-int bt_create(ps_store *s, ps_page_id *meta_id)
+int bt_create(ps_store *s, ps_page_id *meta)
 {
     ps_page_id mid;
     ps_page_id rid;
@@ -1157,11 +1157,11 @@ int bt_create(ps_store *s, ps_page_id *meta_id)
     node_init(ps_page_size(s), (u8 *) rp, 0, PS_PAGE_ID_NONE);
     const tree_meta m = {rid, 1, 0};
     meta_encode(mp, &m);
-    *meta_id = mid;
+    *meta = mid;
     return 0;
 }
 
-int bt_open(ps_store *s, ps_page_id meta_id, bt_tree *t)
+int bt_open(ps_store *s, ps_page_id meta, bt_tree *t)
 {
     const u32 page_size = ps_page_size(s);
     const u32 cost = max_cost(page_size);
@@ -1171,7 +1171,7 @@ int bt_open(ps_store *s, ps_page_id meta_id, bt_tree *t)
         return ENOMEM;
     }
     t->store = s;
-    t->meta_id = meta_id;
+    t->meta = meta;
     t->page_size = page_size;
     t->max_key = cost - SLOT_SIZE - INNER_CELL_HEADER;
     t->max_entry = cost - SLOT_SIZE - LEAF_CELL_HEADER;
@@ -1205,12 +1205,12 @@ static int snap_node(const bt_tree *t, ps_snapshot *snap, ps_page_id id, u32 lev
 static int snap_meta(const bt_tree *t, ps_snapshot *snap, tree_meta *m)
 {
     const ps_page *p;
-    int rv = ps_snapshot_read(snap, t->meta_id, &p);
+    int rv = ps_snapshot_read(snap, t->meta, &p);
     if (rv != 0) {
         return rv;
     }
     rv = meta_decode(p, m);
-    ps_snapshot_unpin(snap, t->meta_id);
+    ps_snapshot_unpin(snap, t->meta);
     return rv;
 }
 
@@ -1489,7 +1489,7 @@ int bt_check(const bt_tree *t, ps_snapshot *snap, bt_stats *out, char *msg, usiz
     tree_meta m;
     int rv = snap_meta(t, snap, &m);
     if (rv == EBADMSG) {
-        return check_fail(&c, t->meta_id, "bad meta page");
+        return check_fail(&c, t->meta, "bad meta page");
     }
     if (rv != 0) {
         return rv;
@@ -1507,7 +1507,7 @@ int bt_check(const bt_tree *t, ps_snapshot *snap, bt_stats *out, char *msg, usiz
     if (out->keys != m.count) {
         return check_fail(
             &c,
-            t->meta_id,
+            t->meta,
             "the tree holds %llu keys but the meta page says %llu",
             (unsigned long long) out->keys,
             (unsigned long long) m.count);

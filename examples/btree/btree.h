@@ -77,7 +77,7 @@ PS_EXTERN_C_BEGIN
 /* Set up by bt_open. Callers may read the fields but not change them. */
 typedef struct bt_tree {
     ps_store *store;
-    ps_page_id meta_id;
+    ps_page_id meta;
     u32 page_size;
     u32 max_key; /* longest key in bytes */
     u32 max_entry; /* longest key plus value in bytes */
@@ -116,14 +116,13 @@ typedef struct bt_stats {
  * Allocates an empty tree (a meta page and a root leaf) in the current
  * operation and returns the meta page ID.
  */
-int bt_create(ps_store *s, ps_page_id *meta_id);
+int bt_create(ps_store *s, ps_page_id *meta);
 
 /*
- * Sets up a handle for the tree whose meta page is meta_id. It reads no
- * pages, so a tree created by a later operation, such as one replayed from
- * the log, can use it. ENOMEM if the writer workspace can't be allocated.
+ * Sets up a handle for the tree whose meta page is meta. It reads no pages,
+ * so it works before the tree exists, for example before log replay creates it.
  */
-int bt_open(ps_store *s, ps_page_id meta_id, bt_tree *t);
+int bt_open(ps_store *s, ps_page_id meta, bt_tree *t);
 void bt_close(bt_tree *t);
 
 /*

@@ -54,7 +54,7 @@ PS_EXTERN_C_BEGIN
 /* Set up by ml_open. Callers may read the fields but not change them. */
 typedef struct ml_log {
     ps_store *store;
-    ps_page_id meta_id;
+    ps_page_id meta;
     u32 page_size;
     u32 data_size; /* payload bytes per data page */
     u32 max_readers;
@@ -86,14 +86,13 @@ typedef struct ml_stats {
  * page ID, which later opens need. cap is the number of messages kept, at
  * least 1.
  */
-int ml_create(ps_store *s, u64 cap, ps_page_id *meta_id);
+int ml_create(ps_store *s, u64 cap, ps_page_id *meta);
 
 /*
- * Sets up a handle for the log whose meta page is meta_id. It reads no
- * pages, so a log created by a later operation, such as one replayed from
- * the log, can use it.
+ * Sets up a handle for the log whose meta page is meta. It reads no pages,
+ * so it works before a replayed operation creates the log.
  */
-void ml_open(ps_store *s, ps_page_id meta_id, ml_log *l);
+void ml_open(ps_store *s, ps_page_id meta, ml_log *l);
 
 /*
  * Appends a message in the current operation and returns its sequence

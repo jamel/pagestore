@@ -123,12 +123,8 @@ static int apply_record(bt_tree *t, const u8 *rec, usize len)
     if (rec[0] == REC_CREATE && len == 1) {
         ps_page_id meta;
         const int rv = bt_create(t->store, &meta);
-        if (rv == 0 && !ps_page_id_eq(meta, t->meta_id)) {
-            fprintf(
-                stderr,
-                "kv: the new tree's meta page is %u, not %u\n",
-                meta.raw,
-                t->meta_id.raw);
+        if (rv == 0 && !ps_page_id_eq(meta, t->meta)) {
+            fprintf(stderr, "kv: the new tree's meta page is %u, not %u\n", meta.raw, t->meta.raw);
             return EEXIST;
         }
         return rv;
