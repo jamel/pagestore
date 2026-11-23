@@ -58,7 +58,7 @@ int ps_allocator_next(
     ps_allocator *a,
     ps_bitmap_get_fn get,
     ps_bitmap_get_ctx *ctx,
-    u32 *id,
+    ps_page_id *id,
     bool *new_group);
 
 /*
@@ -69,7 +69,7 @@ int ps_allocator_free(
     ps_allocator *a,
     ps_bitmap_get_fn get,
     ps_bitmap_get_ctx *ctx,
-    u32 id,
+    ps_page_id id,
     bool *cancelled);
 
 /*

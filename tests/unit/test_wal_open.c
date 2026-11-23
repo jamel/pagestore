@@ -331,7 +331,7 @@ static int iter_until_err(ps_wal *w, u64 from_lsn, u64 *count)
 static void commit_op(ps_store *s, u64 lsn)
 {
     T_OK(ps_op_begin(s, lsn));
-    u32 id = 0;
+    ps_page_id id = PS_PAGE_ID_NONE;
     ps_page *p = NULL;
     T_OK(ps_alloc(s, &id, &p));
     memset((u8 *) p + HDR, (int) lsn, 16);

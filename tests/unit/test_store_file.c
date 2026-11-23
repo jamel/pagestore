@@ -51,13 +51,13 @@ static void put_text(ps_page *p, const char *text)
     memcpy((u8 *) p + HDR, text, strlen(text) + 1);
 }
 
-static void check_text(ps_store *s, u32 id, const char *text)
+static void check_text(ps_store *s, ps_page_id id, const char *text)
 {
     ps_snapshot *snap = NULL;
     T_OK(ps_snapshot_open(s, &snap));
     const ps_page *p = NULL;
     T_OK(ps_snapshot_read(snap, id, &p));
-    T_EQ(p->page_id, id);
+    T_EQ(p->page_id.raw, id.raw);
     T_CHECK(strcmp((const char *) p + HDR, text) == 0);
     ps_snapshot_close(snap);
 }
@@ -74,8 +74,8 @@ static void test_create_reopen(void)
     T_CHECK(strcmp(ps_store_dir(s), dir) == 0);
     T_CHECK(ps_store_vfs(s) != NULL);
 
-    u32 a = 0;
-    u32 b = 0;
+    ps_page_id a = PS_PAGE_ID_NONE;
+    ps_page_id b = PS_PAGE_ID_NONE;
     ps_page *p = NULL;
     T_OK(ps_op_begin(s, 10));
     T_OK(ps_alloc(s, &a, &p));
@@ -83,8 +83,8 @@ static void test_create_reopen(void)
     T_OK(ps_alloc(s, &b, &p));
     put_text(p, "beta");
     ps_op_commit(s);
-    T_EQ(a, 1);
-    T_EQ(b, 2);
+    T_EQ(a.raw, 1);
+    T_EQ(b.raw, 2);
     T_OK(ps_op_begin(s, 11));
     T_OK(ps_write(s, a, &p));
     put_text(p, "alpha2");
@@ -129,7 +129,7 @@ static void test_second_open_ebusy(void)
     char alias[4200];
     snprintf(alias, sizeof(alias), "%s/", dir);
     T_ERR(ps_open(alias, &cfg, 0, &s2), EBUSY);
-    u32 id = 0;
+    ps_page_id id = PS_PAGE_ID_NONE;
     ps_page *p = NULL;
     T_OK(ps_op_begin(s1, 1));
     T_OK(ps_alloc(s1, &id, &p));

@@ -102,10 +102,10 @@ u64 ps_journal_size(const ps_journal_header *h);
  *
  * The 8-byte entry header is followed by page_size bytes of page data.
  */
-void ps_journal_entry_header_encode(u32 page_id, u8 out[PS_JOURNAL_ENTRY_HEADER_SIZE]);
+void ps_journal_entry_header_encode(ps_page_id page_id, u8 out[PS_JOURNAL_ENTRY_HEADER_SIZE]);
 
 /* EBADMSG if the reserved word is nonzero. */
-int ps_journal_entry_header_decode(const u8 *buf, u32 *page_id);
+int ps_journal_entry_header_decode(const u8 *buf, ps_page_id *page_id);
 
 /*
  * Journal trailer at ps_journal_entry_off(h, h->count).

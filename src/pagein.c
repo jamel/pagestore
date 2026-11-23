@@ -10,23 +10,23 @@
  */
 
 /* Check the disk image before attaching it to the version chain. */
-static int check_page(ps_store *s, u32 id, ps_page *p)
+static int check_page(ps_store *s, ps_page_id id, ps_page *p)
 {
-    if (p->page_id != id) {
-        ps_log(s, PS_LOG_ERROR, "page %u: header has page_id %u", id, p->page_id);
+    if (!ps_page_id_eq(p->page_id, id)) {
+        ps_log(s, PS_LOG_ERROR, "page %u: header has page_id %u", id.raw, p->page_id.raw);
         return EBADMSG;
     }
     const u32 stored = p->checksum;
     p->checksum = 0; /* The CRC includes this field as zero, as it is in memory. */
     const u32 crc = ps_crc32c(0, p, s->page_size);
     if (crc != stored) {
-        ps_log(s, PS_LOG_ERROR, "page %u: checksum mismatch", id);
+        ps_log(s, PS_LOG_ERROR, "page %u: checksum mismatch", id.raw);
         return EBADMSG;
     }
     const bool bitmap = ps_is_bitmap_id(s, id);
     const bool flagged = (p->flags & PS_PAGE_FLAG_BITMAP) != 0;
     if (bitmap != flagged || (bitmap && p->magic != PS_BITMAP_MAGIC)) {
-        ps_log(s, PS_LOG_ERROR, "page %u: bad bitmap flag or magic", id);
+        ps_log(s, PS_LOG_ERROR, "page %u: bad bitmap flag or magic", id.raw);
         return EBADMSG;
     }
     return 0;
@@ -34,7 +34,7 @@ static int check_page(ps_store *s, u32 id, ps_page *p)
 
 int ps_page_in(ps_store *s, ps_entry *e, ps_vnode *frameless, bool writer, ps_vnode **out)
 {
-    const u32 id = e->id;
+    const ps_page_id id = e->id;
     PS_ASSERT((e->flags & PS_E_LOADING) == 0);
     PS_ASSERT(frameless == NULL ? e->head == NULL : frameless->frame == PS_NO_FRAME);
     PS_ASSERT(frameless == NULL || frameless->kind == PS_V_DATA);

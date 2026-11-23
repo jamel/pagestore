@@ -22,7 +22,7 @@
  *
  * This operation allocates a page and writes its first payload byte.
  *
- *     int alloc_byte(ps_store *s, u64 lsn, u32 *id)
+ *     int alloc_byte(ps_store *s, u64 lsn, ps_page_id *id)
  *     {
  *         int rv = ps_op_begin(s, lsn);
  *         if (rv != 0) {
@@ -38,24 +38,11 @@
  *         }
  *         return rv;
  *     }
- *
- * After alloc_byte succeeds, call ps_checkpoint(s) if the page must be durable.
- *
- * Copy out the byte while the snapshot still holds the page.
- *
- *     int read_byte(ps_store *s, u32 id, u8 *out)
- *     {
- *         ps_snapshot *snap;
- *         int rv = ps_snapshot_open(s, &snap);
- *         if (rv != 0) {
- *             return rv;
- *         }
- *         const ps_page *page;
- *         rv = ps_snapshot_read(snap, id, &page);
- *         if (rv == 0) {
- *             *out = ((const u8 *) page)[PS_PAGE_HEADER_SIZE];
- *         }
- *         ps_snapshot_close(snap);
+ *     ps_page_id id;
+ *     ps_page *page;
+ *     rv = ps_alloc(s, &id, &page);
+ *     if (rv != 0) {
+ *         ps_op_abort(s);
  *         return rv;
  *     }
  *     ((u8 *) page)[PS_PAGE_HEADER_SIZE] = 42;
@@ -75,7 +62,7 @@ typedef struct ps_snapshot ps_snapshot;
 /* Every page starts with this 24-byte header. The rest belongs to the caller. */
 typedef struct ps_page {
     u32 magic; /* caller's page type */
-    u32 page_id; /* store-owned */
+    ps_page_id page_id; /* store-owned */
     u32 checksum; /* CRC32C on disk, always 0 in memory */
     u32 flags; /* store-owned, see PS_PAGE_FLAG_* */
     u64 lsn; /* store-owned, set by the operation that produced this version */
@@ -196,10 +183,10 @@ void ps_op_pressure(const ps_store *s, ps_pressure *out);
  * Pointers expire at commit or abort, or sooner when ps_free discards a
  * page allocated or copied in this operation.
  */
-int ps_alloc(ps_store *s, u32 *id, ps_page **page);
-int ps_free(ps_store *s, u32 id);
-int ps_read(ps_store *s, u32 id, const ps_page **page);
-int ps_write(ps_store *s, u32 id, ps_page **page);
+int ps_alloc(ps_store *s, ps_page_id *id, ps_page **page);
+int ps_free(ps_store *s, ps_page_id id);
+int ps_read(ps_store *s, ps_page_id id, const ps_page **page);
+int ps_write(ps_store *s, ps_page_id id, ps_page **page);
 
 /*
  * A snapshot sees the committed pages as they were when it opened. Use each
@@ -213,8 +200,8 @@ u64 ps_snapshot_lsn(const ps_snapshot *snap);
  * same pointer without a second pin. ENOBUFS when pins or frames run out.
  * ESTALE when the writer cut off the snapshot. Pins already held stay valid.
  */
-int ps_snapshot_read(ps_snapshot *snap, u32 id, const ps_page **page);
-void ps_snapshot_unpin(ps_snapshot *snap, u32 id);
+int ps_snapshot_read(ps_snapshot *snap, ps_page_id id, const ps_page **page);
+void ps_snapshot_unpin(ps_snapshot *snap, ps_page_id id);
 void ps_snapshot_close(ps_snapshot *snap);
 
 /*

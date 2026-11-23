@@ -20,7 +20,7 @@
 
 /* One entry per pinned page ID, even when the caller reads it repeatedly. */
 typedef struct ps_snap_slot {
-    u32 id;
+    ps_page_id id;
     ps_vnode *v;
 } ps_snap_slot;
 
@@ -70,7 +70,7 @@ void ps_retire_process(ps_store *s)
         v->retire_next = NULL;
         /* The queued node keeps its entry alive before we take the latch. */
         ps_entry *e = v->entry;
-        const u32 id = e->id;
+        const ps_page_id id = e->id;
         ps_latch(s->pt, id);
         PS_ASSERT((v->flags & PS_VF_RETIRED) != 0);
         v->flags &= (u8) ~PS_VF_RETIRED;
@@ -91,7 +91,7 @@ void ps_retire_process(ps_store *s)
 static bool retire_frees_frame(ps_store *s, u64 min)
 {
     for (ps_vnode *v = s->retire_head; v != NULL && v->retire_r <= min; v = v->retire_next) {
-        const u32 id = v->entry->id;
+        const ps_page_id id = v->entry->id;
         ps_latch(s->pt, id);
         const bool framed = v->frame != PS_NO_FRAME && v->pins == 0;
         ps_unlatch(s->pt, id);
@@ -200,10 +200,10 @@ static bool is_dead(const ps_snapshot *sn)
     return atomic_load_explicit(&sn->ref.dead, memory_order_acquire);
 }
 
-static ps_snap_slot *find_slot(ps_snapshot *sn, u32 id)
+static ps_snap_slot *find_slot(ps_snapshot *sn, ps_page_id id)
 {
     for (u32 i = 0; i < sn->npins; i++) {
-        if (sn->slots[i].id == id) {
+        if (ps_page_id_eq(sn->slots[i].id, id)) {
             return &sn->slots[i];
         }
     }
@@ -242,7 +242,7 @@ typedef enum snap_misuse {
 } snap_misuse;
 
 /* Find and pin the visible version, loading it if needed. Returns unlatched. */
-static int pin_visible(ps_snapshot *sn, u32 id, ps_vnode **out, snap_misuse *why)
+static int pin_visible(ps_snapshot *sn, ps_page_id id, ps_vnode **out, snap_misuse *why)
 {
     ps_store *s = sn->s;
     const u64 S = sn->ref.lsn;
@@ -322,14 +322,14 @@ static int pin_visible(ps_snapshot *sn, u32 id, ps_vnode **out, snap_misuse *why
     }
 }
 
-int ps_snapshot_read(ps_snapshot *sn, u32 id, const ps_page **page)
+int ps_snapshot_read(ps_snapshot *sn, ps_page_id id, const ps_page **page)
 {
     ps_store *s = sn->s;
     if (is_dead(sn)) {
         return ESTALE;
     }
-    if (id == UINT32_MAX || ps_is_bitmap_id(s, id)) {
-        ps_log(s, PS_LOG_ERROR, "ps_snapshot_read: page %u is not a user page", id);
+    if (id.raw == UINT32_MAX || ps_is_bitmap_id(s, id)) {
+        ps_log(s, PS_LOG_ERROR, "ps_snapshot_read: page %u is not a user page", id.raw);
         return EINVAL;
     }
     const ps_snap_slot *held = find_slot(sn, id);
@@ -350,14 +350,14 @@ int ps_snapshot_read(ps_snapshot *sn, u32 id, const ps_page **page)
                 s,
                 PS_LOG_ERROR,
                 "ps_snapshot_read: page %u is freed at LSN %llu",
-                id,
+                id.raw,
                 (unsigned long long) sn->ref.lsn);
         } else if (why == MISUSE_NOT_ALLOCATED) {
             ps_log(
                 s,
                 PS_LOG_ERROR,
                 "ps_snapshot_read: page %u is not allocated at LSN %llu",
-                id,
+                id.raw,
                 (unsigned long long) sn->ref.lsn);
         }
         return rv;
@@ -370,16 +370,16 @@ int ps_snapshot_read(ps_snapshot *sn, u32 id, const ps_page **page)
 }
 
 /* Drops the snapshot's pin on v (a version of id). Latches id only. */
-static void unpin_node(ps_store *s, u32 id, ps_vnode *v)
+static void unpin_node(ps_store *s, ps_page_id id, ps_vnode *v)
 {
     ps_latch(s->pt, id);
     ps_entry *e = v->entry; /* pinned, so still in e's chain */
-    PS_ASSERT(e != NULL && e->id == id);
+    PS_ASSERT(e != NULL && ps_page_id_eq(e->id, id));
     ps_node_unpin(s, e, v);
     ps_unlatch(s->pt, id);
 }
 
-void ps_snapshot_unpin(ps_snapshot *sn, u32 id)
+void ps_snapshot_unpin(ps_snapshot *sn, ps_page_id id)
 {
     ps_snap_slot *slot = find_slot(sn, id);
     if (slot == NULL) {

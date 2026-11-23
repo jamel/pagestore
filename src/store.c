@@ -198,11 +198,11 @@ static int check_op_limit(ps_store *s, u32 num_groups)
 static int format(ps_store *s)
 {
     ps_op_begin_format(s);
-    u32 id = 0;
+    ps_page_id id = PS_PAGE_ID_NONE;
     ps_page *p = NULL;
     int rv = ps_alloc(s, &id, &p);
     if (rv == 0) {
-        PS_ASSERT(id == 1);
+        PS_ASSERT(id.raw == 1);
         rv = ps_free(s, id);
     }
     if (rv != 0) {
@@ -218,7 +218,7 @@ static int format(ps_store *s)
 static int load_groups(ps_store *s, u32 num_groups)
 {
     for (u32 g = 0; g < num_groups; g++) {
-        const u32 id = g * s->gsize;
+        const ps_page_id id = ps_bitmap_id(s, g);
         ps_latch(s->pt, id);
         ps_entry *e = NULL;
         int rv = ps_entry_get(s->pt, id, &e);
@@ -231,7 +231,7 @@ static int load_groups(ps_store *s, u32 num_groups)
             const u8 *bits = (const u8 *) ps_node_page(s, v) + PS_PAGE_HEADER_SIZE;
             rv = ps_allocator_init_group(s->alloc, g, bits);
             if (rv == EINVAL) {
-                ps_log(s, PS_LOG_ERROR, "bitmap page %u: its own bit is clear", id);
+                ps_log(s, PS_LOG_ERROR, "bitmap page %u: its own bit is clear", id.raw);
                 rv = EBADMSG;
             }
             ps_node_unpin(s, e, v);
@@ -467,7 +467,7 @@ void ps_stats(const ps_store *s, struct ps_stats *out)
 
 /* ---- test hooks ---------------------------------------------------------- */
 
-bool ps_test_has_entry(ps_store *s, u32 id)
+bool ps_test_has_entry(ps_store *s, ps_page_id id)
 {
     ps_latch(s->pt, id);
     const bool has = ps_entry_find(s->pt, id) != NULL;
@@ -475,7 +475,7 @@ bool ps_test_has_entry(ps_store *s, u32 id)
     return has;
 }
 
-u32 ps_test_pins(ps_store *s, u32 id)
+u32 ps_test_pins(ps_store *s, ps_page_id id)
 {
     u32 pins = 0;
     ps_latch(s->pt, id);
@@ -487,7 +487,7 @@ u32 ps_test_pins(ps_store *s, u32 id)
     return pins;
 }
 
-u32 ps_test_chain_len(ps_store *s, u32 id)
+u32 ps_test_chain_len(ps_store *s, ps_page_id id)
 {
     u32 n = 0;
     ps_latch(s->pt, id);
@@ -499,7 +499,7 @@ u32 ps_test_chain_len(ps_store *s, u32 id)
     return n;
 }
 
-u32 ps_test_waiters(ps_store *s, u32 id)
+u32 ps_test_waiters(ps_store *s, ps_page_id id)
 {
     ps_latch(s->pt, id);
     const ps_entry *e = ps_entry_find(s->pt, id);
@@ -508,7 +508,7 @@ u32 ps_test_waiters(ps_store *s, u32 id)
     return n;
 }
 
-bool ps_test_evict(ps_store *s, u32 id)
+bool ps_test_evict(ps_store *s, ps_page_id id)
 {
     ps_latch(s->pt, id);
     ps_entry *e = ps_entry_find(s->pt, id);

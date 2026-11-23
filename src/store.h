@@ -214,9 +214,20 @@ void ps_log(ps_store *s, int level, const char *fmt, ...) PS_PRINTF(3, 4);
 const char *ps_strerror(int err, char *buf, usize n);
 
 /* The first page ID in each group belongs to its bitmap. */
-static inline bool ps_is_bitmap_id(const ps_store *s, u32 id)
+static inline bool ps_is_bitmap_id(const ps_store *s, ps_page_id id)
 {
-    return id % s->gsize == 0;
+    return id.raw % s->gsize == 0;
+}
+
+static inline ps_page_id ps_bitmap_id(const ps_store *s, u32 g)
+{
+    return ps_page_id_from(g * s->gsize);
+}
+
+/* The group whose bitmap tracks id. */
+static inline u32 ps_group_of(const ps_store *s, ps_page_id id)
+{
+    return id.raw / s->gsize;
 }
 
 /*
@@ -369,16 +380,13 @@ bool ps_op_active_here(ps_store *s);
 bool ps_op_in_progress(ps_store *s);
 
 /* Test hooks. Quiescent store only. */
-bool ps_test_has_entry(ps_store *s, u32 id);
-u32 ps_test_pins(ps_store *s, u32 id); /* total pins on every version of id */
-u32 ps_test_chain_len(ps_store *s, u32 id);
+bool ps_test_has_entry(ps_store *s, ps_page_id id);
+u32 ps_test_pins(ps_store *s, ps_page_id id); /* total pins on every version of id */
+u32 ps_test_chain_len(ps_store *s, ps_page_id id);
 /* Threads waiting on id's LOADING (or holding its entry). Any time. */
-u32 ps_test_waiters(ps_store *s, u32 id);
-/*
- * Evicts id's head with the evictor (ps_evict_head) and frees its frame.
- * Returns whether it did.
- */
-bool ps_test_evict(ps_store *s, u32 id);
+u32 ps_test_waiters(ps_store *s, ps_page_id id);
+/* Evicts id's head through ps_evict_head and frees its frame. */
+bool ps_test_evict(ps_store *s, ps_page_id id);
 /* Frame requests waiting in ps_ckpt_wait. Any time. */
 u32 ps_test_ckpt_waiters(ps_store *s);
 /* True once ps_close has asked the checkpoint thread to stop. Any time. */

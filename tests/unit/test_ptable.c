@@ -44,27 +44,27 @@ static void test_get_find_release(void)
     T_OK(ps_ptable_create(16, &pt));
     const u64 base = ps_ptable_bytes(pt);
 
-    ps_latch(pt, 42);
-    T_CHECK(ps_entry_find(pt, 42) == NULL);
+    ps_latch(pt, ps_page_id_from(42));
+    T_CHECK(ps_entry_find(pt, ps_page_id_from(42)) == NULL);
     ps_entry *e = NULL;
-    T_OK(ps_entry_get(pt, 42, &e));
+    T_OK(ps_entry_get(pt, ps_page_id_from(42), &e));
     T_CHECK(e != NULL);
-    T_EQ(e->id, 42);
+    T_EQ(e->id.raw, 42);
     T_EQ(e->flags, 0);
     T_EQ(e->waiters, 0);
     T_EQ(atomic_load(&e->dirty), 0);
     T_CHECK(e->head == NULL);
-    T_CHECK(ps_entry_find(pt, 42) == e);
+    T_CHECK(ps_entry_find(pt, ps_page_id_from(42)) == e);
 
     ps_entry *again = NULL;
-    T_OK(ps_entry_get(pt, 42, &again));
+    T_OK(ps_entry_get(pt, ps_page_id_from(42), &again));
     T_CHECK(again == e);
     const u64 with_entry = ps_ptable_bytes(pt);
     T_CHECK(with_entry > base);
 
     ps_entry_maybe_release(pt, e);
-    T_CHECK(ps_entry_find(pt, 42) == NULL);
-    ps_unlatch(pt, 42);
+    T_CHECK(ps_entry_find(pt, ps_page_id_from(42)) == NULL);
+    ps_unlatch(pt, ps_page_id_from(42));
     T_CHECK(ps_ptable_bytes(pt) < with_entry);
     T_EQ(ps_ptable_bytes(pt), base);
 
@@ -75,7 +75,7 @@ static void test_release_blocked(void)
 {
     ps_ptable *pt = NULL;
     T_OK(ps_ptable_create(16, &pt));
-    const u32 id = 9;
+    const ps_page_id id = ps_page_id_from(9);
     ps_entry *e = NULL;
 
     ps_latch(pt, id);
@@ -177,7 +177,7 @@ static void test_chain_visible(void)
 {
     ps_ptable *pt = NULL;
     T_OK(ps_ptable_create(16, &pt));
-    const u32 id = 5;
+    const ps_page_id id = ps_page_id_from(5);
     ps_entry *e = NULL;
 
     ps_latch(pt, id);
@@ -228,27 +228,27 @@ static void test_colliding_ids(void)
 
     /* Force collisions by using multiples of the bucket count. */
     for (u32 k = 0; k < K; k++) {
-        const u32 id = k * nb;
+        const ps_page_id id = ps_page_id_from(k * nb);
         ps_latch(pt, id);
         T_OK(ps_entry_get(pt, id, &es[k]));
-        T_EQ(es[k]->id, id);
+        T_EQ(es[k]->id.raw, id.raw);
         ps_unlatch(pt, id);
     }
     for (u32 k = 0; k < K; k++) {
-        const u32 id = k * nb;
+        const ps_page_id id = ps_page_id_from(k * nb);
         ps_latch(pt, id);
         T_CHECK(ps_entry_find(pt, id) == es[k]);
         ps_unlatch(pt, id);
     }
-    ps_latch(pt, 1);
-    T_CHECK(ps_entry_find(pt, 1) == NULL);
-    ps_unlatch(pt, 1);
+    ps_latch(pt, ps_page_id_from(1));
+    T_CHECK(ps_entry_find(pt, ps_page_id_from(1)) == NULL);
+    ps_unlatch(pt, ps_page_id_from(1));
 
     /* Remove middle and end entries to exercise both unlink paths. */
     const u32 order[] = {50, 0, K - 1, 1, 98};
     for (u32 i = 0; i < sizeof(order) / sizeof(order[0]); i++) {
         const u32 k = order[i];
-        const u32 id = k * nb;
+        const ps_page_id id = ps_page_id_from(k * nb);
         ps_latch(pt, id);
         ps_entry_maybe_release(pt, es[k]);
         T_CHECK(ps_entry_find(pt, id) == NULL);
@@ -256,7 +256,7 @@ static void test_colliding_ids(void)
         ps_unlatch(pt, id);
     }
     for (u32 k = 0; k < K; k++) {
-        const u32 id = k * nb;
+        const ps_page_id id = ps_page_id_from(k * nb);
         ps_latch(pt, id);
         T_CHECK(ps_entry_find(pt, id) == es[k]);
         if (es[k] != NULL) {
@@ -268,10 +268,10 @@ static void test_colliding_ids(void)
     T_EQ(ps_ptable_bytes(pt), base);
 
     ps_entry *top = NULL;
-    ps_latch(pt, UINT32_MAX - 1);
-    T_OK(ps_entry_get(pt, UINT32_MAX - 1, &top));
-    T_CHECK(ps_entry_find(pt, UINT32_MAX - 1) == top);
-    ps_unlatch(pt, UINT32_MAX - 1);
+    ps_latch(pt, ps_page_id_from(UINT32_MAX - 1));
+    T_OK(ps_entry_get(pt, ps_page_id_from(UINT32_MAX - 1), &top));
+    T_CHECK(ps_entry_find(pt, ps_page_id_from(UINT32_MAX - 1)) == top);
+    ps_unlatch(pt, ps_page_id_from(UINT32_MAX - 1));
 
     ps_ptable_destroy(pt);
 }
@@ -286,13 +286,13 @@ typedef struct waiter_args {
 static void *waiter(void *arg)
 {
     waiter_args *a = arg;
-    ps_latch(a->pt, 7);
+    ps_latch(a->pt, ps_page_id_from(7));
     atomic_store(&a->waiting, true);
     while (!a->flag) {
-        ps_latch_wait(a->pt, 7);
+        ps_latch_wait(a->pt, ps_page_id_from(7));
     }
     a->woke = true;
-    ps_unlatch(a->pt, 7);
+    ps_unlatch(a->pt, ps_page_id_from(7));
     return NULL;
 }
 
@@ -308,11 +308,11 @@ static void test_latch_wait_broadcast(void)
         sched_yield();
     }
     /* Acquiring the latch means the waiter has entered ps_latch_wait. */
-    ps_latch(a.pt, 7);
+    ps_latch(a.pt, ps_page_id_from(7));
     T_CHECK(!a.woke);
     a.flag = true;
-    ps_latch_broadcast(a.pt, 7);
-    ps_unlatch(a.pt, 7);
+    ps_latch_broadcast(a.pt, ps_page_id_from(7));
+    ps_unlatch(a.pt, ps_page_id_from(7));
     T_EQ(pthread_join(th, NULL), 0);
     T_CHECK(a.woke);
 
@@ -333,11 +333,11 @@ static void *conc_worker(void *arg)
 {
     conc_args *a = arg;
     for (u32 i = 0; i < CONC_ITERS; i++) {
-        const u32 id = (i * 7 + a->tid) % 300;
+        const ps_page_id id = ps_page_id_from((i * 7 + a->tid) % 300);
         ps_latch(a->pt, id);
         ps_entry *e = NULL;
         T_OK(ps_entry_get(a->pt, id, &e));
-        T_EQ(e->id, id);
+        T_EQ(e->id.raw, id.raw);
         if (e->head == NULL) {
             ps_vnode *v = NULL;
             T_OK(ps_vnode_new(a->pt, &v));

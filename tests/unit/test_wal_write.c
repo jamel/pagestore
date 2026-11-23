@@ -235,7 +235,7 @@ static void test_open_fresh_nonzero_durable(void)
 {
     ps_store *s = setup();
     T_OK(ps_op_begin(s, 5));
-    u32 id = 0;
+    ps_page_id id = PS_PAGE_ID_NONE;
     ps_page *p = NULL;
     T_OK(ps_alloc(s, &id, &p));
     ps_op_commit(s);
@@ -709,7 +709,7 @@ static void test_write_error_fails_wal(void)
     T_EQ(fault_vfs_points(fv), points);
 
     T_OK(ps_op_begin(s, 1));
-    u32 id = 0;
+    ps_page_id id = PS_PAGE_ID_NONE;
     ps_page *p = NULL;
     T_OK(ps_alloc(s, &id, &p));
     ps_op_commit(s);
@@ -930,7 +930,7 @@ static void test_hooks_installed(void)
     const u64 n = PER_SEG + 5;
     for (u64 lsn = 1; lsn <= n; lsn++) {
         T_OK(ps_op_begin(s, lsn));
-        u32 id = 0;
+        ps_page_id id = PS_PAGE_ID_NONE;
         ps_page *p = NULL;
         T_OK(ps_alloc(s, &id, &p));
         memset((u8 *) p + HDR, (int) lsn, 16);

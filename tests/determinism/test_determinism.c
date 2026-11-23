@@ -64,7 +64,7 @@ static void apply(ps_store *s, const w_op *op)
     }
 }
 
-static int snap_read(ps_store *s, ps_snapshot *sn, u32 id, const ps_page **p)
+static int snap_read(ps_store *s, ps_snapshot *sn, ps_page_id id, const ps_page **p)
 {
     for (u32 tries = 0;; tries++) {
         const int rv = ps_snapshot_read(sn, id, p);
@@ -89,7 +89,7 @@ static void compare_memory(dstore *d, const model *m)
         T_EQ(st.allocated_pages, model_allocated_at(m, lsn, NULL, 0));
     }
     const u32 n = model_allocated_at(m, lsn, NULL, 0);
-    u32 *ids = malloc(((usize) n + 1) * sizeof(*ids));
+    ps_page_id *ids = malloc(((usize) n + 1) * sizeof(*ids));
     T_CHECK(ids != NULL);
     model_allocated_at(m, lsn, ids, n);
     for (u32 i = 0; i < n; i++) {
@@ -97,7 +97,7 @@ static void compare_memory(dstore *d, const model *m)
         for (u32 k = 0; k < NSTORES; k++) {
             T_OK(snap_read(d[k].s, sn[k], ids[i], &p[k]));
         }
-        T_EQ(p[0]->page_id, ids[i]);
+        T_EQ(p[0]->page_id.raw, ids[i].raw);
         for (u32 k = 1; k < NSTORES; k++) {
             T_MEMEQ(p[k], p[0], PS);
         }
@@ -128,16 +128,16 @@ static void compare_durable(dstore *d, const model *m)
     }
     const u32 gs = model_group_size(m);
     for (u32 g = 0; g < i0.num_groups; g++) {
-        const u8 *b0 = mb_page(d[0].mb, g * gs);
+        const u8 *b0 = mb_page(d[0].mb, ps_page_id_from(g * gs));
         T_CHECK(b0 != NULL);
         for (u32 k = 1; k < NSTORES; k++) {
-            const u8 *bk = mb_page(d[k].mb, g * gs);
+            const u8 *bk = mb_page(d[k].mb, ps_page_id_from(g * gs));
             T_CHECK(bk != NULL);
             T_MEMEQ(bk, b0, PS);
         }
     }
     const u32 n = model_allocated_at(m, lsn, NULL, 0);
-    u32 *ids = malloc(((usize) n + 1) * sizeof(*ids));
+    ps_page_id *ids = malloc(((usize) n + 1) * sizeof(*ids));
     T_CHECK(ids != NULL);
     model_allocated_at(m, lsn, ids, n);
     for (u32 i = 0; i < n; i++) {

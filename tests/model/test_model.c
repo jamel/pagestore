@@ -31,7 +31,7 @@ typedef struct snap_rec {
     ps_snapshot *sn;
     u64 lsn;
     u32 nheld;
-    u32 held_id[HELD];
+    ps_page_id held_id[HELD];
     const ps_page *held[HELD];
 } snap_rec;
 
@@ -82,9 +82,9 @@ static u64 next_lsn(run *t)
     return ps_committed_lsn(t->s) + 1 + rng_below(&t->r, 3);
 }
 
-static void check_page(const model *m, const ps_page *p, u32 id, const model_page *mp)
+static void check_page(const model *m, const ps_page *p, ps_page_id id, const model_page *mp)
 {
-    T_EQ(p->page_id, id);
+    T_EQ(p->page_id.raw, id.raw);
     T_EQ(p->lsn, mp->lsn);
     T_EQ(p->flags, 0);
     T_EQ(p->checksum, 0);
@@ -117,18 +117,18 @@ static void begin_op(run *t, const w_op *op)
 /* Abort the probe so allocation checks leave the operation history alone. */
 static void probe_ids(run *t)
 {
-    u32 want[3];
+    ps_page_id want[3];
     model_next_ids(t->m, 3, want);
     for (u32 tries = 0;; tries++) {
         T_CHECK(tries < 3);
         T_OK(ps_op_begin(t->s, ps_committed_lsn(t->s) + 1));
         int rv = 0;
         for (u32 k = 0; k < 3 && rv == 0; k++) {
-            u32 id = 0;
+            ps_page_id id = PS_PAGE_ID_NONE;
             ps_page *p = NULL;
             rv = ps_alloc(t->s, &id, &p);
             if (rv == 0) {
-                T_EQ(id, want[k]);
+                T_EQ(id.raw, want[k].raw);
             }
         }
         ps_op_abort(t->s);
@@ -150,7 +150,7 @@ static snap_rec take_snap(run *t, u32 i)
 }
 
 /* May close another remembered snapshot to free frames before retrying. */
-static int snap_read(run *t, snap_rec *sr, u32 id, const ps_page **p)
+static int snap_read(run *t, snap_rec *sr, ps_page_id id, const ps_page **p)
 {
     for (u32 tries = 0;; tries++) {
         T_CHECK(tries < 4 + MAX_SNAPS);
@@ -176,24 +176,24 @@ static int snap_read(run *t, snap_rec *sr, u32 id, const ps_page **p)
     }
 }
 
-/* Returns 0 if the sampled user IDs are all allocated at lsn. */
-static u32 pick_unallocated(run *t, u64 lsn)
+/* Returns PS_PAGE_ID_NONE if the sampled user IDs are all allocated at lsn. */
+static ps_page_id pick_unallocated(run *t, u64 lsn)
 {
     const u32 g = model_group_size(t->m);
-    u32 next = 0;
+    ps_page_id next = PS_PAGE_ID_NONE;
     model_next_ids(t->m, 1, &next);
-    const u32 hi = next + 16;
+    const u32 hi = next.raw + 16;
     for (u32 tries = 0; tries < 32; tries++) {
-        const u32 id = 1 + (u32) rng_below(&t->r, hi);
-        if (id % g != 0 && !model_page_at(t->m, lsn, id, NULL)) {
+        const ps_page_id id = ps_page_id_from(1 + (u32) rng_below(&t->r, hi));
+        if (id.raw % g != 0 && !model_page_at(t->m, lsn, id, NULL)) {
             return id;
         }
     }
-    return 0;
+    return PS_PAGE_ID_NONE;
 }
 
 /* Misuse read of id at sr's LSN: one of the outcomes model_misuse_ok allows. */
-static int misuse_read(run *t, snap_rec *sr, u32 id)
+static int misuse_read(run *t, snap_rec *sr, ps_page_id id)
 {
     const ps_page *p = NULL;
     const int rv = snap_read(t, sr, id, &p);
@@ -212,7 +212,7 @@ static int misuse_read(run *t, snap_rec *sr, u32 id)
             __FILE__,
             __LINE__,
             "misuse read of %u at LSN %llu: rv %d, page lsn %llu",
-            id,
+            id.raw,
             (unsigned long long) sr->lsn,
             rv,
             rv == 0 ? (unsigned long long) p->lsn : 0ull);
@@ -222,7 +222,7 @@ static int misuse_read(run *t, snap_rec *sr, u32 id)
     } else if (rv == EBADMSG) {
         t->t->misuse_ebadmsg++;
     } else {
-        T_EQ(p->page_id, id);
+        T_EQ(p->page_id.raw, id.raw);
         T_EQ(p->flags, 0);
         T_EQ(p->checksum, 0);
         ps_snapshot_unpin(sr->sn, id);
@@ -241,13 +241,13 @@ static void verify_snap(run *t, snap_rec *sr)
         check_page(m, sr->held[i], sr->held_id[i], &mp);
     }
     const u32 n = model_allocated_at(m, sr->lsn, NULL, 0);
-    u32 *ids = malloc(((usize) n + 1) * sizeof(*ids));
+    ps_page_id *ids = malloc(((usize) n + 1) * sizeof(*ids));
     T_CHECK(ids != NULL);
     T_EQ(model_allocated_at(m, sr->lsn, ids, n), n);
 
     bool stale = false;
     for (u32 i = 0; i < n && !stale; i++) {
-        const u32 id = ids[i];
+        const ps_page_id id = ids[i];
         const ps_page *p = NULL;
         const int rv = snap_read(t, sr, id, &p);
         if (rv == ESTALE) {
@@ -263,7 +263,7 @@ static void verify_snap(run *t, snap_rec *sr)
         T_CHECK(model_page_at(m, sr->lsn, id, &mp));
         check_page(m, p, id, &mp);
         u32 h = 0;
-        while (h < sr->nheld && sr->held_id[h] != id) {
+        while (h < sr->nheld && !ps_page_id_eq(sr->held_id[h], id)) {
             h++;
         }
         if (h < sr->nheld) {
@@ -274,16 +274,16 @@ static void verify_snap(run *t, snap_rec *sr)
     }
     for (u32 k = 0; k < NPROBE && !stale; k++) {
         const u32 x = (u32) rng_below(&t->r, 8);
-        u32 id = 0;
+        ps_page_id id = PS_PAGE_ID_NONE;
         if (x == 0) {
-            id = 0;
+            id = ps_page_id_from(0);
         } else if (x == 1) {
-            id = UINT32_MAX;
+            id = ps_page_id_from(UINT32_MAX);
         } else if (x == 2) {
-            id = model_group_size(m) * (1 + (u32) rng_below(&t->r, 3));
+            id = ps_page_id_from(model_group_size(m) * (1 + (u32) rng_below(&t->r, 3)));
         } else {
             id = pick_unallocated(t, sr->lsn);
-            if (id == 0) {
+            if (ps_page_id_is_none(id)) {
                 continue;
             }
         }
@@ -291,7 +291,7 @@ static void verify_snap(run *t, snap_rec *sr)
     }
     if (stale) {
         const ps_page *p = NULL;
-        T_ERR(ps_snapshot_read(sr->sn, n > 0 ? ids[0] : 1, &p), ESTALE);
+        T_ERR(ps_snapshot_read(sr->sn, n > 0 ? ids[0] : ps_page_id_from(1), &p), ESTALE);
         struct ps_stats st;
         ps_stats(t->s, &st);
         T_CHECK(st.snapshots_cut_off > 0);
@@ -338,8 +338,8 @@ static void step_op(run *t)
 static void misuse_in_op(run *t, const w_op *op)
 {
     const u32 g = model_group_size(t->m);
-    u32 id = 0;
-    u32 freed = 0;
+    ps_page_id id = PS_PAGE_ID_NONE;
+    ps_page_id freed = PS_PAGE_ID_NONE;
     for (u32 i = 0; i < op->n; i++) {
         if (op->a[i].kind == W_FREE) {
             freed = op->a[i].id;
@@ -347,22 +347,22 @@ static void misuse_in_op(run *t, const w_op *op)
     }
     const u32 x = (u32) rng_below(&t->r, 6);
     if (x == 0) {
-        id = g * (u32) rng_below(&t->r, 3);
+        id = ps_page_id_from(g * (u32) rng_below(&t->r, 3));
     } else if (x == 1) {
-        id = UINT32_MAX;
-    } else if (x == 2 && freed != 0) {
+        id = ps_page_id_from(UINT32_MAX);
+    } else if (x == 2 && !ps_page_id_is_none(freed)) {
         id = freed;
     } else if (x == 3) {
         T_ERR(ps_op_begin(t->s, op->lsn + 1), EINVAL);
         return;
     } else {
-        for (u32 tries = 0; tries < 32 && id == 0; tries++) {
-            const u32 c = 1 + (u32) rng_below(&t->r, W_LIVE_TARGET * 2);
-            if (c % g != 0 && !model_op_page(t->m, c, NULL)) {
+        for (u32 tries = 0; tries < 32 && ps_page_id_is_none(id); tries++) {
+            const ps_page_id c = ps_page_id_from(1 + (u32) rng_below(&t->r, W_LIVE_TARGET * 2));
+            if (c.raw % g != 0 && !model_op_page(t->m, c, NULL)) {
                 id = c;
             }
         }
-        if (id == 0) {
+        if (ps_page_id_is_none(id)) {
             return;
         }
     }
@@ -418,12 +418,12 @@ static void step_snap_open(run *t)
     T_EQ(sr.lsn, ps_committed_lsn(t->s));
 
     const u32 n = model_allocated_at(t->m, sr.lsn, NULL, 0);
-    u32 *ids = malloc(((usize) n + 1) * sizeof(*ids));
+    ps_page_id *ids = malloc(((usize) n + 1) * sizeof(*ids));
     T_CHECK(ids != NULL);
     model_allocated_at(t->m, sr.lsn, ids, n);
     for (u32 k = 0; k < t->held && n > 0; k++) {
-        const u32 id = ids[rng_below(&t->r, n)];
-        if (k == 1 && sr.held_id[0] == id) {
+        const ps_page_id id = ids[rng_below(&t->r, n)];
+        if (k == 1 && ps_page_id_eq(sr.held_id[0], id)) {
             break;
         }
         const ps_page *p = NULL;
@@ -481,7 +481,7 @@ static void step_fail(run *t)
     struct ps_stats st;
     ps_stats(t->s, &st);
     T_CHECK(st.failed);
-    u32 id = 0;
+    ps_page_id id = PS_PAGE_ID_NONE;
     ps_page *p = NULL;
     T_ERR(ps_alloc(t->s, &id, &p), EIO);
     ps_op_commit(t->s);
@@ -597,22 +597,22 @@ static void test_model_alloc_matches_policy(void)
             T_OK(ps_op_begin(s, lsn));
             model_op_begin(m, lsn);
             const u32 nlive = model_allocated_at(m, model_last_lsn(m), NULL, 0);
-            u32 *live = malloc(((usize) nlive + 1) * sizeof(*live));
+            ps_page_id *live = malloc(((usize) nlive + 1) * sizeof(*live));
             T_CHECK(live != NULL);
             model_allocated_at(m, model_last_lsn(m), live, nlive);
-            u32 mine[8];
+            ps_page_id mine[8];
             u32 nmine = 0;
             bool misused = false;
             for (u32 k = 0; k < 8 && !misused; k++) {
                 const u32 x = (u32) rng_below(&r, 10);
                 if (x < 5 || nlive == 0) {
-                    u32 want = 0;
+                    ps_page_id want = PS_PAGE_ID_NONE;
                     model_op_next_ids(m, 1, &want);
-                    u32 id = 0;
+                    ps_page_id id = PS_PAGE_ID_NONE;
                     ps_page *p = NULL;
                     T_OK(ps_alloc(s, &id, &p));
-                    T_EQ(id, want);
-                    T_EQ(model_alloc(m), id);
+                    T_EQ(id.raw, want.raw);
+                    T_EQ(model_alloc(m).raw, id.raw);
                     mine[nmine++] = id;
                 } else if (x < 7 && nmine > 0) {
                     const u32 i = (u32) rng_below(&r, nmine);
@@ -620,7 +620,7 @@ static void test_model_alloc_matches_policy(void)
                     model_free(m, mine[i]);
                     mine[i] = mine[--nmine];
                 } else {
-                    const u32 id = live[rng_below(&r, nlive)];
+                    const ps_page_id id = live[rng_below(&r, nlive)];
                     if (model_op_page(m, id, NULL)) {
                         T_OK(ps_free(s, id));
                         model_free(m, id);
@@ -693,33 +693,33 @@ static void test_model_vs_allocator(void)
             ps_allocator_op_begin(a);
             model_op_begin(m, lsn);
             const u32 nlive = model_allocated_at(m, model_last_lsn(m), NULL, 0);
-            u32 *live = malloc(((usize) nlive + 1) * sizeof(*live));
+            ps_page_id *live = malloc(((usize) nlive + 1) * sizeof(*live));
             T_CHECK(live != NULL);
             model_allocated_at(m, model_last_lsn(m), live, nlive);
             const u32 runs = 1 + (u32) rng_below(&r, 4);
-            u32 last_alloc = 0;
+            ps_page_id last_alloc = PS_PAGE_ID_NONE;
             for (u32 k = 0; k < runs; k++) {
                 const u32 x = (u32) rng_below(&r, 4);
                 if (x < 2) {
                     const u32 n = 1 + (u32) rng_below(&r, g / 4);
                     for (u32 i = 0; i < n; i++) {
-                        u32 id = 0;
+                        ps_page_id id = PS_PAGE_ID_NONE;
                         bool created = false;
                         T_OK(ps_allocator_next(a, get_bits, &ctx, &id, &created));
-                        T_EQ(model_alloc(m), id);
-                        T_EQ(created, id % g == 1 && id / g >= model_num_groups(m));
+                        T_EQ(model_alloc(m).raw, id.raw);
+                        T_EQ(created, id.raw % g == 1 && id.raw / g >= model_num_groups(m));
                         last_alloc = id;
                     }
-                } else if (x == 2 && last_alloc != 0) {
+                } else if (x == 2 && !ps_page_id_is_none(last_alloc)) {
                     bool cancelled = false;
                     T_OK(ps_allocator_free(a, get_bits, &ctx, last_alloc, &cancelled));
                     T_CHECK(cancelled);
                     model_free(m, last_alloc);
-                    last_alloc = 0;
+                    last_alloc = PS_PAGE_ID_NONE;
                 } else if (nlive > 0) {
                     const u32 n = 1 + (u32) rng_below(&r, 64);
                     for (u32 i = 0; i < n; i++) {
-                        const u32 id = live[rng_below(&r, nlive)];
+                        const ps_page_id id = live[rng_below(&r, nlive)];
                         bool cancelled = false;
                         const int rv = ps_allocator_free(a, get_bits, &ctx, id, &cancelled);
                         if (model_op_page(m, id, NULL)) {
@@ -754,14 +754,14 @@ static void test_model_vs_allocator(void)
             model_op_commit(m);
             T_EQ(ps_allocator_num_groups(a), model_num_groups(m));
             T_EQ(ps_allocator_allocated(a), model_allocated_at(m, lsn, NULL, 0));
-            u32 want[4];
+            ps_page_id want[4];
             model_next_ids(m, 4, want);
             ps_allocator_op_begin(a);
             for (u32 i = 0; i < 4; i++) {
-                u32 id = 0;
+                ps_page_id id = PS_PAGE_ID_NONE;
                 bool created = false;
                 T_OK(ps_allocator_next(a, get_bits, &ctx, &id, &created));
-                T_EQ(id, want[i]);
+                T_EQ(id.raw, want[i].raw);
             }
             ps_allocator_op_abort(a);
         }
@@ -785,79 +785,79 @@ static void test_model_basics(void)
     T_CHECK(model_has_lsn(m, 0));
     T_EQ(model_last_lsn(m), 0);
     T_EQ(model_num_groups(m), 1);
-    u32 ids[3];
+    ps_page_id ids[3];
     model_next_ids(m, 3, ids);
-    T_EQ(ids[0], 1);
-    T_EQ(ids[2], 3);
+    T_EQ(ids[0].raw, 1);
+    T_EQ(ids[2].raw, 3);
 
     model_op_begin(m, 5);
-    T_EQ(model_alloc(m), 1);
-    T_EQ(model_alloc(m), 2);
-    T_EQ(model_alloc(m), 3);
+    T_EQ(model_alloc(m).raw, 1);
+    T_EQ(model_alloc(m).raw, 2);
+    T_EQ(model_alloc(m).raw, 3);
     const u8 data[4] = {1, 2, 3, 4};
-    model_write(m, 2, 10, data, 4);
-    model_free(m, 3);
-    T_CHECK(!model_op_page(m, 3, NULL));
-    T_EQ(model_alloc(m), 4); /* the cursor does not move back */
+    model_write(m, ps_page_id_from(2), 10, data, 4);
+    model_free(m, ps_page_id_from(3));
+    T_CHECK(!model_op_page(m, ps_page_id_from(3), NULL));
+    T_EQ(model_alloc(m).raw, 4); /* the cursor does not move back */
     model_op_commit(m);
     T_CHECK(model_has_lsn(m, 5));
     T_CHECK(!model_has_lsn(m, 4));
 
     model_page mp;
-    T_CHECK(model_page_at(m, 5, 2, &mp));
+    T_CHECK(model_page_at(m, 5, ps_page_id_from(2), &mp));
     T_EQ(mp.lsn, 5);
     T_MEMEQ(mp.caller + 10, data, 4);
-    T_CHECK(!model_page_at(m, 4, 2, NULL));
-    T_CHECK(!model_page_at(m, 5, 3, NULL));
+    T_CHECK(!model_page_at(m, 4, ps_page_id_from(2), NULL));
+    T_CHECK(!model_page_at(m, 5, ps_page_id_from(3), NULL));
     model_next_ids(m, 2, ids);
-    T_EQ(ids[0], 3);
-    T_EQ(ids[1], 5);
+    T_EQ(ids[0].raw, 3);
+    T_EQ(ids[1].raw, 5);
 
     u8 z[PS - HDR];
     memset(z, 0, sizeof(z));
-    T_CHECK(model_misuse_ok(m, 5, 3, EINVAL, 0, NULL));
-    T_CHECK(model_misuse_ok(m, 5, 3, EBADMSG, 0, NULL));
-    T_CHECK(!model_misuse_ok(m, 5, 3, 0, 5, z));
-    T_CHECK(!model_misuse_ok(m, 5, 0, EBADMSG, 0, NULL));
-    T_CHECK(model_misuse_ok(m, 5, 0, EINVAL, 0, NULL));
-    T_CHECK(!model_misuse_ok(m, 5, g, 0, 5, z));
-    T_CHECK(model_misuse_ok(m, 5, UINT32_MAX, EINVAL, 0, NULL));
+    T_CHECK(model_misuse_ok(m, 5, ps_page_id_from(3), EINVAL, 0, NULL));
+    T_CHECK(model_misuse_ok(m, 5, ps_page_id_from(3), EBADMSG, 0, NULL));
+    T_CHECK(!model_misuse_ok(m, 5, ps_page_id_from(3), 0, 5, z));
+    T_CHECK(!model_misuse_ok(m, 5, ps_page_id_from(0), EBADMSG, 0, NULL));
+    T_CHECK(model_misuse_ok(m, 5, ps_page_id_from(0), EINVAL, 0, NULL));
+    T_CHECK(!model_misuse_ok(m, 5, ps_page_id_from(g), 0, 5, z));
+    T_CHECK(model_misuse_ok(m, 5, ps_page_id_from(UINT32_MAX), EINVAL, 0, NULL));
     model_durable(m, 5);
 
     model_op_begin(m, 7);
-    model_free(m, 2);
-    T_EQ(model_alloc(m), 3); /* 2 is free only after commit */
+    model_free(m, ps_page_id_from(2));
+    T_EQ(model_alloc(m).raw, 3); /* 2 is free only after commit */
     model_op_commit(m);
-    T_CHECK(!model_page_at(m, 7, 2, NULL));
-    T_CHECK(model_page_at(m, 6, 2, &mp));
+    T_CHECK(!model_page_at(m, 7, ps_page_id_from(2), NULL));
+    T_CHECK(model_page_at(m, 6, ps_page_id_from(2), &mp));
     /* Freed after the checkpoint at 5: the data file holds the version at 5. */
-    T_CHECK(model_misuse_ok(m, 7, 2, 0, 5, mp.caller));
-    T_CHECK(!model_misuse_ok(m, 7, 2, 0, 5, z));
-    T_CHECK(!model_misuse_ok(m, 7, 2, EBADMSG, 0, NULL));
-    T_CHECK(!model_misuse_ok(m, 7, 2, EIO, 0, NULL));
+    T_CHECK(model_misuse_ok(m, 7, ps_page_id_from(2), 0, 5, mp.caller));
+    T_CHECK(!model_misuse_ok(m, 7, ps_page_id_from(2), 0, 5, z));
+    T_CHECK(!model_misuse_ok(m, 7, ps_page_id_from(2), EBADMSG, 0, NULL));
+    T_CHECK(!model_misuse_ok(m, 7, ps_page_id_from(2), EIO, 0, NULL));
     /* At 4 that copy (lsn 5) is newer than the snapshot. */
-    T_CHECK(!model_misuse_ok(m, 4, 2, 0, 5, mp.caller));
-    T_CHECK(model_misuse_ok(m, 4, 2, EINVAL, 0, NULL));
+    T_CHECK(!model_misuse_ok(m, 4, ps_page_id_from(2), 0, 5, mp.caller));
+    T_CHECK(model_misuse_ok(m, 4, ps_page_id_from(2), EINVAL, 0, NULL));
 
-    u32 all[8];
+    ps_page_id all[8];
     T_EQ(model_allocated_at(m, 7, all, 8), 3);
-    T_EQ(all[0], 1);
-    T_EQ(all[1], 3);
-    T_EQ(all[2], 4);
+    T_EQ(all[0].raw, 1);
+    T_EQ(all[1].raw, 3);
+    T_EQ(all[2].raw, 4);
 
     model_truncate(m, 5);
     T_EQ(model_last_lsn(m), 5);
-    T_CHECK(model_page_at(m, 5, 2, NULL));
+    T_CHECK(model_page_at(m, 5, ps_page_id_from(2), NULL));
     model_next_ids(m, 1, ids);
-    T_EQ(ids[0], 3);
+    T_EQ(ids[0].raw, 3);
 
     model_op_begin(m, 6);
-    u32 last = 0;
+    ps_page_id last = PS_PAGE_ID_NONE;
     for (u32 i = 0; i < g - 4; i++) {
         last = model_alloc(m);
     }
-    T_EQ(last, g - 1);
-    T_EQ(model_alloc(m), g + 1);
+    T_EQ(last.raw, g - 1);
+    T_EQ(model_alloc(m).raw, g + 1);
     model_op_commit(m);
     T_EQ(model_num_groups(m), 2);
     model_truncate(m, 5);
@@ -885,7 +885,7 @@ static void test_workload_codec(void)
         T_EQ(back.n, op.n);
         for (u32 k = 0; k < op.n; k++) {
             T_EQ(back.a[k].kind, op.a[k].kind);
-            T_EQ(back.a[k].id, op.a[k].id);
+            T_EQ(back.a[k].id.raw, op.a[k].id.raw);
             T_EQ(back.a[k].off, op.a[k].off);
             T_EQ(back.a[k].len, op.a[k].len);
             T_EQ(back.a[k].fill, op.a[k].fill);
@@ -911,40 +911,40 @@ static void test_writer_misuse_after_snapshot_load(void)
     ps_store *s = NULL;
     T_OK(mb_open(mb, FRAMES, PS_CREATE, &s));
     T_OK(ps_op_begin(s, 1));
-    u32 id = 0;
+    ps_page_id id = PS_PAGE_ID_NONE;
     ps_page *p = NULL;
     T_OK(ps_alloc(s, &id, &p));
-    T_EQ(id, 1);
+    T_EQ(id.raw, 1);
     ps_op_commit(s);
     T_OK(ps_checkpoint(s));
     T_OK(ps_op_begin(s, 2));
-    T_OK(ps_free(s, 1));
+    T_OK(ps_free(s, ps_page_id_from(1)));
     ps_op_commit(s);
     T_OK(ps_checkpoint(s));
-    T_CHECK(!ps_test_has_entry(s, 1));
+    T_CHECK(!ps_test_has_entry(s, ps_page_id_from(1)));
 
     ps_snapshot *sn = NULL;
     T_OK(ps_snapshot_open(s, &sn));
     const ps_page *rp = NULL;
-    T_OK(ps_snapshot_read(sn, 1, &rp));
+    T_OK(ps_snapshot_read(sn, ps_page_id_from(1), &rp));
     T_EQ(rp->lsn, 1);
     ps_snapshot_close(sn);
-    T_CHECK(ps_test_has_entry(s, 1));
+    T_CHECK(ps_test_has_entry(s, ps_page_id_from(1)));
 
     for (u32 call = 0; call < 3; call++) {
         T_OK(ps_op_begin(s, 3 + call));
         if (call == 0) {
-            T_ERR(ps_read(s, 1, &rp), EINVAL);
+            T_ERR(ps_read(s, ps_page_id_from(1), &rp), EINVAL);
         } else if (call == 1) {
-            T_ERR(ps_write(s, 1, &p), EINVAL);
+            T_ERR(ps_write(s, ps_page_id_from(1), &p), EINVAL);
         } else {
-            T_ERR(ps_free(s, 1), EINVAL);
+            T_ERR(ps_free(s, ps_page_id_from(1)), EINVAL);
         }
         ps_op_abort(s);
     }
     T_OK(ps_op_begin(s, 3));
     T_OK(ps_alloc(s, &id, &p));
-    T_EQ(id, 1);
+    T_EQ(id.raw, 1);
     T_EQ(p->lsn, 3);
     ps_op_commit(s);
     ps_close(s);
@@ -963,9 +963,9 @@ static void test_snapshot_misuse_older_copy(void)
     op.lsn = 1;
     op.n = 2;
     op.a[0].kind = W_ALLOC;
-    op.a[0].id = 1;
+    op.a[0].id = ps_page_id_from(1);
     op.a[1].kind = W_WRITE;
-    op.a[1].id = 1;
+    op.a[1].id = ps_page_id_from(1);
     op.a[1].len = 100;
     op.a[1].fill = 7;
     T_OK(w_apply_store(s, &op));
@@ -976,7 +976,7 @@ static void test_snapshot_misuse_older_copy(void)
     op.lsn = 2;
     op.n = 1;
     op.a[0].kind = W_FREE;
-    op.a[0].id = 1;
+    op.a[0].id = ps_page_id_from(1);
     T_OK(w_apply_store(s, &op));
     w_apply_model(m, &op);
     T_OK(ps_checkpoint(s)); /* drops the lone free marker */
@@ -985,24 +985,24 @@ static void test_snapshot_misuse_older_copy(void)
     ps_snapshot *a = NULL;
     T_OK(ps_snapshot_open(s, &a));
     const ps_page *p = NULL;
-    T_OK(ps_snapshot_read(a, 1, &p));
-    T_CHECK(model_misuse_ok(m, 2, 1, 0, p->lsn, (const u8 *) p + HDR));
-    ps_snapshot_unpin(a, 1);
+    T_OK(ps_snapshot_read(a, ps_page_id_from(1), &p));
+    T_CHECK(model_misuse_ok(m, 2, ps_page_id_from(1), 0, p->lsn, (const u8 *) p + HDR));
+    ps_snapshot_unpin(a, ps_page_id_from(1));
 
     memset(&op, 0, sizeof(op));
     op.lsn = 3;
     op.n = 1;
     op.a[0].kind = W_ALLOC;
-    op.a[0].id = 1;
+    op.a[0].id = ps_page_id_from(1);
     T_OK(w_apply_store(s, &op));
     w_apply_model(m, &op);
     T_OK(ps_checkpoint(s));
     model_durable(m, 3);
-    T_EQ(((const ps_page *) mb_page(mb, 1))->lsn, 3);
+    T_EQ(((const ps_page *) mb_page(mb, ps_page_id_from(1)))->lsn, 3);
 
-    T_OK(ps_snapshot_read(a, 1, &p));
+    T_OK(ps_snapshot_read(a, ps_page_id_from(1), &p));
     T_EQ(p->lsn, 1);
-    T_CHECK(model_misuse_ok(m, 2, 1, 0, p->lsn, (const u8 *) p + HDR));
+    T_CHECK(model_misuse_ok(m, 2, ps_page_id_from(1), 0, p->lsn, (const u8 *) p + HDR));
     ps_snapshot_close(a);
     w_check_store(s, m);
     ps_close(s);

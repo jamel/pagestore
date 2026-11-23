@@ -20,16 +20,16 @@ static bool evict_one(ps_store *s, u32 *f)
         if (ps_frames_clock(s->frames, &c) != 0) {
             return false;
         }
-        const u32 id = ps_frames_owner_id(s->frames, c);
-        if (id == PS_FRAMES_NO_OWNER) {
+        const ps_page_id id = ps_frames_owner_id(s->frames, c);
+        if (ps_page_id_eq(id, PS_FRAMES_NO_OWNER)) {
             continue; /* released or detached meanwhile */
         }
         ps_latch(s->pt, id);
         bool got = false;
-        if (ps_frames_owner_id(s->frames, c) == id) {
+        if (ps_page_id_eq(ps_frames_owner_id(s->frames, c), id)) {
             ps_vnode *v = ps_frames_owner(s->frames, c);
             ps_entry *e = v->entry;
-            PS_ASSERT(e != NULL && e->id == id && v->frame == c);
+            PS_ASSERT(e != NULL && ps_page_id_eq(e->id, id) && v->frame == c);
             u32 fr = PS_NO_FRAME;
             if (e->head == v && ps_evict_head(s, e, &fr)) {
                 PS_ASSERT(fr == c);

@@ -129,11 +129,11 @@ typedef struct meta {
     u64 next_seq;
     u64 first_off;
     u64 end_off;
-    u32 tail;
+    ps_page_id tail;
     u32 readers;
-    u32 index_root;
+    ps_page_id index_root;
     u32 index_height;
-    u32 map_root;
+    ps_page_id map_root;
     u32 map_height;
 } meta;
 
@@ -148,11 +148,11 @@ static int meta_decode(const ps_page *p, meta *m)
     m->next_seq = get64(b + META_NEXT_SEQ);
     m->first_off = get64(b + META_FIRST_OFF);
     m->end_off = get64(b + META_END_OFF);
-    m->tail = get32(b + META_TAIL);
+    m->tail = ps_page_id_from(get32(b + META_TAIL));
     m->readers = get32(b + META_READERS);
-    m->index_root = get32(b + META_INDEX_ROOT);
+    m->index_root = ps_page_id_from(get32(b + META_INDEX_ROOT));
     m->index_height = get32(b + META_INDEX_HEIGHT);
-    m->map_root = get32(b + META_MAP_ROOT);
+    m->map_root = ps_page_id_from(get32(b + META_MAP_ROOT));
     m->map_height = get32(b + META_MAP_HEIGHT);
     return 0;
 }
@@ -166,11 +166,11 @@ static void meta_encode(ps_page *p, const meta *m)
     put64(b + META_NEXT_SEQ, m->next_seq);
     put64(b + META_FIRST_OFF, m->first_off);
     put64(b + META_END_OFF, m->end_off);
-    put32(b + META_TAIL, m->tail);
+    put32(b + META_TAIL, m->tail.raw);
     put32(b + META_READERS, m->readers);
-    put32(b + META_INDEX_ROOT, m->index_root);
+    put32(b + META_INDEX_ROOT, m->index_root.raw);
     put32(b + META_INDEX_HEIGHT, m->index_height);
-    put32(b + META_MAP_ROOT, m->map_root);
+    put32(b + META_MAP_ROOT, m->map_root.raw);
     put32(b + META_MAP_HEIGHT, m->map_height);
 }
 
@@ -231,7 +231,7 @@ static bool data_ok(const ps_page *p, u64 logical)
 
 /* ---- create and open ------------------------------------------------------ */
 
-int ml_create(ps_store *s, u64 cap, u32 *meta_id)
+int ml_create(ps_store *s, u64 cap, ps_page_id *meta_id)
 {
     if (cap == 0) {
         return EINVAL;
@@ -246,7 +246,7 @@ int ml_create(ps_store *s, u64 cap, u32 *meta_id)
     return 0;
 }
 
-void ml_open(ps_store *s, u32 meta_id, ml_log *l)
+void ml_open(ps_store *s, ps_page_id meta_id, ml_log *l)
 {
     l->store = s;
     l->meta_id = meta_id;
@@ -274,10 +274,10 @@ static int append_bytes(ml_log *l, meta *m, rx_array *pages, const u8 *msg, u32 
         ps_page *p;
         int rv;
         if (at == 0) {
-            u32 id;
+            ps_page_id id;
             rv = ps_alloc(l->store, &id, &p);
             if (rv == 0) {
-                rv = rx_set(pages, l->store, lp, id);
+                rv = rx_set(pages, l->store, lp, id.raw);
             }
             if (rv != 0) {
                 return rv;
@@ -313,13 +313,13 @@ static int trim(ml_log *l, meta *m, rx_array *index, rx_array *pages, u64 new_fi
     const u64 from_page = m->first_off / l->data_size;
     const u64 to_page = off / l->data_size;
     for (u64 lp = from_page; lp < to_page; lp++) {
-        u64 id;
-        rv = rx_get_op(pages, l->store, lp, &id);
-        if (rv == 0 && id == 0) {
+        u64 raw;
+        rv = rx_get_op(pages, l->store, lp, &raw);
+        if (rv == 0 && raw == 0) {
             rv = EBADMSG;
         }
         if (rv == 0) {
-            rv = ps_free(l->store, (u32) id);
+            rv = ps_free(l->store, ps_page_id_from((u32) raw));
         }
         if (rv != 0) {
             return rv == ENOENT ? EBADMSG : rv;
@@ -333,7 +333,7 @@ static int trim(ml_log *l, meta *m, rx_array *index, rx_array *pages, u64 new_fi
         return rv;
     }
     if (to_page >= page_count(l, m->end_off)) {
-        m->tail = 0;
+        m->tail = PS_PAGE_ID_NONE;
     }
     m->first_seq = new_first;
     m->first_off = off;
@@ -406,26 +406,27 @@ static int copy_bytes(
     while (done < n) {
         const u64 lp = off / d;
         const u32 at = (u32) (off % d);
-        u64 id;
-        int rv = rx_get(pages, snap, lp, &id);
-        if (rv == 0 && id == 0) {
+        u64 raw;
+        int rv = rx_get(pages, snap, lp, &raw);
+        if (rv == 0 && raw == 0) {
             rv = EBADMSG;
         }
         if (rv != 0) {
             return rv == ENOENT ? EBADMSG : rv;
         }
+        const ps_page_id id = ps_page_id_from((u32) raw);
         const ps_page *p;
-        rv = ps_snapshot_read(snap, (u32) id, &p);
+        rv = ps_snapshot_read(snap, id, &p);
         if (rv != 0) {
             return rv;
         }
         if (!data_ok(p, lp)) {
-            ps_snapshot_unpin(snap, (u32) id);
+            ps_snapshot_unpin(snap, id);
             return EBADMSG;
         }
         const u32 k = min32(n - done, d - at);
         memcpy(out + done, (const u8 *) p + DATA_PAYLOAD + at, k);
-        ps_snapshot_unpin(snap, (u32) id);
+        ps_snapshot_unpin(snap, id);
         done += k;
         off += k;
     }
@@ -749,9 +750,9 @@ static int check_data(
     const u64 n = page_count(l, m->end_off);
     *count = 0;
     for (u64 lp = first; lp < n; lp++) {
-        u64 id;
-        int rv = rx_get(pages, snap, lp, &id);
-        if (rv == ENOENT || (rv == 0 && id == 0)) {
+        u64 raw;
+        int rv = rx_get(pages, snap, lp, &raw);
+        if (rv == ENOENT || (rv == 0 && raw == 0)) {
             return fail(
                 msg,
                 cap,
@@ -761,33 +762,29 @@ static int check_data(
         if (rv != 0) {
             return rv;
         }
-        if (lp == n - 1 && id != m->tail) {
-            return fail(
-                msg,
-                cap,
-                "meta: tail page %u, page map says %llu",
-                m->tail,
-                (unsigned long long) id);
+        const ps_page_id id = ps_page_id_from((u32) raw);
+        if (lp == n - 1 && !ps_page_id_eq(id, m->tail)) {
+            return fail(msg, cap, "meta: tail page %u, page map says %u", m->tail.raw, id.raw);
         }
         const ps_page *p;
-        rv = ps_snapshot_read(snap, (u32) id, &p);
+        rv = ps_snapshot_read(snap, id, &p);
         if (rv != 0) {
             return rv;
         }
         const bool ok = data_ok(p, lp);
-        ps_snapshot_unpin(snap, (u32) id);
+        ps_snapshot_unpin(snap, id);
         if (!ok) {
             return fail(
                 msg,
                 cap,
-                "page %llu: not the data page for logical page %llu",
-                (unsigned long long) id,
+                "page %u: not the data page for logical page %llu",
+                id.raw,
                 (unsigned long long) lp);
         }
         (*count)++;
     }
-    if (first >= n && m->tail != 0) {
-        return fail(msg, cap, "meta: tail page %u with no live data pages", m->tail);
+    if (first >= n && !ps_page_id_is_none(m->tail)) {
+        return fail(msg, cap, "meta: tail page %u with no live data pages", m->tail.raw);
     }
     return 0;
 }
@@ -803,7 +800,7 @@ int ml_check(const ml_log *l, ps_snapshot *snap, ml_stats *out, char *msg, usize
     meta m = {0};
     rv = meta_decode(p, &m);
     if (rv != 0) {
-        rv = fail(msg, msg_cap, "page %u: not a log meta page", l->meta_id);
+        rv = fail(msg, msg_cap, "page %u: not a log meta page", l->meta_id.raw);
     }
     if (rv == 0) {
         rv = check_meta(l, p, &m, msg, msg_cap);

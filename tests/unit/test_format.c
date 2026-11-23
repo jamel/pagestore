@@ -89,7 +89,7 @@ static void test_journal_layout(void)
     u8 t[PS_JOURNAL_TRAILER_SIZE];
     u8 e[PS_JOURNAL_ENTRY_HEADER_SIZE];
     u32 crc = 0;
-    u32 id = 0;
+    ps_page_id id = PS_PAGE_ID_NONE;
 
     PS_STATIC_ASSERT(PS_JOURNAL_HEADER_SIZE == 48, "journal header is 48 bytes");
     PS_STATIC_ASSERT(PS_JOURNAL_TRAILER_SIZE == 8, "journal trailer is 8 bytes");
@@ -153,11 +153,11 @@ static void test_journal_layout(void)
     T_ERR(ps_journal_header_decode(b, &g), EBADMSG);
 
     PS_STATIC_ASSERT(PS_JOURNAL_ENTRY_HEADER_SIZE == 8, "journal entry header is 8 bytes");
-    ps_journal_entry_header_encode(0xFFFFFFFEu, e);
+    ps_journal_entry_header_encode(ps_page_id_from(0xFFFFFFFEu), e);
     T_EQ(ps_get_le32(e), 0xFFFFFFFEu);
     T_EQ(ps_get_le32(e + 4), 0);
     T_OK(ps_journal_entry_header_decode(e, &id));
-    T_EQ(id, 0xFFFFFFFEu);
+    T_EQ(id.raw, 0xFFFFFFFEu);
     e[5] = 1;
     T_ERR(ps_journal_entry_header_decode(e, &id), EBADMSG);
 

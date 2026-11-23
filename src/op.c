@@ -77,7 +77,7 @@ static int reserve_groups(ps_store *s, u32 n)
  * Wait out any page-in. The caller owns the page latch even if no entry
  * remains.
  */
-static ps_entry *latch_find(ps_store *s, u32 id)
+static ps_entry *latch_find(ps_store *s, ps_page_id id)
 {
     ps_latch(s->pt, id);
     for (;;) {
@@ -170,30 +170,28 @@ static int op_enter(ps_store *s, const char *what)
 }
 
 /* User calls can address neither group bitmaps nor the reserved UINT32_MAX. */
-static int check_user_id(ps_store *s, u32 id, const char *what)
+static int check_user_id(ps_store *s, ps_page_id id, const char *what)
 {
-    if (id == UINT32_MAX || ps_is_bitmap_id(s, id)) {
-        ps_log(s, PS_LOG_ERROR, "%s: page %u is not a user page", what, id);
+    if (id.raw == UINT32_MAX || ps_is_bitmap_id(s, id)) {
+        ps_log(s, PS_LOG_ERROR, "%s: page %u is not a user page", what, id.raw);
         return EINVAL;
     }
     return 0;
 }
 
-/*
- * Writer only. Bitmap pages stay resident, so this check needs no page-in.
- */
-static bool committed_allocated(ps_store *s, u32 id)
+/* Writer only. Bitmap pages stay resident, so this check needs no page-in. */
+static bool committed_allocated(ps_store *s, ps_page_id id)
 {
-    const u32 g = id / s->gsize;
+    const u32 g = ps_group_of(s, id);
     if (g >= ps_allocator_num_groups(s->alloc)) {
         return false;
     }
-    const u32 bid = g * s->gsize;
+    const ps_page_id bid = ps_bitmap_id(s, g);
     ps_latch(s->pt, bid);
     const ps_entry *e = ps_entry_find(s->pt, bid);
     PS_ASSERT(e != NULL && e->head != NULL && e->head->frame != PS_NO_FRAME);
     const u8 *bits = (const u8 *) ps_node_page(s, e->head) + PS_PAGE_HEADER_SIZE;
-    const bool set = ps_bit_test(bits, id % s->gsize);
+    const bool set = ps_bit_test(bits, id.raw % s->gsize);
     ps_unlatch(s->pt, bid);
     return set;
 }
@@ -264,7 +262,7 @@ static int bitmap_get(ps_bitmap_get_ctx *ctx, u32 g, const u8 **bits)
         return rv;
     }
 
-    const u32 id = g * s->gsize;
+    const ps_page_id id = ps_bitmap_id(s, g);
     ps_entry *e = latch_find(s, id);
     if (e == NULL) {
         rv = ps_entry_get(s->pt, id, &e);
@@ -317,7 +315,7 @@ static int reserve_kit(ps_store *s)
     if (rv != 0) {
         return rv;
     }
-    const u32 id = g * s->gsize;
+    const ps_page_id id = ps_bitmap_id(s, g);
     ps_entry *e = latch_find(s, id);
     if (e == NULL) {
         rv = ps_entry_get(s->pt, id, &e);
@@ -337,7 +335,7 @@ static int reserve_kit(ps_store *s)
 }
 
 /* Cancellation cannot fail because the group is already prepared. */
-static void cancel_alloc(ps_store *s, u32 id)
+static void cancel_alloc(ps_store *s, ps_page_id id)
 {
     ps_bitmap_get_ctx gc = {s, false};
     bool cancelled = false;
@@ -434,7 +432,7 @@ static void op_release(ps_store *s)
     for (u32 i = 0; i < op->npins; i++) {
         ps_vnode *v = op->pins[i];
         ps_entry *e = v->entry;
-        const u32 id = e->id;
+        const ps_page_id id = e->id;
         ps_latch(s->pt, id);
         PS_ASSERT((v->flags & PS_VF_OP_PIN) != 0);
         v->flags &= (u8) ~PS_VF_OP_PIN;
@@ -445,7 +443,7 @@ static void op_release(ps_store *s)
 
     for (u32 i = 0; i < op->ngroups; i++) {
         ps_op_group *r = &op->groups[i];
-        const u32 id = r->g * s->gsize;
+        const ps_page_id id = ps_bitmap_id(s, r->g);
         ps_latch(s->pt, id);
         if (r->is_new) {
             ps_vnode_delete(s->pt, r->v); /* NULL once commit consumed it */
@@ -462,7 +460,7 @@ static void op_release(ps_store *s)
     op->ngroups = 0;
 
     if (op->kit_entry != NULL) {
-        const u32 id = op->kit_group * s->gsize;
+        const ps_page_id id = ps_bitmap_id(s, op->kit_group);
         ps_latch(s->pt, id);
         unhold(s, op->kit_entry);
         ps_unlatch(s->pt, id);
@@ -482,7 +480,7 @@ static void op_release(ps_store *s)
 static void commit_group(ps_store *s, ps_op_group *r)
 {
     const u64 lsn = s->op.lsn;
-    const u32 id = r->g * s->gsize;
+    const ps_page_id id = ps_bitmap_id(s, r->g);
     ps_entry *e = r->e;
     ps_latch(s->pt, id);
     ps_vnode *v = r->v;
@@ -563,7 +561,7 @@ void ps_op_commit(ps_store *s)
         if (e == NULL) {
             continue;
         }
-        const u32 id = e->id;
+        const ps_page_id id = e->id;
         ps_latch(s->pt, id);
         ps_vnode *h = e->head;
         PS_ASSERT(h != NULL && (h->flags & PS_VF_IN_OP) != 0);
@@ -593,7 +591,7 @@ void ps_op_commit(ps_store *s)
         if (e == NULL) {
             continue;
         }
-        const u32 id = e->id;
+        const ps_page_id id = e->id;
         ps_latch(s->pt, id);
         ps_vnode *old = e->head->older;
         if (old != NULL && ps_reg_any_at_or_above(s, old->lsn)) {
@@ -626,7 +624,7 @@ void ps_op_abort(ps_store *s)
         if (e == NULL) {
             continue;
         }
-        const u32 id = e->id;
+        const ps_page_id id = e->id;
         ps_latch(s->pt, id);
         /*
          * A snapshot can be loading a version below the operation's head.
@@ -680,7 +678,7 @@ void ps_op_abort(ps_store *s)
  */
 static int writer_head(
     ps_store *s,
-    u32 id,
+    ps_page_id id,
     const char *what,
     bool for_write,
     ps_entry **eo,
@@ -692,7 +690,7 @@ static int writer_head(
         ps_vnode *h = e != NULL ? e->head : NULL;
         if (h != NULL && h->kind == PS_V_FREE) {
             ps_unlatch(s->pt, id);
-            ps_log(s, PS_LOG_ERROR, "%s: page %u is freed", what, id);
+            ps_log(s, PS_LOG_ERROR, "%s: page %u is freed", what, id.raw);
             return EINVAL;
         }
         if (h != NULL && (h->flags & PS_VF_IN_OP) != 0) {
@@ -708,7 +706,7 @@ static int writer_head(
              */
             ps_unlatch(s->pt, id);
             if (!committed_allocated(s, id)) {
-                ps_log(s, PS_LOG_ERROR, "%s: page %u is not allocated", what, id);
+                ps_log(s, PS_LOG_ERROR, "%s: page %u is not allocated", what, id.raw);
                 return EINVAL;
             }
             checked = true;
@@ -746,7 +744,7 @@ static int writer_head(
     }
 }
 
-int ps_read(ps_store *s, u32 id, const ps_page **page)
+int ps_read(ps_store *s, ps_page_id id, const ps_page **page)
 {
     int rv = op_enter(s, "ps_read");
     if (rv == 0) {
@@ -778,7 +776,7 @@ int ps_read(ps_store *s, u32 id, const ps_page **page)
     return 0;
 }
 
-int ps_write(ps_store *s, u32 id, ps_page **page)
+int ps_write(ps_store *s, ps_page_id id, ps_page **page)
 {
     int rv = op_enter(s, "ps_write");
     if (rv == 0) {
@@ -878,7 +876,7 @@ static int load_frameless(ps_store *s, ps_entry *e)
     }
 }
 
-int ps_alloc(ps_store *s, u32 *id_out, ps_page **page)
+int ps_alloc(ps_store *s, ps_page_id *id_out, ps_page **page)
 {
     int rv = op_enter(s, "ps_alloc");
     if (rv == 0) {
@@ -910,7 +908,7 @@ int ps_alloc(ps_store *s, u32 *id_out, ps_page **page)
     s->op.frames++;
 
     ps_bitmap_get_ctx gc = {s, false};
-    u32 id = 0;
+    ps_page_id id = PS_PAGE_ID_NONE;
     bool new_group = false;
     rv = ps_allocator_next(s->alloc, bitmap_get, &gc, &id, &new_group);
     if (rv == ENOBUFS && !gc.no_room) {
@@ -938,7 +936,7 @@ int ps_alloc(ps_store *s, u32 *id_out, ps_page **page)
          * is unavailable, give the bitmap the reserved frame and cancel
          * the user page allocation.
          */
-        PS_ASSERT(s->op.kit_entry != NULL && id / s->gsize == s->op.kit_group);
+        PS_ASSERT(s->op.kit_entry != NULL && ps_group_of(s, id) == s->op.kit_group);
         u32 bf = PS_NO_FRAME;
         rv = op_room(s, 1) ? ps_mem_frame(s, true, &bf) : ENOBUFS;
         if (rv == 0) {
@@ -1027,7 +1025,7 @@ static void release_base(ps_store *s, ps_vnode *base)
     base->frame = PS_NO_FRAME;
 }
 
-int ps_free(ps_store *s, u32 id)
+int ps_free(ps_store *s, ps_page_id id)
 {
     int rv = op_enter(s, "ps_free");
     if (rv == 0) {
@@ -1066,7 +1064,7 @@ int ps_free(ps_store *s, u32 id)
             1 :
             0;
         if (rv == 0 && h != NULL && h->kind == PS_V_FREE) {
-            ps_log(s, PS_LOG_ERROR, "ps_free: page %u is already freed", id);
+            ps_log(s, PS_LOG_ERROR, "ps_free: page %u is already freed", id.raw);
             ps_unlatch(s->pt, id);
             rv = EINVAL;
         } else if (rv == 0 && !op_room(s, held)) {
@@ -1101,7 +1099,7 @@ int ps_free(ps_store *s, u32 id)
         ps_vnode_delete(s->pt, m);
         ps_vnode_delete(s->pt, b);
         if (rv == EINVAL) {
-            ps_log(s, PS_LOG_ERROR, "ps_free: page %u is not allocated", id);
+            ps_log(s, PS_LOG_ERROR, "ps_free: page %u is not allocated", id.raw);
         }
         return rv;
     }

@@ -22,7 +22,7 @@
  * Create the tree in a new store's first operation. Keep the meta page ID,
  * because later opens need it.
  *
- *     u32 meta;
+ *     ps_page_id meta;
  *     int rv = ps_op_begin(s, 1);
  *     if (rv == 0) {
  *         rv = bt_create(s, &meta);
@@ -77,7 +77,7 @@ PS_EXTERN_C_BEGIN
 /* Set up by bt_open. Callers may read the fields but not change them. */
 typedef struct bt_tree {
     ps_store *store;
-    u32 meta_id;
+    ps_page_id meta_id;
     u32 page_size;
     u32 max_key; /* longest key in bytes */
     u32 max_entry; /* longest key plus value in bytes */
@@ -96,7 +96,7 @@ typedef struct bt_item {
 typedef struct bt_cursor {
     const bt_tree *tree;
     ps_snapshot *snap;
-    u32 leaf; /* pinned leaf, 0 once the cursor is past the end */
+    ps_page_id leaf; /* pinned leaf, PS_PAGE_ID_NONE once the cursor is past the end */
     u32 slot;
     const u8 *page;
 } bt_cursor;
@@ -116,14 +116,14 @@ typedef struct bt_stats {
  * Allocates an empty tree (a meta page and a root leaf) in the current
  * operation and returns the meta page ID.
  */
-int bt_create(ps_store *s, u32 *meta_id);
+int bt_create(ps_store *s, ps_page_id *meta_id);
 
 /*
  * Sets up a handle for the tree whose meta page is meta_id. It reads no
  * pages, so a tree created by a later operation, such as one replayed from
  * the log, can use it. ENOMEM if the writer workspace can't be allocated.
  */
-int bt_open(ps_store *s, u32 meta_id, bt_tree *t);
+int bt_open(ps_store *s, ps_page_id meta_id, bt_tree *t);
 void bt_close(bt_tree *t);
 
 /*

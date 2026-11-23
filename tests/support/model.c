@@ -302,7 +302,7 @@ static m_pend *add_pend(model *m, u32 id, m_pend_kind kind, u8 *bytes)
     return p;
 }
 
-u32 model_alloc(model *m)
+ps_page_id model_alloc(model *m)
 {
     T_CHECK(m->in_op);
     const u32 id = next_id(m, m->has_last, m->last, &m->op_num_groups);
@@ -311,11 +311,12 @@ u32 model_alloc(model *m)
     ensure_page(m, id);
     T_CHECK(m->pages[id].pend == 0 && !committed_alloc(m, id));
     add_pend(m, id, P_ALLOC, NULL);
-    return id;
+    return ps_page_id_from(id);
 }
 
-void model_free(model *m, u32 id)
+void model_free(model *m, ps_page_id page)
 {
+    const u32 id = page.raw;
     T_CHECK(m->in_op);
     T_CHECK(is_user_id(m, id));
     m_pend *p = find_pend(m, id);
@@ -338,8 +339,9 @@ void model_free(model *m, u32 id)
     add_pend(m, id, P_FREE, NULL);
 }
 
-void model_write(model *m, u32 id, u32 off, const void *data, u32 len)
+void model_write(model *m, ps_page_id page, u32 off, const void *data, u32 len)
 {
+    const u32 id = page.raw;
     T_CHECK(m->in_op);
     T_CHECK(is_user_id(m, id));
     T_CHECK((u64) off + len <= m->csize);
@@ -359,8 +361,9 @@ void model_write(model *m, u32 id, u32 off, const void *data, u32 len)
     }
 }
 
-bool model_op_page(const model *m, u32 id, model_page *out)
+bool model_op_page(const model *m, ps_page_id page, model_page *out)
 {
+    const u32 id = page.raw;
     T_CHECK(m->in_op);
     if (!is_user_id(m, id)) {
         return false;
@@ -387,7 +390,7 @@ bool model_op_page(const model *m, u32 id, model_page *out)
     return true;
 }
 
-void model_op_next_ids(const model *m, u32 n, u32 *ids)
+void model_op_next_ids(const model *m, u32 n, ps_page_id *ids)
 {
     T_CHECK(m->in_op);
     bool has_last = m->has_last;
@@ -396,7 +399,7 @@ void model_op_next_ids(const model *m, u32 n, u32 *ids)
     for (u32 i = 0; i < n; i++) {
         last = next_id(m, has_last, last, &groups);
         has_last = true;
-        ids[i] = last;
+        ids[i] = ps_page_id_from(last);
     }
 }
 
@@ -462,9 +465,9 @@ static const m_ver *visible(const model *m, u64 lsn, u32 id)
     return NULL;
 }
 
-bool model_page_at(const model *m, u64 lsn, u32 id, model_page *out)
+bool model_page_at(const model *m, u64 lsn, ps_page_id id, model_page *out)
 {
-    const m_ver *v = visible(m, lsn, id);
+    const m_ver *v = visible(m, lsn, id.raw);
     if (v == NULL || v->freed) {
         return false;
     }
@@ -475,13 +478,13 @@ bool model_page_at(const model *m, u64 lsn, u32 id, model_page *out)
     return true;
 }
 
-u32 model_allocated_at(const model *m, u64 lsn, u32 *ids, u32 cap)
+u32 model_allocated_at(const model *m, u64 lsn, ps_page_id *ids, u32 cap)
 {
     u32 n = 0;
     for (u32 id = 1; id < m->npages; id++) {
-        if (m->pages[id].n > 0 && model_page_at(m, lsn, id, NULL)) {
+        if (m->pages[id].n > 0 && model_page_at(m, lsn, ps_page_id_from(id), NULL)) {
             if (n < cap) {
-                ids[n] = id;
+                ids[n] = ps_page_id_from(id);
             }
             n++;
         }
@@ -540,7 +543,7 @@ void model_truncate(model *m, u64 lsn)
     }
 }
 
-void model_next_ids(const model *m, u32 n, u32 *ids)
+void model_next_ids(const model *m, u32 n, ps_page_id *ids)
 {
     bool has_last = false;
     u32 last = 0;
@@ -548,7 +551,7 @@ void model_next_ids(const model *m, u32 n, u32 *ids)
     for (u32 i = 0; i < n; i++) {
         last = next_id(m, has_last, last, &groups);
         has_last = true;
-        ids[i] = last;
+        ids[i] = ps_page_id_from(last);
     }
 }
 
@@ -570,9 +573,9 @@ void model_durable(model *m, u64 lsn)
     m->ckpts[m->nckpts++] = lsn;
 }
 
-bool model_misuse_ok(const model *m, u64 lsn, u32 id, int rv, u64 page_lsn, const u8 *caller)
+bool model_misuse_ok(const model *m, u64 lsn, ps_page_id id, int rv, u64 page_lsn, const u8 *caller)
 {
-    if (!is_user_id(m, id)) {
+    if (!is_user_id(m, id.raw)) {
         return rv == EINVAL;
     }
     T_CHECK(!model_page_at(m, lsn, id, NULL));

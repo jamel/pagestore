@@ -44,7 +44,7 @@ typedef struct ps_vnode {
 } ps_vnode;
 
 typedef struct ps_entry {
-    u32 id;
+    ps_page_id id;
     u16 flags; /* PS_E_* (latch) */
     u16 waiters; /* threads waiting on LOADING (latch) */
     _Atomic u8 dirty; /* bit i = member of dirty list i */
@@ -63,17 +63,17 @@ void ps_ptable_destroy(ps_ptable *pt);
 u32 ps_ptable_nbuckets(const ps_ptable *pt);
 u32 ps_ptable_nlatches(const ps_ptable *pt);
 
-void ps_latch(ps_ptable *pt, u32 id);
-void ps_unlatch(ps_ptable *pt, u32 id);
+void ps_latch(ps_ptable *pt, ps_page_id id);
+void ps_unlatch(ps_ptable *pt, ps_page_id id);
 /* Hold the latch on entry. A broadcast for another page can wake this waiter. */
-void ps_latch_wait(ps_ptable *pt, u32 id);
+void ps_latch_wait(ps_ptable *pt, ps_page_id id);
 /* The caller may broadcast after releasing the latch. */
-void ps_latch_broadcast(ps_ptable *pt, u32 id);
+void ps_latch_broadcast(ps_ptable *pt, ps_page_id id);
 
-/* Hold the page latch while finding or creating an entry. */
-ps_entry *ps_entry_find(ps_ptable *pt, u32 id);
-/* With the same latch held, find the entry or allocate an empty one. */
-int ps_entry_get(ps_ptable *pt, u32 id, ps_entry **out);
+/* Hold the page latch. NULL if id has no entry. */
+ps_entry *ps_entry_find(ps_ptable *pt, ps_page_id id);
+/* Hold the page latch. Finds the entry or allocates an empty one. */
+int ps_entry_get(ps_ptable *pt, ps_page_id id, ps_entry **out);
 /* Hold the page latch. Loading, waiters and dirty lists can retain an empty entry. */
 void ps_entry_maybe_release(ps_ptable *pt, ps_entry *e);
 

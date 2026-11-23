@@ -226,9 +226,14 @@ static bool n_leaf(const u8 *n)
     return n_level(n) == 0;
 }
 
-static u32 n_link(const u8 *n)
+static ps_page_id n_link(const u8 *n)
 {
-    return get32(n + NODE_LINK);
+    return ps_page_id_from(get32(n + NODE_LINK));
+}
+
+static void n_set_link(u8 *n, ps_page_id link)
+{
+    put32(n + NODE_LINK, link.raw);
 }
 
 static u32 n_cell_start(const u8 *n)
@@ -298,9 +303,9 @@ static const u8 *cell_key(bool leaf, const u8 *c, u32 *klen)
     return c + INNER_CELL_HEADER;
 }
 
-static u32 cell_child(const u8 *c)
+static ps_page_id cell_child(const u8 *c)
 {
-    return get32(c);
+    return ps_page_id_from(get32(c));
 }
 
 static const u8 *n_key(const u8 *n, u32 i, u32 *klen)
@@ -309,7 +314,7 @@ static const u8 *n_key(const u8 *n, u32 i, u32 *klen)
 }
 
 /* Child ci of an inner node: 0 is the leftmost child, i + 1 is cell i's. */
-static u32 n_child(const u8 *n, u32 ci)
+static ps_page_id n_child(const u8 *n, u32 ci)
 {
     return ci == 0 ? n_link(n) : cell_child(n_cell(n, ci - 1));
 }
@@ -323,9 +328,9 @@ static u32 leaf_cell_build(u8 *out, const void *key, u32 klen, const void *val, 
     return LEAF_CELL_HEADER + klen + vlen;
 }
 
-static u32 inner_cell_build(u8 *out, u32 child, const u8 *key, u32 klen)
+static u32 inner_cell_build(u8 *out, ps_page_id child, const u8 *key, u32 klen)
 {
-    put32(out, child);
+    put32(out, child.raw);
     put16(out + 4, klen);
     copy(out + INNER_CELL_HEADER, key, klen);
     return INNER_CELL_HEADER + klen;
@@ -388,12 +393,12 @@ static bool node_sane(u32 page_size, const u8 *n, u32 level)
 /* ---- node changes ----------------------------------------------------------- */
 
 /* Leaves the store-owned header fields alone. */
-static void node_init(u32 page_size, u8 *n, u32 level, u32 link)
+static void node_init(u32 page_size, u8 *n, u32 level, ps_page_id link)
 {
     put32(n + PAGE_MAGIC, level == 0 ? LEAF_MAGIC : INNER_MAGIC);
     put16(n + NODE_COUNT, 0);
     put16(n + NODE_LEVEL, level);
-    put32(n + NODE_LINK, link);
+    n_set_link(n, link);
     put32(n + NODE_CELL_START, page_size);
     put16(n + NODE_GARBAGE, 0);
     put16(n + NODE_LAST, NO_LAST);
@@ -460,7 +465,7 @@ static void node_remove(u8 *n, u32 i)
 /* ---- meta page ---------------------------------------------------------------- */
 
 typedef struct tree_meta {
-    u32 root;
+    ps_page_id root;
     u32 height;
     u64 count;
 } tree_meta;
@@ -471,10 +476,10 @@ static int meta_decode(const ps_page *page, tree_meta *m)
     if (get32(p + PAGE_MAGIC) != META_MAGIC) {
         return EBADMSG;
     }
-    m->root = get32(p + META_ROOT);
+    m->root = ps_page_id_from(get32(p + META_ROOT));
     m->height = get32(p + META_HEIGHT);
     m->count = get64(p + META_COUNT);
-    if (m->root == 0 || m->height == 0 || m->height > BT_MAX_HEIGHT) {
+    if (ps_page_id_is_none(m->root) || m->height == 0 || m->height > BT_MAX_HEIGHT) {
         return EBADMSG;
     }
     return 0;
@@ -484,7 +489,7 @@ static void meta_encode(ps_page *page, const tree_meta *m)
 {
     u8 *p = (u8 *) page;
     put32(p + PAGE_MAGIC, META_MAGIC);
-    put32(p + META_ROOT, m->root);
+    put32(p + META_ROOT, m->root.raw);
     put32(p + META_HEIGHT, m->height);
     put64(p + META_COUNT, m->count);
 }
@@ -509,7 +514,7 @@ static int meta_store(bt_tree *t, const tree_meta *m)
 }
 
 /* Inside an operation this sees the operation's own changes. */
-static int read_node(bt_tree *t, u32 id, u32 level, const u8 **out)
+static int read_node(bt_tree *t, ps_page_id id, u32 level, const u8 **out)
 {
     const ps_page *p;
     const int rv = ps_read(t->store, id, &p);
@@ -524,7 +529,7 @@ static int read_node(bt_tree *t, u32 id, u32 level, const u8 **out)
 }
 
 /* Returns the operation's private copy of the node, which is safe to change. */
-static int write_node(bt_tree *t, u32 id, u32 level, u8 **out)
+static int write_node(bt_tree *t, ps_page_id id, u32 level, u8 **out)
 {
     ps_page *p;
     const int rv = ps_write(t->store, id, &p);
@@ -540,7 +545,7 @@ static int write_node(bt_tree *t, u32 id, u32 level, u8 **out)
 
 /* The nodes from the root (depth 0) down to the leaf that holds or would hold a key. */
 typedef struct tree_path {
-    u32 ids[BT_MAX_HEIGHT];
+    ps_page_id ids[BT_MAX_HEIGHT];
     /* The child taken in an inner node. In the leaf, the key's slot. */
     u32 slots[BT_MAX_HEIGHT];
 } tree_path;
@@ -553,7 +558,7 @@ static int descend(
     tree_path *p,
     bool *found)
 {
-    u32 id = m->root;
+    ps_page_id id = m->root;
     for (u32 d = 0;; d++) {
         const u32 level = m->height - 1 - d;
         const u8 *n;
@@ -663,9 +668,9 @@ static u32 split_point(const bt_tree *t, const u8 *old, u32 i, const u8 *cell)
  * entries and a new right sibling takes the rest. Leaves the separator
  * for the parent in the separator buffer.
  */
-static int node_split(bt_tree *t, u8 *n, u32 i, u32 *right_id, u32 *seplen)
+static int node_split(bt_tree *t, u8 *n, u32 i, ps_page_id *right_id, u32 *seplen)
 {
-    u32 rid;
+    ps_page_id rid;
     ps_page *rp;
     const int rv = ps_alloc(t->store, &rid, &rp);
     if (rv != 0) {
@@ -716,12 +721,12 @@ static int node_split(bt_tree *t, u8 *n, u32 i, u32 *right_id, u32 *seplen)
 }
 
 /* Puts a new root above old_root. The cell buffer holds its one cell. */
-static int grow_root(bt_tree *t, tree_meta *m, u32 old_root, u32 level, u32 size)
+static int grow_root(bt_tree *t, tree_meta *m, ps_page_id old_root, u32 level, u32 size)
 {
     if (m->height >= BT_MAX_HEIGHT) {
         return EOVERFLOW;
     }
-    u32 id;
+    ps_page_id id;
     ps_page *p;
     const int rv = ps_alloc(t->store, &id, &p);
     if (rv != 0) {
@@ -753,7 +758,7 @@ static int insert_up(bt_tree *t, tree_meta *m, const tree_path *p, u32 d, u32 i,
             put16(n + NODE_LAST, i);
             return 0;
         }
-        u32 right;
+        ps_page_id right;
         u32 seplen;
         rv = node_split(t, n, i, &right, &seplen);
         if (rv != 0) {
@@ -803,7 +808,7 @@ int bt_put(bt_tree *t, const void *key, u32 klen, const void *val, u32 vlen)
     if (rv != 0) {
         return rv;
     }
-    if (m.count == before.count && m.root == before.root) {
+    if (m.count == before.count && ps_page_id_eq(m.root, before.root)) {
         return 0;
     }
     return meta_store(t, &m);
@@ -833,7 +838,7 @@ static bool sep_fits(const u8 *parent, u32 si, u32 newlen)
 /* Replaces the key of separator si with the separator buffer, keeping its child. */
 static void set_separator(bt_tree *t, u8 *parent, u32 si, u32 seplen)
 {
-    const u32 child = cell_child(n_cell(parent, si));
+    const ps_page_id child = cell_child(n_cell(parent, si));
     node_remove(parent, si);
     const u32 size = inner_cell_build(cell_buf(t), child, sep_buf(t), seplen);
     node_insert(t, parent, si, cell_buf(t), size);
@@ -844,7 +849,7 @@ static void merge(bt_tree *t, u8 *parent, u32 si, u8 *l, const u8 *r)
 {
     const bool leaf = n_leaf(l);
     if (leaf) {
-        put32(l + NODE_LINK, n_link(r));
+        n_set_link(l, n_link(r));
     } else {
         /* The separator comes down to sit above r's leftmost child. */
         u32 seplen;
@@ -991,7 +996,7 @@ static void borrow_inner(bt_tree *t, u8 *parent, u32 si, u8 *l, u8 *r)
     u32 plen;
     const u8 *pkey = n_key(parent, si, &plen);
     const u32 size = inner_cell_build(cell_buf(t), n_link(r), pkey, plen);
-    u32 leftmost;
+    ps_page_id leftmost;
     if (to_left) {
         node_insert(t, l, n_count(l), cell_buf(t), size);
         for (u32 j = 0; j + 1 < k; j++) {
@@ -1013,7 +1018,7 @@ static void borrow_inner(bt_tree *t, u8 *parent, u32 si, u8 *l, u8 *r)
             node_remove(l, n_count(l) - 1);
         }
     }
-    put32(r + NODE_LINK, leftmost);
+    n_set_link(r, leftmost);
     set_separator(t, parent, si, seplen);
 }
 
@@ -1033,7 +1038,7 @@ static int fix_underfull(bt_tree *t, const tree_meta *m, const tree_path *p, u32
     /* Pair the node with its left sibling, or its right one if it has none. */
     const u32 ci = p->slots[d - 1];
     const u32 si = ci > 0 ? ci - 1 : 0; /* the separator between the pair */
-    const u32 rid = n_child(parent, si + 1);
+    const ps_page_id rid = n_child(parent, si + 1);
     u8 *l;
     u8 *r;
     rv = write_node(t, n_child(parent, si), level, &l);
@@ -1072,7 +1077,7 @@ static int shrink_root(bt_tree *t, tree_meta *m)
         if (rv != 0 || n_count(root) > 0) {
             return rv;
         }
-        const u32 child = n_link(root);
+        const ps_page_id child = n_link(root);
         rv = ps_free(t->store, m->root);
         if (rv != 0) {
             return rv;
@@ -1136,10 +1141,10 @@ int bt_delete(bt_tree *t, const void *key, u32 klen)
 
 /* ---- create and open -------------------------------------------------------------- */
 
-int bt_create(ps_store *s, u32 *meta_id)
+int bt_create(ps_store *s, ps_page_id *meta_id)
 {
-    u32 mid;
-    u32 rid;
+    ps_page_id mid;
+    ps_page_id rid;
     ps_page *mp;
     ps_page *rp;
     int rv = ps_alloc(s, &mid, &mp);
@@ -1149,14 +1154,14 @@ int bt_create(ps_store *s, u32 *meta_id)
     if (rv != 0) {
         return rv;
     }
-    node_init(ps_page_size(s), (u8 *) rp, 0, 0);
+    node_init(ps_page_size(s), (u8 *) rp, 0, PS_PAGE_ID_NONE);
     const tree_meta m = {rid, 1, 0};
     meta_encode(mp, &m);
     *meta_id = mid;
     return 0;
 }
 
-int bt_open(ps_store *s, u32 meta_id, bt_tree *t)
+int bt_open(ps_store *s, ps_page_id meta_id, bt_tree *t)
 {
     const u32 page_size = ps_page_size(s);
     const u32 cost = max_cost(page_size);
@@ -1182,7 +1187,7 @@ void bt_close(bt_tree *t)
 
 /* ---- snapshot reads ---------------------------------------------------------------- */
 
-static int snap_node(const bt_tree *t, ps_snapshot *snap, u32 id, u32 level, const u8 **out)
+static int snap_node(const bt_tree *t, ps_snapshot *snap, ps_page_id id, u32 level, const u8 **out)
 {
     const ps_page *p;
     const int rv = ps_snapshot_read(snap, id, &p);
@@ -1215,7 +1220,7 @@ static int snap_leaf(
     ps_snapshot *snap,
     const u8 *key,
     u32 klen,
-    u32 *leaf_id,
+    ps_page_id *leaf_id,
     const u8 **leaf)
 {
     tree_meta m;
@@ -1223,7 +1228,7 @@ static int snap_leaf(
     if (rv != 0) {
         return rv;
     }
-    u32 id = m.root;
+    ps_page_id id = m.root;
     for (u32 level = m.height - 1;; level--) {
         const u8 *n;
         rv = snap_node(t, snap, id, level, &n);
@@ -1235,7 +1240,7 @@ static int snap_leaf(
             *leaf = n;
             return 0;
         }
-        const u32 child = n_child(n, inner_find(n, key, klen));
+        const ps_page_id child = n_child(n, inner_find(n, key, klen));
         ps_snapshot_unpin(snap, id);
         id = child;
     }
@@ -1253,7 +1258,7 @@ int bt_get(
     if ((key == NULL && klen > 0) || (buf == NULL && cap > 0)) {
         return EINVAL;
     }
-    u32 id;
+    ps_page_id id;
     const u8 *leaf;
     const int rv = snap_leaf(t, snap, key, klen, &id, &leaf);
     if (rv != 0) {
@@ -1275,13 +1280,13 @@ int bt_cursor_open(bt_cursor *c, const bt_tree *t, ps_snapshot *snap, const void
 {
     c->tree = t;
     c->snap = snap;
-    c->leaf = 0;
+    c->leaf = PS_PAGE_ID_NONE;
     c->slot = 0;
     c->page = NULL;
     if (start == NULL && slen > 0) {
         return EINVAL;
     }
-    u32 id;
+    ps_page_id id;
     const u8 *leaf;
     const int rv = snap_leaf(t, snap, start, slen, &id, &leaf);
     if (rv != 0) {
@@ -1297,10 +1302,10 @@ int bt_cursor_open(bt_cursor *c, const bt_tree *t, ps_snapshot *snap, const void
 int bt_cursor_next(bt_cursor *c, bt_item *out)
 {
     /* Leaves can be empty, so keep following links until an entry turns up. */
-    while (c->leaf != 0 && c->slot >= n_count(c->page)) {
-        const u32 next = n_link(c->page);
+    while (!ps_page_id_is_none(c->leaf) && c->slot >= n_count(c->page)) {
+        const ps_page_id next = n_link(c->page);
         bt_cursor_close(c);
-        if (next == 0) {
+        if (ps_page_id_is_none(next)) {
             break;
         }
         const u8 *n;
@@ -1312,7 +1317,7 @@ int bt_cursor_next(bt_cursor *c, bt_item *out)
         c->page = n;
         c->slot = 0;
     }
-    if (c->leaf == 0) {
+    if (ps_page_id_is_none(c->leaf)) {
         return ENOENT;
     }
     const u8 *cell = n_cell(c->page, c->slot++);
@@ -1325,10 +1330,10 @@ int bt_cursor_next(bt_cursor *c, bt_item *out)
 
 void bt_cursor_close(bt_cursor *c)
 {
-    if (c->leaf != 0) {
+    if (!ps_page_id_is_none(c->leaf)) {
         ps_snapshot_unpin(c->snap, c->leaf);
     }
-    c->leaf = 0;
+    c->leaf = PS_PAGE_ID_NONE;
     c->page = NULL;
     c->slot = 0;
 }
@@ -1350,19 +1355,19 @@ typedef struct check_state {
     char *msg;
     usize msg_cap;
     u32 height;
-    u32 path[BT_MAX_HEIGHT];
+    ps_page_id path[BT_MAX_HEIGHT];
     bool seen_leaf;
-    u32 next_leaf; /* link of the last leaf visited */
+    ps_page_id next_leaf; /* link of the last leaf visited */
 } check_state;
 
-static int check_fail(check_state *c, u32 id, const char *fmt, ...) PS_PRINTF(3, 4);
+static int check_fail(check_state *c, ps_page_id id, const char *fmt, ...) PS_PRINTF(3, 4);
 
-static int check_fail(check_state *c, u32 id, const char *fmt, ...)
+static int check_fail(check_state *c, ps_page_id id, const char *fmt, ...)
 {
     if (c->msg_cap == 0) {
         return EBADMSG;
     }
-    const int n = snprintf(c->msg, c->msg_cap, "page %u: ", id);
+    const int n = snprintf(c->msg, c->msg_cap, "page %u: ", id.raw);
     if (n >= 0 && (usize) n < c->msg_cap) {
         va_list ap;
         va_start(ap, fmt);
@@ -1378,7 +1383,7 @@ static bool below(const u8 *key, u32 klen, const u8 *bound, u32 blen)
 }
 
 /* Checks cell bounds, key order and byte accounting within one node. */
-static int check_cells(check_state *c, u32 id, const u8 *n, const key_range *range)
+static int check_cells(check_state *c, ps_page_id id, const u8 *n, const key_range *range)
 {
     const u32 page_size = c->t->page_size;
     const bool leaf = n_leaf(n);
@@ -1407,13 +1412,13 @@ static int check_cells(check_state *c, u32 id, const u8 *n, const key_range *ran
         if (range->hi != NULL && !below(key, klen, range->hi, range->hilen)) {
             return check_fail(c, id, "key %u sorts at or above the next separator", i);
         }
-        if (!leaf && cell_child(n + off) == 0) {
+        if (!leaf && ps_page_id_is_none(cell_child(n + off))) {
             return check_fail(c, id, "cell %u has no child", i);
         }
         prev = key;
         prevlen = klen;
     }
-    if (!leaf && n_link(n) == 0) {
+    if (!leaf && ps_page_id_is_none(n_link(n))) {
         return check_fail(c, id, "the leftmost child is missing");
     }
     if (bytes + n_garbage(n) != page_size - n_cell_start(n)) {
@@ -1428,10 +1433,10 @@ static int check_cells(check_state *c, u32 id, const u8 *n, const key_range *ran
     return 0;
 }
 
-static int check_node(check_state *c, u32 id, u32 depth, const key_range *range)
+static int check_node(check_state *c, ps_page_id id, u32 depth, const key_range *range)
 {
     for (u32 d = 0; d < depth; d++) {
-        if (c->path[d] == id) {
+        if (ps_page_id_eq(c->path[d], id)) {
             return check_fail(c, id, "appears twice on one path from the root");
         }
     }
@@ -1447,8 +1452,8 @@ static int check_node(check_state *c, u32 id, u32 depth, const key_range *range)
     c->path[depth] = id;
     rv = check_cells(c, id, n, range);
     if (rv == 0 && level == 0) {
-        if (c->seen_leaf && c->next_leaf != id) {
-            rv = check_fail(c, id, "the previous leaf links to page %u instead", c->next_leaf);
+        if (c->seen_leaf && !ps_page_id_eq(c->next_leaf, id)) {
+            rv = check_fail(c, id, "the previous leaf links to page %u instead", c->next_leaf.raw);
         }
         c->seen_leaf = true;
         c->next_leaf = n_link(n);
@@ -1496,7 +1501,7 @@ int bt_check(const bt_tree *t, ps_snapshot *snap, bt_stats *out, char *msg, usiz
     if (rv != 0) {
         return rv;
     }
-    if (c.next_leaf != 0) {
+    if (!ps_page_id_is_none(c.next_leaf)) {
         return check_fail(&c, c.next_leaf, "the last leaf links here");
     }
     if (out->keys != m.count) {

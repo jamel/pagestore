@@ -60,12 +60,12 @@ static void teardown(void)
     fv = NULL;
 }
 
-static u8 content_byte(u32 id, u64 lsn, u32 j)
+static u8 content_byte(ps_page_id id, u64 lsn, u32 j)
 {
-    return (u8) (id * 131u + (u32) lsn * 29u + j * 7u + (j >> 8));
+    return (u8) (id.raw * 131u + (u32) lsn * 29u + j * 7u + (j >> 8));
 }
 
-static void fill(ps_page *p, u32 id, u64 lsn)
+static void fill(ps_page *p, ps_page_id id, u64 lsn)
 {
     u8 *b = (u8 *) p;
     for (u32 j = HDR; j < PS; j++) {
@@ -73,9 +73,9 @@ static void fill(ps_page *p, u32 id, u64 lsn)
     }
 }
 
-static void check_content(const ps_page *p, u32 id, u64 lsn)
+static void check_content(const ps_page *p, ps_page_id id, u64 lsn)
 {
-    T_EQ(p->page_id, id);
+    T_EQ(p->page_id.raw, id.raw);
     T_EQ(p->lsn, lsn);
     const u8 *b = (const u8 *) p;
     for (u32 j = HDR; j < PS; j++) {
@@ -84,30 +84,30 @@ static void check_content(const ps_page *p, u32 id, u64 lsn)
                 __FILE__,
                 __LINE__,
                 "page %u lsn %llu: byte %u differs",
-                id,
+                id.raw,
                 (unsigned long long) lsn,
                 j);
         }
     }
 }
 
-/* Returns 0 if the model has no allocated pages. */
-static u32 pick_allocated(const u64 *lw, rng *r)
+/* Returns PS_PAGE_ID_NONE if the model has no allocated pages. */
+static ps_page_id pick_allocated(const u64 *lw, rng *r)
 {
     u32 n = 0;
     for (u32 id = 1; id <= MAX_PAGES; id++) {
         n += lw[id] != 0;
     }
     if (n == 0) {
-        return 0;
+        return PS_PAGE_ID_NONE;
     }
     u32 k = (u32) rng_below(r, n);
     for (u32 id = 1; id <= MAX_PAGES; id++) {
         if (lw[id] != 0 && k-- == 0) {
-            return id;
+            return ps_page_id_from(id);
         }
     }
-    return 0;
+    return PS_PAGE_ID_NONE;
 }
 
 static u32 count_allocated(const u64 *lw)
@@ -133,32 +133,32 @@ static bool run_op(ps_store *s, u64 lsn, u64 *lw, rng *r)
         const u32 kind = (u32) rng_below(r, 10);
         int rv = 0;
         if (kind < 5 && count_allocated(next) < MAX_PAGES) {
-            u32 id = 0;
+            ps_page_id id = PS_PAGE_ID_NONE;
             ps_page *p = NULL;
             rv = ps_alloc(s, &id, &p);
             if (rv == 0) {
-                T_CHECK(id >= 1 && id <= MAX_PAGES && next[id] == 0);
+                T_CHECK(id.raw >= 1 && id.raw <= MAX_PAGES && next[id.raw] == 0);
                 fill(p, id, lsn);
-                next[id] = lsn;
-                touched[id] = true;
+                next[id.raw] = lsn;
+                touched[id.raw] = true;
             }
         } else if (kind < 8) {
-            const u32 id = pick_allocated(next, r);
-            if (id != 0) {
+            const ps_page_id id = pick_allocated(next, r);
+            if (!ps_page_id_is_none(id)) {
                 ps_page *p = NULL;
                 rv = ps_write(s, id, &p);
                 if (rv == 0) {
                     fill(p, id, lsn);
-                    next[id] = lsn;
-                    touched[id] = true;
+                    next[id.raw] = lsn;
+                    touched[id.raw] = true;
                 }
             }
         } else {
-            const u32 id = pick_allocated(next, r);
-            if (id != 0 && !touched[id]) {
+            const ps_page_id id = pick_allocated(next, r);
+            if (!ps_page_id_is_none(id) && !touched[id.raw]) {
                 rv = ps_free(s, id);
                 if (rv == 0) {
-                    next[id] = 0;
+                    next[id.raw] = 0;
                 }
             }
         }
@@ -249,11 +249,12 @@ static void verify(const image *im)
 
     ps_snapshot *snap = NULL;
     T_OK(ps_snapshot_open(s, &snap));
-    for (u32 id = 1; id <= MAX_PAGES; id++) {
-        if (im->lsn_written[id] != 0) {
+    for (u32 i = 1; i <= MAX_PAGES; i++) {
+        if (im->lsn_written[i] != 0) {
+            const ps_page_id id = ps_page_id_from(i);
             const ps_page *p = NULL;
             T_OK(ps_snapshot_read(snap, id, &p));
-            check_content(p, id, im->lsn_written[id]);
+            check_content(p, id, im->lsn_written[i]);
             ps_snapshot_unpin(snap, id);
         }
     }
@@ -266,15 +267,15 @@ static void verify(const image *im)
         while (want <= MAX_PAGES && im->lsn_written[want] != 0) {
             want++;
         }
-        u32 id = 0;
+        ps_page_id id = PS_PAGE_ID_NONE;
         ps_page *p = NULL;
         T_OK(ps_alloc(s, &id, &p));
-        T_EQ(id, want);
+        T_EQ(id.raw, want);
         want++;
     }
     ps_op_abort(s);
 
-    u32 nid = 0;
+    ps_page_id nid = PS_PAGE_ID_NONE;
     ps_page *p = NULL;
     T_OK(ps_op_begin(s, L + 1));
     T_OK(ps_alloc(s, &nid, &p));
@@ -288,10 +289,11 @@ static void verify(const image *im)
     const ps_page *rp = NULL;
     T_OK(ps_snapshot_read(snap, nid, &rp));
     check_content(rp, nid, L + 1);
-    for (u32 id = 1; id <= MAX_PAGES; id++) {
-        if (im->lsn_written[id] != 0) {
+    for (u32 i = 1; i <= MAX_PAGES; i++) {
+        if (im->lsn_written[i] != 0) {
+            const ps_page_id id = ps_page_id_from(i);
             T_OK(ps_snapshot_read(snap, id, &rp));
-            check_content(rp, id, im->lsn_written[id]);
+            check_content(rp, id, im->lsn_written[i]);
             ps_snapshot_unpin(snap, id);
         }
     }
@@ -394,10 +396,10 @@ static bool crash_format_once(u64 k, fault_mode mode, u64 seed)
     T_OK(ps_open(DIR, &cfg, PS_CREATE, &s));
     T_EQ(ps_committed_lsn(s), 0);
     T_OK(ps_op_begin(s, 1));
-    u32 id = 0;
+    ps_page_id id = PS_PAGE_ID_NONE;
     ps_page *p = NULL;
     T_OK(ps_alloc(s, &id, &p));
-    T_EQ(id, 1);
+    T_EQ(id.raw, 1);
     fill(p, id, 1);
     ps_op_commit(s);
     T_OK(ps_checkpoint(s));
@@ -407,8 +409,8 @@ static bool crash_format_once(u64 k, fault_mode mode, u64 seed)
     ps_snapshot *snap = NULL;
     T_OK(ps_snapshot_open(s, &snap));
     const ps_page *rp = NULL;
-    T_OK(ps_snapshot_read(snap, 1, &rp));
-    check_content(rp, 1, 1);
+    T_OK(ps_snapshot_read(snap, id, &rp));
+    check_content(rp, id, 1);
     ps_snapshot_close(snap);
     ps_close(s);
     teardown();

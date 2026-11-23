@@ -166,7 +166,7 @@ static void free_bitmap_copies(ps_store *s)
         s->bmcopy_head = v->retire_next;
         v->retire_next = NULL;
         ps_entry *e = v->entry;
-        const u32 id = e->id;
+        const ps_page_id id = e->id;
         ps_latch(s->pt, id);
         PS_ASSERT(e->head != v);
         ps_node_free(s, e, v);
@@ -240,8 +240,8 @@ static int ckpt_failed(ps_store *s, u64 L, int err, bool fatal, bool began)
 
 static int item_cmp(const void *a, const void *b)
 {
-    const u32 x = ((const ps_ckpt_item *) a)->e->id;
-    const u32 y = ((const ps_ckpt_item *) b)->e->id;
+    const u32 x = ((const ps_ckpt_item *) a)->e->id.raw;
+    const u32 y = ((const ps_ckpt_item *) b)->e->id.raw;
     return (x > y) - (x < y);
 }
 
@@ -284,7 +284,7 @@ static u32 find_visible(ps_store *s, u32 n, u64 L)
     u32 count = 0;
     for (u32 i = 0; i < n; i++) {
         ps_ckpt_item *it = &s->ckpt_items[i];
-        const u32 id = it->e->id;
+        const ps_page_id id = it->e->id;
         ps_latch(s->pt, id);
         ps_vnode *v = ps_chain_visible(it->e, L);
         PS_ASSERT(v != NULL);
@@ -307,12 +307,12 @@ static int write_pages(ps_store *s, u32 n)
         if (!it->data) {
             continue;
         }
-        const u32 id = it->e->id;
+        const ps_page_id id = it->e->id;
         ps_latch(s->pt, id);
         memcpy(s->ckpt_buf, ps_node_page(s, it->v), s->page_size);
         ps_unlatch(s->pt, id);
         ps_page *p = (ps_page *) s->ckpt_buf;
-        PS_ASSERT(p->page_id == id && p->checksum == 0);
+        PS_ASSERT(ps_page_id_eq(p->page_id, id) && p->checksum == 0);
         p->checksum = ps_crc32c(0, s->ckpt_buf, s->page_size);
         const int rv = s->be.ckpt_write(s->be.ctx, id, s->ckpt_buf);
         if (rv != 0) {
@@ -331,7 +331,7 @@ static void mark_written(ps_store *s, u32 n, u8 cbit)
     for (u32 i = 0; i < n; i++) {
         ps_entry *e = s->ckpt_items[i].e;
         ps_vnode *v = s->ckpt_items[i].v;
-        const u32 id = e->id;
+        const ps_page_id id = e->id;
         ps_latch(s->pt, id);
         v->flags |= PS_VF_ON_DISK;
         const u8 was = atomic_fetch_and_explicit(&e->dirty, (u8) ~cbit, memory_order_relaxed);

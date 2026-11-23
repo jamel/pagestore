@@ -45,14 +45,14 @@ struct ps_ptable {
     ps_vnode *free_nodes; /* linked through older */
 };
 
-static inline ps_latch_slot *latch_of(ps_ptable *pt, u32 id)
+static inline ps_latch_slot *latch_of(ps_ptable *pt, ps_page_id id)
 {
-    return &pt->latches[id & (pt->nlatches - 1)];
+    return &pt->latches[id.raw & (pt->nlatches - 1)];
 }
 
-static inline ps_entry **bucket_of(ps_ptable *pt, u32 id)
+static inline ps_entry **bucket_of(ps_ptable *pt, ps_page_id id)
 {
-    return &pt->buckets[id & (pt->nbuckets - 1)];
+    return &pt->buckets[id.raw & (pt->nbuckets - 1)];
 }
 
 int ps_ptable_create(u32 nframes, ps_ptable **out)
@@ -150,21 +150,21 @@ u32 ps_ptable_nlatches(const ps_ptable *pt)
     return pt->nlatches;
 }
 
-void ps_latch(ps_ptable *pt, u32 id)
+void ps_latch(ps_ptable *pt, ps_page_id id)
 {
     const int rv = pthread_mutex_lock(&latch_of(pt, id)->mu);
     PS_ASSERT(rv == 0);
     PS_UNUSED(rv);
 }
 
-void ps_unlatch(ps_ptable *pt, u32 id)
+void ps_unlatch(ps_ptable *pt, ps_page_id id)
 {
     const int rv = pthread_mutex_unlock(&latch_of(pt, id)->mu);
     PS_ASSERT(rv == 0);
     PS_UNUSED(rv);
 }
 
-void ps_latch_wait(ps_ptable *pt, u32 id)
+void ps_latch_wait(ps_ptable *pt, ps_page_id id)
 {
     ps_latch_slot *l = latch_of(pt, id);
     const int rv = pthread_cond_wait(&l->cv, &l->mu);
@@ -172,24 +172,24 @@ void ps_latch_wait(ps_ptable *pt, u32 id)
     PS_UNUSED(rv);
 }
 
-void ps_latch_broadcast(ps_ptable *pt, u32 id)
+void ps_latch_broadcast(ps_ptable *pt, ps_page_id id)
 {
     const int rv = pthread_cond_broadcast(&latch_of(pt, id)->cv);
     PS_ASSERT(rv == 0);
     PS_UNUSED(rv);
 }
 
-ps_entry *ps_entry_find(ps_ptable *pt, u32 id)
+ps_entry *ps_entry_find(ps_ptable *pt, ps_page_id id)
 {
     for (ps_entry *e = *bucket_of(pt, id); e != NULL; e = e->hash_next) {
-        if (e->id == id) {
+        if (ps_page_id_eq(e->id, id)) {
             return e;
         }
     }
     return NULL;
 }
 
-int ps_entry_get(ps_ptable *pt, u32 id, ps_entry **out)
+int ps_entry_get(ps_ptable *pt, ps_page_id id, ps_entry **out)
 {
     ps_entry *e = ps_entry_find(pt, id);
     if (e == NULL) {

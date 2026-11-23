@@ -106,18 +106,18 @@ u64 ps_journal_size(const ps_journal_header *h)
     return ps_journal_entry_off(h, h->count) + PS_JOURNAL_TRAILER_SIZE;
 }
 
-void ps_journal_entry_header_encode(u32 page_id, u8 out[PS_JOURNAL_ENTRY_HEADER_SIZE])
+void ps_journal_entry_header_encode(ps_page_id page_id, u8 out[PS_JOURNAL_ENTRY_HEADER_SIZE])
 {
-    ps_put_le32(out, page_id);
+    ps_put_le32(out, page_id.raw);
     ps_put_le32(out + 4, 0);
 }
 
-int ps_journal_entry_header_decode(const u8 *buf, u32 *page_id)
+int ps_journal_entry_header_decode(const u8 *buf, ps_page_id *page_id)
 {
     if (ps_get_le32(buf + 4) != 0) {
         return EBADMSG;
     }
-    *page_id = ps_get_le32(buf);
+    *page_id = ps_page_id_from(ps_get_le32(buf));
     return 0;
 }
 

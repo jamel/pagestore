@@ -47,9 +47,9 @@ int mb_open(mem_backend *mb, u32 frames, u32 flags, ps_store **out);
  * Returns NULL for an unwritten page. The pointer lives until mb_destroy,
  * but checkpoint commits can replace its bytes.
  */
-const u8 *mb_page(mem_backend *mb, u32 id);
+const u8 *mb_page(mem_backend *mb, ps_page_id id);
 /* Copies a full page using the backend header's page size. */
-void mb_put(mem_backend *mb, u32 id, const void *page);
+void mb_put(mem_backend *mb, ps_page_id id, const void *page);
 
 /* Also marks the backend formatted. */
 void mb_set_info(mem_backend *mb, ps_backend_info info);
@@ -58,7 +58,7 @@ ps_backend_info mb_info(mem_backend *mb);
 u64 mb_ckpt_count(mem_backend *mb);
 u64 mb_abort_count(mem_backend *mb);
 /* True only if the last committed checkpoint wrote this ID. */
-bool mb_written_last(mem_backend *mb, u32 id);
+bool mb_written_last(mem_backend *mb, ps_page_id id);
 
 /* Fail the next count calls at p. Use -1 to fail until mb_fail(mb, p, 0, 0). */
 void mb_fail(mem_backend *mb, mb_point p, int err, i32 count);

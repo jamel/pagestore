@@ -73,10 +73,10 @@ static u8 fill_of(u64 lsn)
 }
 
 /* The record carries the expected page ID so replay also tests allocator determinism. */
-static void encode_rec(u8 *buf, u32 id, u8 fill)
+static void encode_rec(u8 *buf, ps_page_id id, u8 fill)
 {
     memset(buf, 0, REC_LEN);
-    ps_put_le32(buf, id);
+    ps_put_le32(buf, id.raw);
     buf[4] = fill;
     for (u32 i = 5; i < REC_LEN; i++) {
         buf[i] = (u8) (i ^ fill);
@@ -84,10 +84,10 @@ static void encode_rec(u8 *buf, u32 id, u8 fill)
 }
 
 /* Flush the log before committing the allocation. Returns its page ID. */
-static u32 logged_op(ps_store *s, ps_wal *w, u64 lsn)
+static ps_page_id logged_op(ps_store *s, ps_wal *w, u64 lsn)
 {
     T_OK(ps_op_begin(s, lsn));
-    u32 id = 0;
+    ps_page_id id = PS_PAGE_ID_NONE;
     ps_page *p = NULL;
     T_OK(ps_alloc(s, &id, &p));
     memset((u8 *) p + HDR, fill_of(lsn), BODY);
@@ -125,7 +125,7 @@ static int apply_rec(ps_apply_ctx *ctx, ps_store *s, u64 lsn, const void *rec, u
     T_CHECK(ctx->nseen < NREC + 1);
     ctx->seen[ctx->nseen++] = lsn;
     const u8 *r = rec;
-    const u32 want_id = ps_get_le32(r);
+    const ps_page_id want_id = ps_page_id_from(ps_get_le32(r));
     const u8 fill = r[4];
     T_EQ(fill, fill_of(lsn));
     if (ctx->mode == APPLY_NO_OP) {
@@ -139,10 +139,10 @@ static int apply_rec(ps_apply_ctx *ctx, ps_store *s, u64 lsn, const void *rec, u
     if (rv != 0) {
         return rv;
     }
-    u32 id = 0;
+    ps_page_id id = PS_PAGE_ID_NONE;
     ps_page *p = NULL;
     rv = ps_alloc(s, &id, &p);
-    if (rv == 0 && id != want_id) {
+    if (rv == 0 && !ps_page_id_eq(id, want_id)) {
         rv = EBADMSG;
     }
     if (rv != 0) {
@@ -171,7 +171,7 @@ static void ctx_init(ps_apply_ctx *ctx, apply_mode mode)
 }
 
 /* ids is indexed by record LSN, starting at 1. */
-static void check_pages(ps_store *s, const u32 *ids, u64 last)
+static void check_pages(ps_store *s, const ps_page_id *ids, u64 last)
 {
     ps_snapshot *snap = NULL;
     T_OK(ps_snapshot_open(s, &snap));
@@ -188,7 +188,7 @@ static void check_pages(ps_store *s, const u32 *ids, u64 last)
 }
 
 /* ids[lsn] records the allocated page so we can check it after reboot. */
-static void build(u32 *ids)
+static void build(ps_page_id *ids)
 {
     fv = fault_vfs_create(7);
     ps_store *s = open_store(PS_CREATE);
@@ -216,7 +216,7 @@ static int reopen_recover(ps_apply_ctx *ctx, ps_store **s, ps_wal **w)
 
 static void test_recover_applies(void)
 {
-    u32 ids[NREC + 1];
+    ps_page_id ids[NREC + 1];
     build(ids);
     ps_store *s = NULL;
     ps_wal *w = NULL;
@@ -231,7 +231,7 @@ static void test_recover_applies(void)
     T_EQ(ps_durable_lsn(s), CKPT_LSN);
     check_pages(s, ids, NREC);
 
-    const u32 id = logged_op(s, w, NREC + 1);
+    const ps_page_id id = logged_op(s, w, NREC + 1);
     T_OK(ps_checkpoint(s));
     T_EQ(ps_durable_lsn(s), NREC + 1);
     close_both(s, w);
@@ -240,7 +240,7 @@ static void test_recover_applies(void)
     T_OK(reopen_recover(&ctx, &s, &w));
     T_EQ(ctx.nseen, 0);
     T_EQ(ps_committed_lsn(s), NREC + 1);
-    u32 all[NREC + 2];
+    ps_page_id all[NREC + 2];
     memcpy(all, ids, sizeof(ids));
     all[NREC + 1] = id;
     check_pages(s, all, NREC + 1);
@@ -251,7 +251,7 @@ static void test_recover_applies(void)
 
 static void test_recover_twice_einval(void)
 {
-    u32 ids[NREC + 1];
+    ps_page_id ids[NREC + 1];
     build(ids);
     ps_store *s = NULL;
     ps_wal *w = NULL;
@@ -287,7 +287,7 @@ static void *hold_op(void *arg)
 
 static void test_recover_misuse(void)
 {
-    u32 ids[NREC + 1];
+    ps_page_id ids[NREC + 1];
     build(ids);
     ps_store *s = open_store(0);
     ps_wal *w = open_wal(s);
@@ -332,7 +332,7 @@ static void test_apply_must_commit(void)
 {
     const apply_mode modes[] = {APPLY_NO_OP, APPLY_NO_COMMIT, APPLY_WRONG_LSN};
     for (u32 m = 0; m < sizeof(modes) / sizeof(modes[0]); m++) {
-        u32 ids[NREC + 1];
+        ps_page_id ids[NREC + 1];
         build(ids);
         ps_store *s = NULL;
         ps_wal *w = NULL;
@@ -361,7 +361,7 @@ static void test_apply_error(void)
 {
     const apply_mode modes[] = {APPLY_FAIL, APPLY_FAIL_OPEN};
     for (u32 m = 0; m < sizeof(modes) / sizeof(modes[0]); m++) {
-        u32 ids[NREC + 1];
+        ps_page_id ids[NREC + 1];
         build(ids);
         ps_store *s = NULL;
         ps_wal *w = NULL;
@@ -389,7 +389,7 @@ static void test_apply_error(void)
 static void test_crash_during_recovery(void)
 {
     /* A checkpoint made during a failed replay survives power loss. */
-    u32 ids[NREC + 1];
+    ps_page_id ids[NREC + 1];
     build(ids);
     ps_store *s = NULL;
     ps_wal *w = NULL;
@@ -444,7 +444,7 @@ static void test_startup_sequence_posix(void)
     cfg.checkpoint_thread = true;
     cfg.checkpoint_interval_ms = 0;
     const ps_wal_config wc = wal_config();
-    u32 ids[NREC + 1];
+    ps_page_id ids[NREC + 1];
 
     ps_store *s = NULL;
     ps_wal *w = NULL;

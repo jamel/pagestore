@@ -45,7 +45,7 @@ struct ps_allocator {
     bool in_op;
     u32 op_num_groups;
     bool has_last;
-    u32 last;
+    ps_page_id last;
     op_group *recs;
     u32 nrecs;
     u32 recs_cap; /* recs and changed both have this capacity */
@@ -208,7 +208,7 @@ static void op_reset(ps_allocator *a)
     a->nchanged = 0;
     a->op_num_groups = a->num_groups;
     a->has_last = false;
-    a->last = 0;
+    a->last = PS_PAGE_ID_NONE;
 }
 
 void ps_allocator_op_begin(ps_allocator *a)
@@ -328,7 +328,7 @@ int ps_allocator_next(
     ps_allocator *a,
     ps_bitmap_get_fn get,
     ps_bitmap_get_ctx *ctx,
-    u32 *id,
+    ps_page_id *id,
     bool *new_group_out)
 {
     PS_ASSERT(a->in_op);
@@ -336,7 +336,7 @@ int ps_allocator_next(
     u32 from;
 
     if (a->has_last) {
-        u64 next = (u64) a->last + 1;
+        u64 next = (u64) a->last.raw + 1;
         g = (u32) (next / a->gsize);
         from = (u32) (next % a->gsize);
     } else {
@@ -399,7 +399,7 @@ int ps_allocator_next(
     PS_ASSERT(!ps_bit_test(r->delta, bit));
     ps_bit_set(r->delta, bit);
     r->net++;
-    a->last = (u32) ((u64) r->g * a->gsize + bit);
+    a->last = ps_page_id_from((u32) ((u64) r->g * a->gsize + bit));
     a->has_last = true;
     *id = a->last;
     *new_group_out = created;
@@ -410,15 +410,15 @@ int ps_allocator_free(
     ps_allocator *a,
     ps_bitmap_get_fn get,
     ps_bitmap_get_ctx *ctx,
-    u32 id,
+    ps_page_id id,
     bool *cancelled)
 {
     PS_ASSERT(a->in_op);
-    if ((u64) id >= PS_ALLOC_ID_LIMIT) {
+    if ((u64) id.raw >= PS_ALLOC_ID_LIMIT) {
         return EINVAL;
     }
-    u32 g = id / a->gsize;
-    u32 bit = id % a->gsize;
+    u32 g = id.raw / a->gsize;
+    u32 bit = id.raw % a->gsize;
     if (bit == 0 || g >= a->op_num_groups) {
         return EINVAL;
     }

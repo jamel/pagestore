@@ -28,7 +28,7 @@ typedef enum w_kind {
 
 typedef struct w_action {
     w_kind kind;
-    u32 id;
+    ps_page_id id;
     u32 off;
     u32 len;
     u64 fill;

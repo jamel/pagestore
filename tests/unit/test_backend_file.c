@@ -82,7 +82,7 @@ static void check_info(const ps_backend_info *info, u32 page_size, u32 ng, u64 s
 }
 
 /* Check every byte so a partly written page cannot pass the fill check. */
-static u8 page_byte(ps_backend *be, u32 id)
+static u8 page_byte(ps_backend *be, ps_page_id id)
 {
     static u8 buf[PS];
     memset(buf, 0xCC, sizeof(buf));
@@ -93,7 +93,7 @@ static u8 page_byte(ps_backend *be, u32 id)
                 __FILE__,
                 __LINE__,
                 "page %u byte %zu = %#x, byte 0 = %#x",
-                id,
+                id.raw,
                 i,
                 buf[i],
                 buf[0]);
@@ -123,7 +123,7 @@ static int checkpoint_ng(
     }
     for (u32 i = 0; i < n && rv == 0; i++) {
         memset(page, fills[i], sizeof(page));
-        rv = be->ckpt_write(be->ctx, ids[i], page);
+        rv = be->ckpt_write(be->ctx, ps_page_id_from(ids[i]), page);
     }
     if (rv == 0) {
         rv = be->ckpt_commit(be->ctx, fatal);
@@ -166,7 +166,7 @@ static void check_image_a_or_b(ps_backend *be, const ps_backend_info *info)
 {
     u8 got[5];
     for (u32 i = 0; i < 5; i++) {
-        got[i] = page_byte(be, i + 1);
+        got[i] = page_byte(be, ps_page_id_from(i + 1));
     }
     static const u8 img_a[5] = {0xA1, 0xA2, 0xA3, 0, 0};
     static const u8 img_b[5] = {0xA1, 0xB2, 0xB3, 0xB4, 0xB5};
@@ -196,7 +196,7 @@ static void write_journal(u64 seq, u64 lsn, const u32 *ids, const u8 *fills, u32
     u32 crc = ps_crc32c(0, hdr, sizeof(hdr));
     static u8 entry[PS_JOURNAL_ENTRY_HEADER_SIZE + PS];
     for (u32 i = 0; i < n; i++) {
-        ps_journal_entry_header_encode(ids[i], entry);
+        ps_journal_entry_header_encode(ps_page_id_from(ids[i]), entry);
         memset(entry + PS_JOURNAL_ENTRY_HEADER_SIZE, fills[i], PS);
         T_OK(v->pwrite(v->ctx, &f, entry, sizeof(entry), ps_journal_entry_off(&jh, i)));
         crc = ps_crc32c(crc, entry, sizeof(entry));
@@ -243,7 +243,7 @@ static void test_create_then_open(void)
     T_CHECK(file_exists(DIR "/LOCK"));
     T_CHECK(!file_exists(DIR "/data.creating"));
     T_EQ(file_size(DIR "/journal"), 0);
-    T_EQ(page_byte(&be, 0), 0);
+    T_EQ(page_byte(&be, ps_page_id_from(0)), 0);
     be_close(&be);
 
     memset(&info, 0xFF, sizeof(info));
@@ -327,25 +327,25 @@ static void test_checkpoint_roundtrip(void)
     T_OK(be.ckpt_begin(be.ctx, 5, 1, 2));
     static u8 page[PS];
     memset(page, 0x11, sizeof(page));
-    T_OK(be.ckpt_write(be.ctx, 1, page));
+    T_OK(be.ckpt_write(be.ctx, ps_page_id_from(1), page));
     memset(page, 0x77, sizeof(page));
-    T_OK(be.ckpt_write(be.ctx, 7, page));
+    T_OK(be.ckpt_write(be.ctx, ps_page_id_from(7), page));
     memset(page, 0, sizeof(page)); /* reuse the caller buffer before commit */
     bool fatal = true;
     T_OK(be.ckpt_commit(be.ctx, &fatal));
     T_CHECK(!fatal);
-    T_EQ(page_byte(&be, 7), 0x77);
-    T_EQ(page_byte(&be, 1), 0x11);
-    T_EQ(page_byte(&be, 3), 0);
-    T_EQ(page_byte(&be, 100), 0);
+    T_EQ(page_byte(&be, ps_page_id_from(7)), 0x77);
+    T_EQ(page_byte(&be, ps_page_id_from(1)), 0x11);
+    T_EQ(page_byte(&be, ps_page_id_from(3)), 0);
+    T_EQ(page_byte(&be, ps_page_id_from(100)), 0);
     T_EQ(file_size(DIR "/journal"), 0);
     T_EQ(file_size(DIR "/data"), 9 * (u64) PS);
     be_close(&be);
 
     T_OK(be_open(&be, false, &info));
     check_info(&info, PS, 1, 1, 5);
-    T_EQ(page_byte(&be, 7), 0x77);
-    T_EQ(page_byte(&be, 1), 0x11);
+    T_EQ(page_byte(&be, ps_page_id_from(7)), 0x77);
+    T_EQ(page_byte(&be, ps_page_id_from(1)), 0x11);
 
     const u8 fills2[] = {0x12};
     T_OK(checkpoint_ng(&be, 9, 2, ids, fills2, 1, &fatal));
@@ -355,8 +355,8 @@ static void test_checkpoint_roundtrip(void)
     be_close(&be);
     T_OK(be_open(&be, false, &info));
     check_info(&info, PS, 2, 3, 10);
-    T_EQ(page_byte(&be, 1), 0x12);
-    T_EQ(page_byte(&be, 7), 0x77);
+    T_EQ(page_byte(&be, ps_page_id_from(1)), 0x12);
+    T_EQ(page_byte(&be, ps_page_id_from(7)), 0x77);
     be_close(&be);
     teardown();
 }
@@ -371,10 +371,10 @@ static void test_abort_then_checkpoint(void)
     static u8 page[PS];
     memset(page, 0xEE, sizeof(page));
     T_OK(be.ckpt_begin(be.ctx, 2, 1, 2));
-    T_OK(be.ckpt_write(be.ctx, 1, page));
+    T_OK(be.ckpt_write(be.ctx, ps_page_id_from(1), page));
     be.ckpt_abort(be.ctx);
     T_EQ(file_size(DIR "/journal"), 0);
-    T_EQ(page_byte(&be, 1), 0xA1);
+    T_EQ(page_byte(&be, ps_page_id_from(1)), 0xA1);
     bool fatal = true;
     T_OK(ckpt_b(&be, &fatal));
     T_CHECK(!fatal);
@@ -395,16 +395,16 @@ static void test_max_page_id_offset(void)
     const u32 ids[] = {0xFFFFFFFEu, 1};
     const u8 fills[] = {0x5E, 0x01};
     checkpoint_ok(&be, 1, ids, fills, 2);
-    T_EQ(page_byte(&be, 0xFFFFFFFEu), 0x5E);
-    T_EQ(page_byte(&be, 1), 0x01);
-    T_EQ(page_byte(&be, 0), 0);
+    T_EQ(page_byte(&be, ps_page_id_from(0xFFFFFFFEu)), 0x5E);
+    T_EQ(page_byte(&be, ps_page_id_from(1)), 0x01);
+    T_EQ(page_byte(&be, ps_page_id_from(0)), 0);
     T_EQ(file_size(DIR "/data"), (u64) 0xFFFFFFFFu * 4096 + 4096);
     be_close(&be);
     write_journal(2, 2, ids, (const u8[]) {0x6E, 0x02}, 2);
     T_OK(be_open(&be, false, &info));
     check_info(&info, PS, 1, 2, 2);
-    T_EQ(page_byte(&be, 0xFFFFFFFEu), 0x6E);
-    T_EQ(page_byte(&be, 1), 0x02);
+    T_EQ(page_byte(&be, ps_page_id_from(0xFFFFFFFEu)), 0x6E);
+    T_EQ(page_byte(&be, ps_page_id_from(1)), 0x02);
     T_EQ(file_size(DIR "/data"), (u64) 0xFFFFFFFFu * 4096 + 4096);
     be_close(&be);
     teardown();
@@ -421,7 +421,7 @@ static void test_journal_enospc_nonfatal(void)
     bool fatal = true;
     T_ERR(ckpt_b(&be, &fatal), ENOSPC);
     T_CHECK(!fatal);
-    T_EQ(page_byte(&be, 2), 0xA2);
+    T_EQ(page_byte(&be, ps_page_id_from(2)), 0xA2);
     be_close(&be);
 
     T_OK(be_open(&be, false, &info));
@@ -512,9 +512,9 @@ static void test_recovery_table(void)
         write_journal(jseq, 7, ids, fills, 2);
         T_OK(be_open(&be, false, &info));
         check_info(&info, PS, 1, jseq, 7);
-        T_EQ(page_byte(&be, 1), 0xA1);
-        T_EQ(page_byte(&be, 2), 0xC2);
-        T_EQ(page_byte(&be, 9), 0xC9);
+        T_EQ(page_byte(&be, ps_page_id_from(1)), 0xA1);
+        T_EQ(page_byte(&be, ps_page_id_from(2)), 0xC2);
+        T_EQ(page_byte(&be, ps_page_id_from(9)), 0xC9);
         T_EQ(file_size(DIR "/journal"), 0);
         be_close(&be);
         T_OK(be_open(&be, false, &info));
@@ -543,8 +543,8 @@ static void test_recovery_table(void)
     write_journal(0, 7, ids, fills, 2);
     T_OK(be_open(&be, false, &info));
     check_info(&info, PS, 1, 1, 1);
-    T_EQ(page_byte(&be, 2), 0xA2);
-    T_EQ(page_byte(&be, 9), 0);
+    T_EQ(page_byte(&be, ps_page_id_from(2)), 0xA2);
+    T_EQ(page_byte(&be, ps_page_id_from(9)), 0);
     /* Leave the stale journal in place for the next checkpoint. */
     T_OK(ckpt_b(&be, &fatal));
     be_close(&be);
@@ -566,8 +566,8 @@ static void test_recovery_table(void)
         }
         T_OK(be_open(&be, false, &info));
         check_info(&info, PS, 1, 1, 1);
-        T_EQ(page_byte(&be, 2), 0xA2);
-        T_EQ(page_byte(&be, 9), 0);
+        T_EQ(page_byte(&be, ps_page_id_from(2)), 0xA2);
+        T_EQ(page_byte(&be, ps_page_id_from(9)), 0);
         be_close(&be);
         teardown();
     }
@@ -578,8 +578,8 @@ static void test_recovery_table(void)
     T_OK(fault_vfs_corrupt(fv, DIR "/data", 3, 0x40));
     T_OK(be_open(&be, false, &info));
     check_info(&info, PS, 1, 2, 7);
-    T_EQ(page_byte(&be, 2), 0xC2);
-    T_EQ(page_byte(&be, 1), 0xA1);
+    T_EQ(page_byte(&be, ps_page_id_from(2)), 0xC2);
+    T_EQ(page_byte(&be, ps_page_id_from(1)), 0xA1);
     be_close(&be);
     T_OK(be_open(&be, false, &info));
     check_info(&info, PS, 1, 2, 7);
@@ -665,7 +665,7 @@ static bool crash_ckpt_run(u64 k, fault_mode mode, u64 seed)
     be_close(&be);
     T_OK(be_open(&be, false, &info));
     T_EQ(info.durable_lsn, 3);
-    T_EQ(page_byte(&be, 1), 0xD1);
+    T_EQ(page_byte(&be, ps_page_id_from(1)), 0xD1);
     be_close(&be);
     teardown();
     return true;
@@ -822,7 +822,7 @@ static void *reader_main(void *p)
     reader_arg *a = p;
     static u8 buf[PS];
     while (!atomic_load(&a->stop)) {
-        T_OK(a->be->read_page(a->be->ctx, 1, buf));
+        T_OK(a->be->read_page(a->be->ctx, ps_page_id_from(1), buf));
         T_EQ(buf[0], 0xA1);
         T_EQ(buf[PS - 1], 0xA1);
         a->reads++;

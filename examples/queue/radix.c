@@ -94,6 +94,17 @@ static void slot_put(u8 *n, u32 width, u64 i, u64 v)
     }
 }
 
+/* An inner node's child i, PS_PAGE_ID_NONE if it is missing. */
+static ps_page_id child_get(const u8 *n, u64 i)
+{
+    return ps_page_id_from((u32) slot_get(n, CHILD_WIDTH, i));
+}
+
+static void child_put(u8 *n, u64 i, ps_page_id child)
+{
+    slot_put(n, CHILD_WIDTH, i, child.raw);
+}
+
 /* ---- geometry ------------------------------------------------------------- */
 
 /* Indexes covered by a node at level, saturating at UINT64_MAX. */
@@ -126,7 +137,7 @@ int rx_init(rx_array *a, u32 page_size, u32 width)
     if ((width != 4 && width != 8) || page_size < NODE_SLOTS + 2 * 8) {
         return EINVAL;
     }
-    a->root = 0;
+    a->root = PS_PAGE_ID_NONE;
     a->height = 0;
     a->width = width;
     a->leaf_cap = (page_size - NODE_SLOTS) / width;
@@ -142,7 +153,7 @@ typedef struct src {
     ps_snapshot *snap;
 } src;
 
-static int src_read(const src *r, u32 id, const u8 **out)
+static int src_read(const src *r, ps_page_id id, const u8 **out)
 {
     const ps_page *p;
     const int rv = r->snap != NULL ? ps_snapshot_read(r->snap, id, &p) : ps_read(r->store, id, &p);
@@ -153,7 +164,7 @@ static int src_read(const src *r, u32 id, const u8 **out)
 }
 
 /* Snapshot reads unpin. Operation pins last until commit or abort. */
-static void src_done(const src *r, u32 id)
+static void src_done(const src *r, ps_page_id id)
 {
     if (r->snap != NULL) {
         ps_snapshot_unpin(r->snap, id);
@@ -169,7 +180,13 @@ static bool node_ok(const rx_array *a, const u8 *n, u32 level, u64 base)
 }
 
 /* Reads a node and checks that it is the one expected at level and base. */
-static int read_node(const rx_array *a, const src *r, u32 id, u32 level, u64 base, const u8 **out)
+static int read_node(
+    const rx_array *a,
+    const src *r,
+    ps_page_id id,
+    u32 level,
+    u64 base,
+    const u8 **out)
 {
     const u8 *n;
     const int rv = src_read(r, id, &n);
@@ -184,7 +201,7 @@ static int read_node(const rx_array *a, const src *r, u32 id, u32 level, u64 bas
     return 0;
 }
 
-static int new_node(const rx_array *a, ps_store *s, u32 level, u64 base, u32 *id, u8 **out)
+static int new_node(const rx_array *a, ps_store *s, u32 level, u64 base, ps_page_id *id, u8 **out)
 {
     ps_page *p;
     const int rv = ps_alloc(s, id, &p);
@@ -207,7 +224,7 @@ static int lookup(const rx_array *a, const src *r, u64 index, u64 *value)
     if (index >= tree_span(a)) {
         return ENOENT;
     }
-    u32 id = a->root;
+    ps_page_id id = a->root;
     u64 base = 0;
     for (u32 level = a->height - 1;; level--) {
         const u8 *n;
@@ -222,9 +239,9 @@ static int lookup(const rx_array *a, const src *r, u64 index, u64 *value)
         }
         const u64 cs = span(a, level - 1);
         const u64 i = (index - base) / cs;
-        const u32 child = (u32) slot_get(n, CHILD_WIDTH, i);
+        const ps_page_id child = child_get(n, i);
         src_done(r, id);
-        if (child == 0) {
+        if (ps_page_id_is_none(child)) {
             return ENOENT;
         }
         id = child;
@@ -248,7 +265,7 @@ int rx_get(const rx_array *a, ps_snapshot *snap, u64 index, u64 *value)
 static int grow(rx_array *a, ps_store *s, u64 index)
 {
     u8 *n;
-    if (a->root == 0) {
+    if (ps_page_id_is_none(a->root)) {
         u32 h = 1;
         while (index >= span(a, h - 1)) {
             h++;
@@ -266,12 +283,12 @@ static int grow(rx_array *a, ps_store *s, u64 index)
         if (a->height == RX_MAX_HEIGHT) {
             return EOVERFLOW;
         }
-        u32 id;
+        ps_page_id id;
         const int rv = new_node(a, s, a->height, 0, &id, &n);
         if (rv != 0) {
             return rv;
         }
-        put32(n + NODE_SLOTS, a->root);
+        child_put(n, 0, a->root);
         a->root = id;
         a->height++;
     }
@@ -288,7 +305,7 @@ int rx_set(rx_array *a, ps_store *s, u64 index, u64 value)
         return rv;
     }
     const src r = {s, NULL};
-    u32 id = a->root;
+    ps_page_id id = a->root;
     u64 base = 0;
     for (u32 level = a->height - 1; level > 0; level--) {
         const u8 *n;
@@ -298,8 +315,8 @@ int rx_set(rx_array *a, ps_store *s, u64 index, u64 value)
         }
         const u64 cs = span(a, level - 1);
         const u64 i = (index - base) / cs;
-        u32 child = (u32) slot_get(n, CHILD_WIDTH, i);
-        if (child == 0) {
+        ps_page_id child = child_get(n, i);
+        if (ps_page_id_is_none(child)) {
             ps_page *w;
             rv = ps_write(s, id, &w);
             u8 *c;
@@ -309,7 +326,7 @@ int rx_set(rx_array *a, ps_store *s, u64 index, u64 value)
             if (rv != 0) {
                 return rv;
             }
-            slot_put((u8 *) w, CHILD_WIDTH, i, child);
+            child_put((u8 *) w, i, child);
         }
         id = child;
         base += i * cs;
@@ -329,7 +346,7 @@ int rx_set(rx_array *a, ps_store *s, u64 index, u64 value)
 /* ---- trimming ------------------------------------------------------------- */
 
 /* Frees id and everything below it. Children below from are already gone. */
-static int free_tree(const rx_array *a, ps_store *s, u32 id, u32 level, u64 base, u64 from)
+static int free_tree(const rx_array *a, ps_store *s, ps_page_id id, u32 level, u64 base, u64 from)
 {
     if (level > 0) {
         const src r = {s, NULL};
@@ -340,8 +357,8 @@ static int free_tree(const rx_array *a, ps_store *s, u32 id, u32 level, u64 base
         }
         const u64 cs = span(a, level - 1);
         for (u64 i = first_child(base, cs, from); i < a->fanout; i++) {
-            const u32 child = (u32) slot_get(n, CHILD_WIDTH, i);
-            if (child != 0) {
+            const ps_page_id child = child_get(n, i);
+            if (!ps_page_id_is_none(child)) {
                 rv = free_tree(a, s, child, level - 1, base + i * cs, from);
                 if (rv != 0) {
                     return rv;
@@ -353,7 +370,14 @@ static int free_tree(const rx_array *a, ps_store *s, u32 id, u32 level, u64 base
 }
 
 /* Trims inside node id, whose range holds to strictly after its base. */
-static int trim_node(const rx_array *a, ps_store *s, u32 id, u32 level, u64 base, u64 from, u64 to)
+static int trim_node(
+    const rx_array *a,
+    ps_store *s,
+    ps_page_id id,
+    u32 level,
+    u64 base,
+    u64 from,
+    u64 to)
 {
     if (level == 0) {
         return 0;
@@ -368,8 +392,8 @@ static int trim_node(const rx_array *a, ps_store *s, u32 id, u32 level, u64 base
     const u64 last = (to - base) / cs; /* the child holding to */
     u8 *w = NULL;
     for (u64 i = first_child(base, cs, from); i < last; i++) {
-        const u32 child = (u32) slot_get(n, CHILD_WIDTH, i);
-        if (child == 0) {
+        const ps_page_id child = child_get(n, i);
+        if (ps_page_id_is_none(child)) {
             continue;
         }
         rv = free_tree(a, s, child, level - 1, base + i * cs, from);
@@ -382,24 +406,26 @@ static int trim_node(const rx_array *a, ps_store *s, u32 id, u32 level, u64 base
         if (rv != 0) {
             return rv;
         }
-        slot_put(w, CHILD_WIDTH, i, 0);
+        child_put(w, i, PS_PAGE_ID_NONE);
     }
     if ((to - base) % cs == 0) {
         return 0; /* child last starts at to, so all of it stays */
     }
-    const u32 child = (u32) slot_get(n, CHILD_WIDTH, last);
-    return child == 0 ? 0 : trim_node(a, s, child, level - 1, base + last * cs, from, to);
+    const ps_page_id child = child_get(n, last);
+    return ps_page_id_is_none(child) ?
+        0 :
+        trim_node(a, s, child, level - 1, base + last * cs, from, to);
 }
 
 int rx_trim(rx_array *a, ps_store *s, u64 from, u64 to)
 {
-    if (a->root == 0 || to <= from) {
+    if (ps_page_id_is_none(a->root) || to <= from) {
         return 0;
     }
     if (to >= tree_span(a)) {
         const int rv = free_tree(a, s, a->root, a->height - 1, 0, from);
         if (rv == 0) {
-            a->root = 0;
+            a->root = PS_PAGE_ID_NONE;
             a->height = 0;
         }
         return rv;
@@ -420,14 +446,14 @@ typedef struct check_state {
     usize msg_cap;
 } check_state;
 
-static int check_fail(check_state *c, u32 id, const char *fmt, ...) PS_PRINTF(3, 4);
+static int check_fail(check_state *c, ps_page_id id, const char *fmt, ...) PS_PRINTF(3, 4);
 
-static int check_fail(check_state *c, u32 id, const char *fmt, ...)
+static int check_fail(check_state *c, ps_page_id id, const char *fmt, ...)
 {
     if (c->msg_cap == 0) {
         return EBADMSG;
     }
-    const int n = snprintf(c->msg, c->msg_cap, "page %u: ", id);
+    const int n = snprintf(c->msg, c->msg_cap, "page %u: ", id.raw);
     if (n >= 0 && (usize) n < c->msg_cap) {
         va_list ap;
         va_start(ap, fmt);
@@ -437,7 +463,7 @@ static int check_fail(check_state *c, u32 id, const char *fmt, ...)
     return EBADMSG;
 }
 
-static int check_leaf(check_state *c, u32 id, u64 base)
+static int check_leaf(check_state *c, ps_page_id id, u64 base)
 {
     c->st->leaves++;
     if (c->lo >= c->hi) {
@@ -455,7 +481,7 @@ static int check_leaf(check_state *c, u32 id, u64 base)
     return 0;
 }
 
-static int check_node(check_state *c, u32 id, u32 level, u64 base)
+static int check_node(check_state *c, ps_page_id id, u32 level, u64 base)
 {
     const rx_array *a = c->a;
     const src r = {NULL, c->snap};
@@ -494,8 +520,8 @@ static int check_node(check_state *c, u32 id, u32 level, u64 base)
     c->st->inner++;
     const u64 cs = span(a, level - 1);
     for (u64 i = 0; i < a->fanout && rv == 0; i++) {
-        const u32 child = (u32) slot_get(n, CHILD_WIDTH, i);
-        if (child != 0) {
+        const ps_page_id child = child_get(n, i);
+        if (!ps_page_id_is_none(child)) {
             rv = check_node(c, child, level - 1, base + i * cs);
         }
     }
@@ -523,10 +549,10 @@ int rx_check(
         .msg = msg,
         .msg_cap = msg_cap,
     };
-    if ((a->root == 0) != (a->height == 0) || a->height > RX_MAX_HEIGHT) {
+    if (ps_page_id_is_none(a->root) != (a->height == 0) || a->height > RX_MAX_HEIGHT) {
         return check_fail(&c, a->root, "bad root for height %u", a->height);
     }
-    if (a->root != 0) {
+    if (!ps_page_id_is_none(a->root)) {
         const int rv = check_node(&c, a->root, a->height - 1, 0);
         if (rv != 0) {
             return rv;

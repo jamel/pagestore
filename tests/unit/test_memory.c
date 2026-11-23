@@ -61,25 +61,25 @@ static void begin(void)
 }
 
 /* Page contents: id and tag after the header, then a byte pattern from both. */
-static void stamp(ps_page *p, u32 id, u32 tag)
+static void stamp(ps_page *p, ps_page_id id, u32 tag)
 {
     u8 *b = (u8 *) p;
-    memcpy(b + HDR, &id, 4);
+    memcpy(b + HDR, &id.raw, 4);
     memcpy(b + HDR + 4, &tag, 4);
-    memset(b + HDR + 8, (int) ((id * 31u + tag) & 0xFFu), PS - HDR - 8);
+    memset(b + HDR + 8, (int) ((id.raw * 31u + tag) & 0xFFu), PS - HDR - 8);
 }
 
-static bool stamped(const ps_page *p, u32 id, u32 tag)
+static bool stamped(const ps_page *p, ps_page_id id, u32 tag)
 {
     const u8 *b = (const u8 *) p;
     u32 i = 0;
     u32 t = 0;
     memcpy(&i, b + HDR, 4);
     memcpy(&t, b + HDR + 4, 4);
-    if (i != id || t != tag || p->page_id != id || p->checksum != 0) {
+    if (i != id.raw || t != tag || !ps_page_id_eq(p->page_id, id) || p->checksum != 0) {
         return false;
     }
-    const u8 want = (u8) ((id * 31u + tag) & 0xFFu);
+    const u8 want = (u8) ((id.raw * 31u + tag) & 0xFFu);
     for (u32 k = HDR + 8; k < PS; k++) {
         if (b[k] != want) {
             return false;
@@ -88,16 +88,16 @@ static bool stamped(const ps_page *p, u32 id, u32 tag)
     return true;
 }
 
-static u32 alloc_stamped(u32 tag)
+static ps_page_id alloc_stamped(u32 tag)
 {
-    u32 id = 0;
+    ps_page_id id = PS_PAGE_ID_NONE;
     ps_page *p = NULL;
     T_OK(ps_alloc(s, &id, &p));
     stamp(p, id, tag);
     return id;
 }
 
-static void write_stamped(u32 id, u32 tag)
+static void write_stamped(ps_page_id id, u32 tag)
 {
     ps_page *p = NULL;
     T_OK(ps_write(s, id, &p));
@@ -111,7 +111,7 @@ static void make_pages(u32 n, u32 per)
     while (done < n) {
         begin();
         for (u32 i = 0; i < per && done < n; i++) {
-            T_EQ(alloc_stamped(1), done + 1);
+            T_EQ(alloc_stamped(1).raw, done + 1);
             done++;
         }
         ps_op_commit(s);
@@ -127,7 +127,7 @@ static ps_snapshot *snap_open(void)
     return sn;
 }
 
-static const ps_page *snap_get(ps_snapshot *sn, u32 id)
+static const ps_page *snap_get(ps_snapshot *sn, ps_page_id id)
 {
     const ps_page *p = NULL;
     T_OK(ps_snapshot_read(sn, id, &p));
@@ -136,7 +136,7 @@ static const ps_page *snap_get(ps_snapshot *sn, u32 id)
 }
 
 /* The version below the head must exist. It may have no frame. */
-static u32 under_head_frame(u32 id)
+static u32 under_head_frame(ps_page_id id)
 {
     ps_latch(s->pt, id);
     const ps_entry *e = ps_entry_find(s->pt, id);
@@ -176,16 +176,16 @@ static void test_op_pressure(void)
 
     /* A copy also holds the committed version under it, unless a ps_read pin counts it. */
     begin();
-    write_stamped(1, 2);
+    write_stamped(ps_page_id_from(1), 2);
     T_EQ(pressure().op_frames, 2);
     const ps_page *rp = NULL;
-    T_OK(ps_read(s, 2, &rp));
+    T_OK(ps_read(s, ps_page_id_from(2), &rp));
     T_EQ(pressure().op_frames, 3);
-    write_stamped(2, 2);
+    write_stamped(ps_page_id_from(2), 2);
     T_EQ(pressure().op_frames, 4);
-    T_OK(ps_read(s, 1, &rp)); /* the op's own copy */
-    T_OK(ps_read(s, 2, &rp));
-    write_stamped(1, 3);
+    T_OK(ps_read(s, ps_page_id_from(1), &rp)); /* the operation's own copy */
+    T_OK(ps_read(s, ps_page_id_from(2), &rp));
+    write_stamped(ps_page_id_from(1), 3);
     T_EQ(pressure().op_frames, 4);
     ps_op_abort(s);
     T_EQ(pressure().op_frames, 0);
@@ -202,14 +202,14 @@ static void test_op_too_big(void)
         alloc_stamped(1);
     }
     T_EQ(pressure().op_frames, LIMIT);
-    u32 id = 0;
+    ps_page_id id = PS_PAGE_ID_NONE;
     ps_page *p = NULL;
     T_ERR(ps_alloc(s, &id, &p), ENOBUFS);
     T_ERR(ps_alloc(s, &id, &p), ENOBUFS);
-    /* At the limit, the op's own pages still work. */
-    T_OK(ps_write(s, 1, &p));
+    /* At the limit, the operation's own pages still work. */
+    T_OK(ps_write(s, ps_page_id_from(1), &p));
     const ps_page *rp = NULL;
-    T_OK(ps_read(s, 2, &rp));
+    T_OK(ps_read(s, ps_page_id_from(2), &rp));
     T_EQ(pressure().op_frames, LIMIT);
     /* The operation limit should fail before eviction or snapshot cut-off. */
     T_EQ(stats().frames_free, st0.frames_free - LIMIT);
@@ -221,14 +221,14 @@ static void test_op_too_big(void)
     /* After ten read pins, copying an unread page needs two more frames. */
     begin();
     for (u32 i = 1; i <= LIMIT - 1; i++) {
-        T_OK(ps_read(s, i, &rp));
+        T_OK(ps_read(s, ps_page_id_from(i), &rp));
     }
-    T_ERR(ps_write(s, LIMIT, &p), ENOBUFS);
-    T_OK(ps_write(s, 1, &p)); /* pinned by the op already: just the copy */
+    T_ERR(ps_write(s, ps_page_id_from(LIMIT), &p), ENOBUFS);
+    T_OK(ps_write(s, ps_page_id_from(1), &p)); /* pinned by the operation already: just the copy */
     T_EQ(pressure().op_frames, LIMIT);
-    T_ERR(ps_read(s, LIMIT, &rp), ENOBUFS);
-    T_ERR(ps_write(s, 2, &p), ENOBUFS);
-    T_OK(ps_read(s, 2, &rp)); /* pinned already */
+    T_ERR(ps_read(s, ps_page_id_from(LIMIT), &rp), ENOBUFS);
+    T_ERR(ps_write(s, ps_page_id_from(2), &p), ENOBUFS);
+    T_OK(ps_read(s, ps_page_id_from(2), &rp)); /* pinned already */
     ps_op_abort(s);
     T_EQ(stats().frames_pinned, 0);
     close_store();
@@ -243,8 +243,8 @@ static void test_eviction_reuses_clean(void)
         begin();
         for (u32 k = 1; k <= 4; k++) {
             const ps_page *p = NULL;
-            T_OK(ps_read(s, i * 4 + k, &p));
-            T_CHECK(stamped(p, i * 4 + k, 1));
+            T_OK(ps_read(s, ps_page_id_from(i * 4 + k), &p));
+            T_CHECK(stamped(p, ps_page_id_from(i * 4 + k), 1));
         }
         ps_op_commit(s);
     }
@@ -263,7 +263,7 @@ static void test_dirty_not_evicted_eagain(void)
     for (; ops < 10 && rv == 0; ops++) {
         begin();
         for (u32 i = 0; i < 5 && rv == 0; i++) {
-            u32 id = 0;
+            ps_page_id id = PS_PAGE_ID_NONE;
             ps_page *p = NULL;
             rv = ps_alloc(s, &id, &p);
             if (rv == 0) {
@@ -286,7 +286,8 @@ static void test_dirty_not_evicted_eagain(void)
     ps_op_commit(s);
     T_EQ(stats().allocated_pages, 15);
     ps_snapshot *sn = snap_open();
-    for (u32 id = 1; id <= 15; id++) {
+    for (u32 i = 1; i <= 15; i++) {
+        const ps_page_id id = ps_page_id_from(i);
         T_CHECK(stamped(snap_get(sn, id), id, 1));
         ps_snapshot_unpin(sn, id);
     }
@@ -299,14 +300,14 @@ static void test_cutoff_under_pressure(void)
     open_store(FRAMES);
     make_pages(10, 10);
     ps_snapshot *sn = snap_open();
-    const ps_page *held = snap_get(sn, 1);
-    T_CHECK(stamped(held, 1, 1));
+    const ps_page *held = snap_get(sn, ps_page_id_from(1));
+    T_CHECK(stamped(held, ps_page_id_from(1), 1));
 
     u32 rounds = 0;
     for (; rounds < 10 && stats().snapshots_cut_off == 0; rounds++) {
         begin();
         for (u32 k = 1; k <= 5; k++) {
-            write_stamped((rounds % 2) * 5 + k, rounds + 2);
+            write_stamped(ps_page_id_from((rounds % 2) * 5 + k), rounds + 2);
         }
         ps_op_commit(s);
         T_OK(ps_checkpoint(s));
@@ -314,8 +315,8 @@ static void test_cutoff_under_pressure(void)
     T_EQ(stats().snapshots_cut_off, 1);
     T_EQ(rounds, 3); /* the third round needs the retired frames */
     const ps_page *p = NULL;
-    T_ERR(ps_snapshot_read(sn, 2, &p), ESTALE);
-    T_CHECK(stamped(held, 1, 1)); /* still pinned, still the old bytes */
+    T_ERR(ps_snapshot_read(sn, ps_page_id_from(2), &p), ESTALE);
+    T_CHECK(stamped(held, ps_page_id_from(1), 1)); /* still pinned, still the old bytes */
     ps_snapshot_close(sn);
     struct ps_stats st = stats();
     T_EQ(st.frames_retired, 0);
@@ -323,8 +324,9 @@ static void test_cutoff_under_pressure(void)
     T_EQ(st.snapshots_open, 0);
 
     ps_snapshot *s2 = snap_open();
-    for (u32 id = 1; id <= 10; id++) {
-        const u32 tag = id <= 5 ? 4 : 3;
+    for (u32 i = 1; i <= 10; i++) {
+        const ps_page_id id = ps_page_id_from(i);
+        const u32 tag = i <= 5 ? 4 : 3;
         T_CHECK(stamped(snap_get(s2, id), id, tag));
         ps_snapshot_unpin(s2, id);
     }
@@ -339,7 +341,8 @@ static void test_reader_never_cuts_off(void)
     ps_snapshot *sn = snap_open();
     /* Three retired versions for sn and three dirty copies. */
     begin();
-    for (u32 id = 1; id <= 3; id++) {
+    for (u32 i = 1; i <= 3; i++) {
+        const ps_page_id id = ps_page_id_from(i);
         write_stamped(id, 2);
     }
     ps_op_commit(s);
@@ -357,14 +360,15 @@ static void test_reader_never_cuts_off(void)
     T_EQ(st.snapshots_cut_off, 0);
 
     const ps_page *p = NULL;
-    T_ERR(ps_snapshot_read(sn, 4, &p), EAGAIN); /* evicted; dirty frames exist */
+    T_ERR(ps_snapshot_read(sn, ps_page_id_from(4), &p), EAGAIN); /* evicted; dirty frames exist */
     T_EQ(stats().snapshots_cut_off, 0);
-    T_CHECK(stamped(snap_get(sn, 1), 1, 1)); /* resident retired version, still alive */
-    ps_snapshot_unpin(sn, 1);
+    /* resident retired version, still alive */
+    T_CHECK(stamped(snap_get(sn, ps_page_id_from(1)), ps_page_id_from(1), 1));
+    ps_snapshot_unpin(sn, ps_page_id_from(1));
 
     alloc_stamped(1);
     T_EQ(stats().snapshots_cut_off, 1);
-    T_ERR(ps_snapshot_read(sn, 1, &p), ESTALE);
+    T_ERR(ps_snapshot_read(sn, ps_page_id_from(1), &p), ESTALE);
     ps_op_abort(s);
     ps_snapshot_close(sn);
     T_EQ(stats().frames_retired, 0);
@@ -377,11 +381,12 @@ static void test_reader_enobufs(void)
     open_store(FRAMES);
     make_pages(4, 4);
     ps_snapshot *sn = snap_open();
-    for (u32 id = 1; id <= 3; id++) {
+    for (u32 i = 1; i <= 3; i++) {
+        const ps_page_id id = ps_page_id_from(i);
         snap_get(sn, id);
     }
     begin();
-    write_stamped(4, 2);
+    write_stamped(ps_page_id_from(4), 2);
     ps_op_commit(s);
     T_OK(ps_checkpoint(s)); /* page 4's old version stays retired for sn */
     begin();
@@ -396,14 +401,14 @@ static void test_reader_enobufs(void)
 
     ps_snapshot *s2 = snap_open();
     const ps_page *p = NULL;
-    T_ERR(ps_snapshot_read(s2, 4, &p), ENOBUFS); /* page 4's head was evicted */
-    T_CHECK(stamped(snap_get(sn, 4), 4, 1));
+    T_ERR(ps_snapshot_read(s2, ps_page_id_from(4), &p), ENOBUFS); /* page 4's head was evicted */
+    T_CHECK(stamped(snap_get(sn, ps_page_id_from(4)), ps_page_id_from(4), 1));
     T_EQ(stats().snapshots_cut_off, 0);
     ps_snapshot_close(s2);
     ps_op_abort(s);
-    ps_snapshot_unpin(sn, 4);
+    ps_snapshot_unpin(sn, ps_page_id_from(4));
     s2 = snap_open();
-    T_CHECK(stamped(snap_get(s2, 4), 4, 2)); /* frames again */
+    T_CHECK(stamped(snap_get(s2, ps_page_id_from(4)), ps_page_id_from(4), 2)); /* frames again */
     ps_snapshot_close(s2);
     ps_snapshot_close(sn);
     close_store();
@@ -414,20 +419,21 @@ static void test_reload_after_evict(void)
     open_store(FRAMES);
     make_pages(30, LIMIT - 1);
     /* Check both forced eviction and reuse by CLOCK. */
-    T_CHECK(ps_test_evict(s, 30)); /* written last, so resident */
-    T_CHECK(!ps_test_has_entry(s, 30));
-    T_CHECK(!ps_test_evict(s, 30));
+    T_CHECK(ps_test_evict(s, ps_page_id_from(30))); /* written last, so resident */
+    T_CHECK(!ps_test_has_entry(s, ps_page_id_from(30)));
+    T_CHECK(!ps_test_evict(s, ps_page_id_from(30)));
     const struct ps_stats st0 = stats();
     ps_snapshot *sn = snap_open();
-    const ps_page *p = snap_get(sn, 30);
-    T_CHECK(stamped(p, 30, 1));
+    const ps_page *p = snap_get(sn, ps_page_id_from(30));
+    T_CHECK(stamped(p, ps_page_id_from(30), 1));
     T_EQ(p->checksum, 0);
-    T_EQ(p->lsn, ((const ps_page *) mb_page(mb, 30))->lsn);
-    T_MEMEQ((const u8 *) p + HDR, mb_page(mb, 30) + HDR, PS - HDR);
+    T_EQ(p->lsn, ((const ps_page *) mb_page(mb, ps_page_id_from(30)))->lsn);
+    T_MEMEQ((const u8 *) p + HDR, mb_page(mb, ps_page_id_from(30)) + HDR, PS - HDR);
     T_EQ(stats().cache_misses, st0.cache_misses + 1);
-    ps_snapshot_unpin(sn, 30);
+    ps_snapshot_unpin(sn, ps_page_id_from(30));
     for (u32 pass = 0; pass < 2; pass++) {
-        for (u32 id = 1; id <= 30; id++) {
+        for (u32 i = 1; i <= 30; i++) {
+            const ps_page_id id = ps_page_id_from(i);
             T_CHECK(stamped(snap_get(sn, id), id, 1));
             ps_snapshot_unpin(sn, id);
         }
@@ -444,23 +450,24 @@ static void test_evict_head_keeps_frameless(void)
     make_pages(1, 1);
     ps_snapshot *sn = snap_open();
     begin();
-    write_stamped(1, 2);
+    write_stamped(ps_page_id_from(1), 2);
     ps_op_commit(s);
     T_OK(ps_checkpoint(s));
-    T_EQ(ps_test_chain_len(s, 1), 2);
-    T_CHECK(ps_test_evict(s, 1));
-    T_EQ(ps_test_chain_len(s, 1), 2);
+    T_EQ(ps_test_chain_len(s, ps_page_id_from(1)), 2);
+    T_CHECK(ps_test_evict(s, ps_page_id_from(1)));
+    T_EQ(ps_test_chain_len(s, ps_page_id_from(1)), 2);
     T_EQ(stats().frames_retired, 1);
-    T_CHECK(stamped(snap_get(sn, 1), 1, 1)); /* the retired version, resident */
+    /* the retired version, resident */
+    T_CHECK(stamped(snap_get(sn, ps_page_id_from(1)), ps_page_id_from(1), 1));
     const u64 misses = stats().cache_misses;
     begin();
     const ps_page *p = NULL;
-    T_OK(ps_read(s, 1, &p)); /* the head is reloaded */
-    T_CHECK(stamped(p, 1, 2));
+    T_OK(ps_read(s, ps_page_id_from(1), &p)); /* the head is reloaded */
+    T_CHECK(stamped(p, ps_page_id_from(1), 2));
     T_EQ(stats().cache_misses, misses + 1);
     ps_op_commit(s);
     ps_snapshot_close(sn);
-    T_EQ(ps_test_chain_len(s, 1), 1);
+    T_EQ(ps_test_chain_len(s, ps_page_id_from(1)), 1);
     T_EQ(stats().frames_retired, 0);
     close_store();
 }
@@ -475,25 +482,25 @@ static void test_lone_frameless_dropped(void)
     make_pages(2, 2);
     ps_snapshot *sn = snap_open();
     begin();
-    write_stamped(1, 2);
+    write_stamped(ps_page_id_from(1), 2);
     ps_op_commit(s);
     T_OK(ps_checkpoint(s));
-    T_CHECK(ps_test_evict(s, 1));
-    T_EQ(ps_test_chain_len(s, 1), 2);
+    T_CHECK(ps_test_evict(s, ps_page_id_from(1)));
+    T_EQ(ps_test_chain_len(s, ps_page_id_from(1)), 2);
     ps_snapshot_close(sn); /* frees the retired version below the frameless head */
-    T_CHECK(!ps_test_has_entry(s, 1));
+    T_CHECK(!ps_test_has_entry(s, ps_page_id_from(1)));
 
     begin();
-    T_OK(ps_free(s, 2)); /* clean: its frame is released at once */
+    T_OK(ps_free(s, ps_page_id_from(2))); /* clean: its frame is released at once */
     ps_op_abort(s);
-    T_CHECK(!ps_test_has_entry(s, 2));
+    T_CHECK(!ps_test_has_entry(s, ps_page_id_from(2)));
 
     begin();
     const ps_page *p = NULL;
-    T_OK(ps_read(s, 1, &p));
-    T_CHECK(stamped(p, 1, 2));
-    T_OK(ps_read(s, 2, &p));
-    T_CHECK(stamped(p, 2, 1));
+    T_OK(ps_read(s, ps_page_id_from(1), &p));
+    T_CHECK(stamped(p, ps_page_id_from(1), 2));
+    T_OK(ps_read(s, ps_page_id_from(2), &p));
+    T_CHECK(stamped(p, ps_page_id_from(2), 1));
     ps_op_commit(s);
     close_store();
 }
@@ -528,7 +535,7 @@ static void test_no_cutoff_behind_checkpoint(void)
     open_store(FRAMES);
     make_pages(10, 10);
     begin();
-    write_stamped(10, 2);
+    write_stamped(ps_page_id_from(10), 2);
     ps_op_commit(s);
     mb_block_writes(mb, true);
     int crv = -1;
@@ -544,9 +551,9 @@ static void test_no_cutoff_behind_checkpoint(void)
         begin();
         for (u32 k = 1; k <= 5 && rv == 0; k++) {
             ps_page *p = NULL;
-            rv = ps_write(s, k + (round % 2) * 4, &p);
+            rv = ps_write(s, ps_page_id_from(k + (round % 2) * 4), &p);
             if (rv == 0) {
-                stamp(p, k + (round % 2) * 4, (u32) round + 3);
+                stamp(p, ps_page_id_from(k + (round % 2) * 4), (u32) round + 3);
             }
         }
         if (rv == 0) {
@@ -560,8 +567,8 @@ static void test_no_cutoff_behind_checkpoint(void)
     T_EQ(st.snapshots_cut_off, 0);
     T_CHECK(st.frames_retired > 0);
     const ps_page *p = NULL;
-    T_OK(ps_snapshot_read(s1, 10, &p)); /* still alive */
-    T_CHECK(stamped(p, 10, 2));
+    T_OK(ps_snapshot_read(s1, ps_page_id_from(10), &p)); /* still alive */
+    T_CHECK(stamped(p, ps_page_id_from(10), 2));
     mb_block_writes(mb, false);
     T_OK(pthread_join(t, NULL));
     T_OK(crv);
@@ -577,25 +584,26 @@ static void test_under_inop_not_evicted(void)
     make_pages(30, LIMIT - 1);
     ps_snapshot *sn = snap_open();
     begin();
-    write_stamped(1, 2);
-    const u32 base = under_head_frame(1);
+    write_stamped(ps_page_id_from(1), 2);
+    const u32 base = under_head_frame(ps_page_id_from(1));
     T_NE(base, PS_NO_FRAME);
-    T_CHECK(!ps_test_evict(s, 1));
+    T_CHECK(!ps_test_evict(s, ps_page_id_from(1)));
     /* Another reader cycles every other page through the cache. */
     ps_snapshot *r = snap_open();
     const u64 misses0 = stats().cache_misses;
     for (u32 pass = 0; pass < 3; pass++) {
-        for (u32 id = 2; id <= 30; id++) {
+        for (u32 i = 2; i <= 30; i++) {
+            const ps_page_id id = ps_page_id_from(i);
             T_CHECK(stamped(snap_get(r, id), id, 1));
             ps_snapshot_unpin(r, id);
         }
-        T_EQ(under_head_frame(1), base);
+        T_EQ(under_head_frame(ps_page_id_from(1)), base);
     }
     T_CHECK(stats().cache_misses - misses0 >= 3 * 15);
     ps_snapshot_close(r);
     ps_op_commit(s);
     const u64 misses = stats().cache_misses;
-    T_CHECK(stamped(snap_get(sn, 1), 1, 1));
+    T_CHECK(stamped(snap_get(sn, ps_page_id_from(1)), ps_page_id_from(1), 1));
     T_EQ(stats().cache_misses, misses); /* it never left */
     ps_snapshot_close(sn);
     close_store();
@@ -609,30 +617,31 @@ static void test_free_releases_clean_base(void)
     ps_snapshot *sn = snap_open();
     const u32 free0 = stats().frames_free;
     begin();
-    T_OK(ps_free(s, 1));
+    T_OK(ps_free(s, ps_page_id_from(1)));
     T_EQ(pressure().op_frames, 1); /* group 0's spare only */
     T_EQ(stats().frames_free, free0); /* -1 spare, +1 page 1's frame */
-    T_EQ(under_head_frame(1), PS_NO_FRAME);
+    T_EQ(under_head_frame(ps_page_id_from(1)), PS_NO_FRAME);
     /* A snapshot loads it; its last unpin drops the frame again. */
-    T_CHECK(stamped(snap_get(sn, 1), 1, 1));
+    T_CHECK(stamped(snap_get(sn, ps_page_id_from(1)), ps_page_id_from(1), 1));
     T_EQ(stats().frames_free, free0 - 1);
-    ps_snapshot_unpin(sn, 1);
+    ps_snapshot_unpin(sn, ps_page_id_from(1));
     T_EQ(stats().frames_free, free0);
     /* Free after write must return both the copy frame and the clean base frame. */
-    write_stamped(2, 2);
+    write_stamped(ps_page_id_from(2), 2);
     T_EQ(pressure().op_frames, 3);
-    T_OK(ps_free(s, 2));
+    T_OK(ps_free(s, ps_page_id_from(2)));
     T_EQ(pressure().op_frames, 1);
-    T_EQ(under_head_frame(2), PS_NO_FRAME);
+    T_EQ(under_head_frame(ps_page_id_from(2)), PS_NO_FRAME);
     /* Freed while a snapshot pins it: it keeps its frame until that unpin. */
-    T_CHECK(stamped(snap_get(sn, 3), 3, 1));
-    T_OK(ps_free(s, 3));
+    T_CHECK(stamped(snap_get(sn, ps_page_id_from(3)), ps_page_id_from(3), 1));
+    T_OK(ps_free(s, ps_page_id_from(3)));
     T_EQ(pressure().op_frames, 1);
-    T_NE(under_head_frame(3), PS_NO_FRAME);
-    ps_snapshot_unpin(sn, 3);
-    T_EQ(under_head_frame(3), PS_NO_FRAME);
+    T_NE(under_head_frame(ps_page_id_from(3)), PS_NO_FRAME);
+    ps_snapshot_unpin(sn, ps_page_id_from(3));
+    T_EQ(under_head_frame(ps_page_id_from(3)), PS_NO_FRAME);
     ps_op_commit(s);
-    for (u32 id = 1; id <= 3; id++) {
+    for (u32 i = 1; i <= 3; i++) {
+        const ps_page_id id = ps_page_id_from(i);
         T_CHECK(stamped(snap_get(sn, id), id, 1)); /* from the data file */
     }
     ps_snapshot_close(sn);
@@ -640,7 +649,7 @@ static void test_free_releases_clean_base(void)
     T_EQ(stats().allocated_pages, 0);
 
     begin();
-    u32 id = alloc_stamped(5);
+    ps_page_id id = alloc_stamped(5);
     ps_op_commit(s);
     T_OK(ps_checkpoint(s));
     begin();
@@ -660,7 +669,7 @@ static void test_chunked_job(void)
     u32 ops = 0;
     begin();
     for (u32 i = 1; i <= 1000; i++) {
-        T_EQ(alloc_stamped(7), i);
+        T_EQ(alloc_stamped(7).raw, i);
         const ps_pressure p = pressure();
         if (p.op_frames >= p.op_limit - 2) {
             ps_op_commit(s);
@@ -674,7 +683,8 @@ static void test_chunked_job(void)
     T_CHECK(ops >= 1000 / LIMIT);
     T_EQ(stats().allocated_pages, 1000);
     ps_snapshot *sn = snap_open();
-    for (u32 id = 1; id <= 1000; id++) {
+    for (u32 i = 1; i <= 1000; i++) {
+        const ps_page_id id = ps_page_id_from(i);
         T_CHECK(stamped(snap_get(sn, id), id, 7));
         ps_snapshot_unpin(sn, id);
     }
@@ -748,7 +758,7 @@ static void inject_full_groups(u32 ngroups)
         memset(buf, 0, PS);
         ps_page *p = (ps_page *) buf;
         p->magic = PS_BITMAP_MAGIC;
-        p->page_id = g * ps_group_size(PS);
+        p->page_id = ps_page_id_from(g * ps_group_size(PS));
         p->flags = PS_PAGE_FLAG_BITMAP;
         p->lsn = 9;
         memset(buf + HDR, 0xFF, PS - HDR);
@@ -779,7 +789,7 @@ static void test_group_limit(void)
     T_EQ(stats().num_groups, 20);
     T_EQ(pressure().op_limit, 4);
     begin();
-    u32 id = 0;
+    ps_page_id id = PS_PAGE_ID_NONE;
     ps_page *p = NULL;
     T_ERR(ps_alloc(s, &id, &p), ENOBUFS);
     T_EQ(atomic_load(&lc.group), 1);
@@ -820,7 +830,7 @@ static void *conc_reader_main(void *arg)
         T_OK(ps_snapshot_open(s, &sn));
         const u64 S = ps_snapshot_lsn(sn);
         for (u32 k = 0; k < 3; k++) {
-            const u32 id = 1 + (u32) rng_below(&g, CONC_PAGES);
+            const ps_page_id id = ps_page_id_from(1 + (u32) rng_below(&g, CONC_PAGES));
             const ps_page *p = NULL;
             const int rv = ps_snapshot_read(sn, id, &p);
             if (rv == ESTALE) {
@@ -861,7 +871,7 @@ static void test_concurrent_eviction(void)
             T_OK(ps_op_begin(s, lsn));
             int rv = 0;
             for (u32 k = 0; k < 3 && rv == 0; k++) {
-                const u32 id = 1 + (u32) rng_below(&g, CONC_PAGES);
+                const ps_page_id id = ps_page_id_from(1 + (u32) rng_below(&g, CONC_PAGES));
                 ps_page *p = NULL;
                 rv = ps_write(s, id, &p);
                 if (rv == 0) {

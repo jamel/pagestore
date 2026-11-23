@@ -80,6 +80,8 @@ static ps_pressure pressure(void)
 
 /* ---- page contents ---- */
 
+/* The test tracks pages by raw ID, which indexes its version tables. */
+
 static u64 fill_of(u32 id, u64 lsn)
 {
     u64 z = ((u64) id << 32) ^ (lsn * 0x9E3779B97F4A7C15ull);
@@ -98,7 +100,7 @@ static void stamp(ps_page *p, u32 id, u64 lsn)
 /* Validate the payload against its header LSN. The caller checks visibility. */
 static bool self_valid(const ps_page *p, u32 id)
 {
-    if (p->magic != MAGIC || p->page_id != id || p->checksum != 0 || p->flags != 0) {
+    if (p->magic != MAGIC || p->page_id.raw != id || p->checksum != 0 || p->flags != 0) {
         return false;
     }
     u8 want[CALLER];
@@ -125,9 +127,10 @@ static u64 op_lsn(void)
 
 static u32 alloc_page(void)
 {
-    u32 id = 0;
+    ps_page_id got = PS_PAGE_ID_NONE;
     ps_page *p = NULL;
-    T_OK(ps_alloc(s, &id, &p));
+    T_OK(ps_alloc(s, &got, &p));
+    const u32 id = got.raw;
     stamp(p, id, op_lsn());
     return id;
 }
@@ -135,7 +138,7 @@ static u32 alloc_page(void)
 static void write_page(u32 id)
 {
     ps_page *p = NULL;
-    T_OK(ps_write(s, id, &p));
+    T_OK(ps_write(s, ps_page_id_from(id), &p));
     stamp(p, id, op_lsn());
 }
 
@@ -174,9 +177,9 @@ static void check_all(const u64 *ver, u32 n)
             continue;
         }
         const ps_page *p = NULL;
-        T_OK(ps_snapshot_read(sn, id, &p));
+        T_OK(ps_snapshot_read(sn, ps_page_id_from(id), &p));
         T_CHECK(is_version(p, id, ver[id]));
-        ps_snapshot_unpin(sn, id);
+        ps_snapshot_unpin(sn, ps_page_id_from(id));
         live++;
     }
     ps_snapshot_close(sn);
@@ -243,7 +246,7 @@ static void test_long_snapshot_writer_never_stalls(void)
     u8 *copy = malloc((usize) LS_PINNED * PS);
     T_CHECK(copy != NULL);
     for (u32 i = 0; i < LS_PINNED; i++) {
-        T_OK(ps_snapshot_read(sn, i + 1, &held[i]));
+        T_OK(ps_snapshot_read(sn, ps_page_id_from(i + 1), &held[i]));
         T_CHECK(is_version(held[i], i + 1, at_s[i + 1]));
         memcpy(copy + (usize) i * PS, held[i], PS);
     }
@@ -269,7 +272,7 @@ static void test_long_snapshot_writer_never_stalls(void)
                 }
             }
             const ps_page *rp = NULL;
-            T_OK(ps_read(s, ids[i], &rp));
+            T_OK(ps_read(s, ps_page_id_from(ids[i]), &rp));
             T_CHECK(is_version(rp, ids[i], ver[ids[i]]));
             write_page(ids[i]);
         }
@@ -284,7 +287,7 @@ static void test_long_snapshot_writer_never_stalls(void)
             /* Read an unpinned ID to exercise lookup at the snapshot LSN. */
             const u32 id = LS_PINNED + 1 + (u32) rng_below(&g, LS_PAGES - LS_PINNED);
             const ps_page *p = NULL;
-            const int rv = ps_snapshot_read(sn, id, &p);
+            const int rv = ps_snapshot_read(sn, ps_page_id_from(id), &p);
             if (stale_at != 0) {
                 T_ERR(rv, ESTALE);
             } else if (rv == ESTALE) {
@@ -292,7 +295,7 @@ static void test_long_snapshot_writer_never_stalls(void)
             } else if (rv != ENOBUFS) {
                 T_OK(rv);
                 T_CHECK(is_version(p, id, at_s[id]));
-                ps_snapshot_unpin(sn, id);
+                ps_snapshot_unpin(sn, ps_page_id_from(id));
                 sreads++;
             }
         }
@@ -303,8 +306,8 @@ static void test_long_snapshot_writer_never_stalls(void)
     T_EQ(st.snapshots_cut_off, 1);
     T_CHECK(st.checkpoints_run > 1);
     const ps_page *p = NULL;
-    T_ERR(ps_snapshot_read(sn, LS_PAGES, &p), ESTALE);
-    T_ERR(ps_snapshot_read(sn, 1, &p), ESTALE); /* even a pinned id */
+    T_ERR(ps_snapshot_read(sn, ps_page_id_from(LS_PAGES), &p), ESTALE);
+    T_ERR(ps_snapshot_read(sn, ps_page_id_from(1), &p), ESTALE); /* even a pinned id */
     for (u32 i = 0; i < LS_PINNED; i++) {
         T_MEMEQ(held[i], copy + (usize) i * PS, PS);
     }
@@ -316,7 +319,7 @@ static void test_long_snapshot_writer_never_stalls(void)
         (unsigned long long) stale_at,
         (unsigned long long) sreads);
     T_CHECK(stale_at != 0);
-    ps_snapshot_unpin(sn, 1);
+    ps_snapshot_unpin(sn, ps_page_id_from(1));
     ps_snapshot_close(sn);
     free(copy);
 
@@ -350,7 +353,7 @@ static void co_open(co_snap *c, const u64 *ver, rng *g)
     memcpy(c->at, ver, sizeof(c->at));
     c->pinned = 1 + (u32) rng_below(g, LS_PAGES);
     c->dead = false;
-    T_OK(ps_snapshot_read(c->sn, c->pinned, &c->held));
+    T_OK(ps_snapshot_read(c->sn, ps_page_id_from(c->pinned), &c->held));
     T_CHECK(is_version(c->held, c->pinned, c->at[c->pinned]));
     memcpy(c->copy, c->held, PS);
 }
@@ -389,7 +392,7 @@ static void test_cutoff_oldest_first(void)
                 id = id % LS_PAGES + 1;
             }
             const ps_page *p = NULL;
-            const int rv = ps_snapshot_read(c[i].sn, id, &p);
+            const int rv = ps_snapshot_read(c[i].sn, ps_page_id_from(id), &p);
             if (rv == ESTALE) {
                 T_CHECK(!live_seen);
                 if (!c[i].dead) {
@@ -405,7 +408,7 @@ static void test_cutoff_oldest_first(void)
             }
             T_OK(rv);
             T_CHECK(is_version(p, id, c[i].at[id]));
-            ps_snapshot_unpin(c[i].sn, id);
+            ps_snapshot_unpin(c[i].sn, ps_page_id_from(id));
         }
         /* Closing the oldest live snapshot occasionally makes room for new ones. */
         u32 drop = 0;
@@ -473,7 +476,7 @@ static void *pl_reader_main(void *arg)
         for (u32 k = 0; k < 2 * PL_CAP; k++) {
             const u32 id = 1 + (u32) rng_below(&g, PL_LIVE);
             const ps_page *p = NULL;
-            const int rv = ps_snapshot_read(sn, id, &p);
+            const int rv = ps_snapshot_read(sn, ps_page_id_from(id), &p);
             if (rv == ENOBUFS) {
                 r->enobufs++;
                 break;
@@ -506,11 +509,11 @@ static void test_pin_limits(void)
     T_OK(ps_snapshot_open(s, &s1));
     const ps_page *h1[PL_CAP];
     for (u32 i = 0; i < PL_CAP; i++) {
-        T_OK(ps_snapshot_read(s1, i + 1, &h1[i]));
+        T_OK(ps_snapshot_read(s1, ps_page_id_from(i + 1), &h1[i]));
     }
     const ps_page *p = NULL;
-    T_ERR(ps_snapshot_read(s1, PL_CAP + 1, &p), ENOBUFS);
-    T_OK(ps_snapshot_read(s1, 1, &p));
+    T_ERR(ps_snapshot_read(s1, ps_page_id_from(PL_CAP + 1), &p), ENOBUFS);
+    T_OK(ps_snapshot_read(s1, ps_page_id_from(1), &p));
     T_CHECK(p == h1[0]);
     T_EQ(stats().frames_pinned, PL_CAP);
 
@@ -518,16 +521,17 @@ static void test_pin_limits(void)
     T_OK(ps_snapshot_open(s, &s2));
     const ps_page *h2[PL_CAP];
     for (u32 i = 0; i < PL_CAP; i++) {
-        T_OK(ps_snapshot_read(s2, PL_CAP + 1 + i, &h2[i]));
+        T_OK(ps_snapshot_read(s2, ps_page_id_from(PL_CAP + 1 + i), &h2[i]));
     }
     T_OK(ps_snapshot_open(s, &s3));
-    T_ERR(ps_snapshot_read(s3, 2 * PL_CAP + 1, &p), ENOBUFS);
-    T_ERR(ps_snapshot_read(s3, 1, &p), ENOBUFS); /* Sharing a page still needs a pin. */
+    T_ERR(ps_snapshot_read(s3, ps_page_id_from(2 * PL_CAP + 1), &p), ENOBUFS);
+    /* Sharing a page still needs a pin. */
+    T_ERR(ps_snapshot_read(s3, ps_page_id_from(1), &p), ENOBUFS);
     T_EQ(stats().frames_pinned, 2 * PL_CAP);
-    ps_snapshot_unpin(s1, 1);
-    T_OK(ps_snapshot_read(s3, 2 * PL_CAP + 1, &p));
+    ps_snapshot_unpin(s1, ps_page_id_from(1));
+    T_OK(ps_snapshot_read(s3, ps_page_id_from(2 * PL_CAP + 1), &p));
     T_CHECK(is_version(p, 2 * PL_CAP + 1, ver[2 * PL_CAP + 1]));
-    T_ERR(ps_snapshot_read(s1, 1, &p), ENOBUFS);
+    T_ERR(ps_snapshot_read(s1, ps_page_id_from(1), &p), ENOBUFS);
 
     u8 *copy = malloc((usize) 2 * PL_CAP * PS);
     T_CHECK(copy != NULL);
@@ -633,14 +637,14 @@ static void test_op_bigger_than_cache(void)
     u32 n = 0;
     int rv = 0;
     for (;;) {
-        u32 id = 0;
+        ps_page_id id = PS_PAGE_ID_NONE;
         ps_page *p = NULL;
         rv = ps_alloc(s, &id, &p);
         if (rv != 0) {
             break;
         }
-        T_EQ(id, BIG_DIRTY + 1 + n);
-        stamp(p, id, op_lsn());
+        T_EQ(id.raw, BIG_DIRTY + 1 + n);
+        stamp(p, id.raw, op_lsn());
         n++;
         T_CHECK(n <= LIMIT);
     }
@@ -661,7 +665,7 @@ static void test_op_bigger_than_cache(void)
     u32 written = 0;
     for (u32 id = 1; id <= BIG_DIRTY; id++) {
         ps_page *p = NULL;
-        rv = ps_write(s, id, &p);
+        rv = ps_write(s, ps_page_id_from(id), &p);
         if (rv != 0) {
             break;
         }
@@ -721,7 +725,7 @@ static void test_chunked_job(void)
             }
             chunks += chunk(2) ? 1 : 0;
             if (r == 0 && id % 3 == 0) {
-                T_OK(ps_free(s, id));
+                T_OK(ps_free(s, ps_page_id_from(id)));
                 ver[id] = 0;
             } else {
                 write_page(id);
@@ -772,10 +776,10 @@ static void test_group_growth_full(void)
     T_EQ(stats().num_groups, 2);
     check_all(ver, G + 1);
     T_EQ(mb_info(mb).num_groups, 2);
-    const ps_page *g1 = (const ps_page *) mb_page(mb, G);
+    const ps_page *g1 = (const ps_page *) mb_page(mb, ps_page_id_from(G));
     T_CHECK(g1 != NULL);
     T_EQ(g1->flags, PS_PAGE_FLAG_BITMAP);
-    T_EQ(g1->page_id, G);
+    T_EQ(g1->page_id.raw, G);
     T_EQ(((const u8 *) g1)[HDR], 0x03); /* the bitmap page itself and G + 1 */
 
     reopen(&cfg);

@@ -84,24 +84,25 @@ static void fx_begin(fx *f)
     ps_allocator_op_begin(f->a);
 }
 
+/* The fx_ helpers take and return raw IDs, so tests can compute them. */
 static u32 fx_next(fx *f)
 {
-    u32 id = 0;
+    ps_page_id id = PS_PAGE_ID_NONE;
     T_OK(ps_allocator_next(f->a, fake_get, &f->ctx, &id, &f->last_new));
-    return id;
+    return id.raw;
 }
 
 static bool fx_free(fx *f, u32 id)
 {
     bool cancelled = false;
-    T_OK(ps_allocator_free(f->a, fake_get, &f->ctx, id, &cancelled));
+    T_OK(ps_allocator_free(f->a, fake_get, &f->ctx, ps_page_id_from(id), &cancelled));
     return cancelled;
 }
 
 static int fx_free_err(fx *f, u32 id)
 {
     bool cancelled = false;
-    return ps_allocator_free(f->a, fake_get, &f->ctx, id, &cancelled);
+    return ps_allocator_free(f->a, fake_get, &f->ctx, ps_page_id_from(id), &cancelled);
 }
 
 /* Apply changes to the fixture bitmaps before committing allocator state. */
@@ -354,10 +355,10 @@ static void test_get_error(void)
 
     fx_begin(&f);
     f.ctx.fail = EIO;
-    u32 id = 0;
+    ps_page_id id = PS_PAGE_ID_NONE;
     bool flag = false;
     T_ERR(ps_allocator_next(f.a, fake_get, &f.ctx, &id, &flag), EIO);
-    T_ERR(ps_allocator_free(f.a, fake_get, &f.ctx, 1, &flag), EIO);
+    T_ERR(ps_allocator_free(f.a, fake_get, &f.ctx, ps_page_id_from(1), &flag), EIO);
     const u32 *groups = NULL;
     T_EQ(ps_allocator_op_groups(f.a, &groups), 0);
     f.ctx.fail = 0;
@@ -495,11 +496,11 @@ static void test_last_group_tail(void)
     T_EQ(ps_allocator_num_groups(f.a), mg);
 
     fx_begin(&f);
-    u32 id = 0;
+    ps_page_id id = PS_PAGE_ID_NONE;
     for (u32 i = 0; i < tail - 1; i++) {
-        id = fx_next(&f);
+        id = ps_page_id_from(fx_next(&f));
     }
-    T_EQ(id, UINT32_MAX - 1);
+    T_EQ(id.raw, UINT32_MAX - 1);
     bool nw = false;
     T_ERR(ps_allocator_next(f.a, fake_get, &f.ctx, &id, &nw), ENOSPC);
     fx_commit(&f);
@@ -534,7 +535,7 @@ static void test_enospc(void)
     T_EQ(ps_allocator_num_groups(f.a), 8196);
 
     fx_begin(&f);
-    u32 id = 0;
+    ps_page_id id = PS_PAGE_ID_NONE;
     bool nw = false;
     T_ERR(ps_allocator_next(f.a, fake_get, &f.ctx, &id, &nw), ENOSPC);
     const u32 *groups = NULL;

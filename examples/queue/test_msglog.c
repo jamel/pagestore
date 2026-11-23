@@ -185,7 +185,7 @@ static void test_radix_sparse(void)
     fx_begin(&f);
     T_OK(rx_trim(&a, f.s, far, UINT64_MAX));
     ps_op_commit(f.s);
-    T_EQ(a.root, 0);
+    T_CHECK(ps_page_id_is_none(a.root));
     T_EQ(a.height, 0);
     T_EQ(allocated(&f), 0);
     fx_begin(&f);
@@ -351,7 +351,7 @@ static void expect_msg(const u8 *buf, u64 seq, u32 len)
 /* Creates a log in its own operation. */
 static void log_create(fixture *f, u64 cap, ml_log *l)
 {
-    u32 meta;
+    ps_page_id meta;
     fx_begin(f);
     T_OK(ml_create(f->s, cap, &meta));
     ps_op_commit(f->s);
@@ -378,7 +378,7 @@ static void test_log_basic(void)
     fixture f = fx_new(256);
     ml_log l;
     fx_begin(&f);
-    u32 meta;
+    ps_page_id meta;
     T_ERR(ml_create(f.s, 0, &meta), EINVAL);
     ps_op_abort(f.s);
     log_create(&f, 100, &l);
@@ -745,7 +745,7 @@ static void test_log_snapshot(void)
 }
 
 /* Reads a u32 field of a committed page. The tests know the page layouts. */
-static u32 page_u32(fixture *f, u32 id, u32 off)
+static u32 page_u32(fixture *f, ps_page_id id, u32 off)
 {
     ps_snapshot *snap;
     T_OK(ps_snapshot_open(f->s, &snap));
@@ -755,6 +755,12 @@ static u32 page_u32(fixture *f, u32 id, u32 off)
     memcpy(&v, (const u8 *) p + off, sizeof(v));
     ps_snapshot_close(snap);
     return v;
+}
+
+/* Reads a page ID field of a committed page. */
+static ps_page_id page_id_at(fixture *f, ps_page_id id, u32 off)
+{
+    return ps_page_id_from(page_u32(f, id, off));
 }
 
 static void expect_damage(fixture *f, const ml_log *l, const char *what)
@@ -787,8 +793,8 @@ static void test_log_check_finds_damage(void)
     /* With 20 small messages, both radix arrays are a single leaf. */
     T_EQ(page_u32(&f, l.meta_id, 0x4C), 1);
     T_EQ(page_u32(&f, l.meta_id, 0x54), 1);
-    const u32 leaf = page_u32(&f, l.meta_id, 0x48);
-    const u32 data = page_u32(&f, page_u32(&f, l.meta_id, 0x50), 0x28);
+    const ps_page_id leaf = page_id_at(&f, l.meta_id, 0x48);
+    const ps_page_id data = page_id_at(&f, page_id_at(&f, l.meta_id, 0x50), 0x28);
 
     /* A data page that claims another logical page number. */
     ps_page *p;

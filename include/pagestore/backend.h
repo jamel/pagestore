@@ -39,11 +39,11 @@ typedef struct ps_backend {
      */
     int (*open)(ps_backend_ctx *ctx, bool create, u32 page_size, ps_backend_info *out);
     /* Fill one page-sized buffer. Zero-fill any part past EOF. */
-    int (*read_page)(ps_backend_ctx *ctx, u32 id, void *buf);
+    int (*read_page)(ps_backend_ctx *ctx, ps_page_id id, void *buf);
     /* The caller must write exactly count pages before committing. Zero is valid. */
     int (*ckpt_begin)(ps_backend_ctx *ctx, u64 lsn, u32 num_groups, u32 count);
     /* The caller sets the page checksum and can reuse the buffer after this call. */
-    int (*ckpt_write)(ps_backend_ctx *ctx, u32 id, const void *page);
+    int (*ckpt_write)(ps_backend_ctx *ctx, ps_page_id id, const void *page);
     /*
      * A successful return means the checkpoint is durable. On error, a
      * true *fatal means reopen to recover. Otherwise abort before retrying.

@@ -40,7 +40,7 @@
  * Page 0 holds the allocator bitmap, so a new store's first tree lands on
  * page 1. kv checks this when it creates the tree.
  */
-#define KV_META_ID 1u
+#define KV_META_ID PS_LITERAL(ps_page_id, 1)
 
 #define REC_CREATE 1u
 #define REC_PUT 2u
@@ -121,10 +121,14 @@ static int apply_record(bt_tree *t, const u8 *rec, usize len)
         return EBADMSG;
     }
     if (rec[0] == REC_CREATE && len == 1) {
-        u32 meta;
+        ps_page_id meta;
         const int rv = bt_create(t->store, &meta);
-        if (rv == 0 && meta != t->meta_id) {
-            fprintf(stderr, "kv: the new tree's meta page is %u, not %u\n", meta, t->meta_id);
+        if (rv == 0 && !ps_page_id_eq(meta, t->meta_id)) {
+            fprintf(
+                stderr,
+                "kv: the new tree's meta page is %u, not %u\n",
+                meta.raw,
+                t->meta_id.raw);
             return EEXIST;
         }
         return rv;

@@ -71,7 +71,7 @@ static void fill_page(u64 seed, ps_page *p, u32 id, u64 lsn)
 /* The page must be the version of id written at lsn, byte for byte. */
 static void check_page(u64 seed, const ps_page *p, u32 id, u64 lsn)
 {
-    T_EQ(p->page_id, id);
+    T_EQ(p->page_id.raw, id);
     T_EQ(p->lsn, lsn);
     T_EQ(p->magic, MAGIC);
     T_EQ(p->flags, 0);
@@ -115,7 +115,7 @@ typedef struct stress {
     atomic_bool stop;
     /* Written before ps_op_commit, so a snapshot at the new LSN finds its versions. */
     pthread_rwlock_t mu;
-    hist ids[ID_MAX];
+    hist ids[ID_MAX]; /* indexed by raw page ID, like the writer's tables */
     _Atomic u32 id_end; /* One past the highest ID seen. */
     _Atomic u64 stale; /* ESTALE results seen by the readers */
 } stress;
@@ -261,12 +261,12 @@ static void *reader_main(void *arg)
                 }
             }
             const ps_page *p = NULL;
-            const int rv = ps_snapshot_read(sn, id, &p);
+            const int rv = ps_snapshot_read(sn, ps_page_id_from(id), &p);
             if (rv == ESTALE) {
                 r->stale++;
                 atomic_fetch_add(&st->stale, 1);
                 check_held(st, held, nheld);
-                T_ERR(ps_snapshot_read(sn, id, &p), ESTALE);
+                T_ERR(ps_snapshot_read(sn, ps_page_id_from(id), &p), ESTALE);
                 break;
             }
             if (rv == ENOBUFS) {
@@ -294,7 +294,7 @@ static void *reader_main(void *arg)
             if (nheld >= 4 && rng_below(&g, 3) == 0) {
                 const u32 i = (u32) rng_below(&g, nheld);
                 check_page(st->seed, held[i].p, held[i].id, held[i].lsn);
-                ps_snapshot_unpin(sn, held[i].id);
+                ps_snapshot_unpin(sn, ps_page_id_from(held[i].id));
                 held[i] = held[--nheld];
             }
         }
@@ -390,9 +390,10 @@ static void writer_op(writer *w)
     for (u32 k = 0; k < n; k++) {
         const u64 roll = rng_below(&w->g, 10);
         if (nlive < LIVE_MAX && (roll < 4 || w->nlive == 0)) {
-            u32 id = 0;
+            ps_page_id got = PS_PAGE_ID_NONE;
             ps_page *p = NULL;
-            T_OK(ps_alloc(s, &id, &p));
+            T_OK(ps_alloc(s, &got, &p));
+            const u32 id = got.raw;
             const u32 want = next_alloc_id(w, cursor);
             T_EQ(id, want);
             cursor = id;
@@ -408,7 +409,7 @@ static void writer_op(writer *w)
             continue;
         }
         if (roll < 6) {
-            T_OK(ps_free(s, id));
+            T_OK(ps_free(s, ps_page_id_from(id)));
             c[nc].id = id;
             c[nc].freed = true;
             nc++;
@@ -418,10 +419,10 @@ static void writer_op(writer *w)
         u64 cur = 0;
         T_CHECK(hist_lookup(st, id, w->last_committed, &cur));
         const ps_page *old = NULL;
-        T_OK(ps_read(s, id, &old));
+        T_OK(ps_read(s, ps_page_id_from(id), &old));
         check_page(st->seed, old, id, cur);
         ps_page *p = NULL;
-        T_OK(ps_write(s, id, &p));
+        T_OK(ps_write(s, ps_page_id_from(id), &p));
         T_CHECK(p != old);
         T_MEMEQ((const u8 *) p + HDR, (const u8 *) old + HDR, PS - HDR);
         fill_page(st->seed, p, id, lsn);
@@ -475,9 +476,9 @@ static void check_final(stress *st, writer *w, ps_store *s)
             continue;
         }
         const ps_page *p = NULL;
-        T_OK(ps_snapshot_read(sn, id, &p));
+        T_OK(ps_snapshot_read(sn, ps_page_id_from(id), &p));
         check_page(st->seed, p, id, want);
-        ps_snapshot_unpin(sn, id);
+        ps_snapshot_unpin(sn, ps_page_id_from(id));
         n++;
     }
     ps_snapshot_close(sn);
@@ -599,10 +600,10 @@ static void test_writer_readers_checkpoint(void)
     s = st->s;
     check_final(st, w, s);
     T_OK(ps_op_begin(s, w->next_lsn));
-    u32 id = 0;
+    ps_page_id id = PS_PAGE_ID_NONE;
     ps_page *p = NULL;
     T_OK(ps_alloc(s, &id, &p));
-    T_EQ(id, next_alloc_id(w, 0));
+    T_EQ(id.raw, next_alloc_id(w, 0));
     ps_op_abort(s);
     ps_close(s);
 

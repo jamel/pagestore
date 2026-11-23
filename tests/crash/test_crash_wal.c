@@ -743,14 +743,14 @@ static u64 check(wcase *c, fault_mode mode, rcrash rc, u64 q, bool *rc_crashed)
     exp_truncate(c, X);
     w_check_store(c->s, c->m);
 
-    u32 want[NEXT_ALLOCS];
+    ps_page_id want[NEXT_ALLOCS];
     model_next_ids(c->m, NEXT_ALLOCS, want);
     CASE_OK(c, ps_op_begin(c->s, X + 1));
     for (u32 i = 0; i < NEXT_ALLOCS; i++) {
-        u32 id = 0;
+        ps_page_id id = PS_PAGE_ID_NONE;
         ps_page *p = NULL;
         CASE_OK(c, ps_alloc(c->s, &id, &p));
-        CASE_CHECK(c, id == want[i]);
+        CASE_CHECK(c, ps_page_id_eq(id, want[i]));
     }
     ps_op_abort(c->s);
     c->max_flushed = X;

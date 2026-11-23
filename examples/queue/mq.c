@@ -46,7 +46,7 @@
  * fixed one. In a new store page 0 holds the allocator's bitmap, so the
  * first allocation gets page 1. Creating the log checks this.
  */
-#define MQ_META_ID 1u
+#define MQ_META_ID PS_LITERAL(ps_page_id, 1)
 
 #define REC_CREATE 1u
 #define REC_PUSH 2u
@@ -239,9 +239,9 @@ static int apply(mq *q, const u8 *rec, usize len, u64 *first)
             if (len != REC_CREATE_SIZE) {
                 return EBADMSG;
             }
-            u32 meta;
+            ps_page_id meta;
             const int rv = ml_create(q->store, get64(rec + 1), &meta);
-            return rv == 0 && meta != q->log.meta_id ? EEXIST : rv;
+            return rv == 0 && !ps_page_id_eq(meta, q->log.meta_id) ? EEXIST : rv;
         }
         case REC_PUSH:
             return apply_push(q, rec, len, first);

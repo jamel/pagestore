@@ -74,9 +74,9 @@ static void test_alloc_release(void)
     T_ERR(ps_frames_alloc(fp, &extra), ENOBUFS);
 
     struct ps_vnode v = {1};
-    ps_frames_set_owner(fp, f[7], &v, 42);
+    ps_frames_set_owner(fp, f[7], &v, ps_page_id_from(42));
     T_CHECK(ps_frames_owner(fp, f[7]) == &v);
-    T_EQ(ps_frames_owner_id(fp, f[7]), 42);
+    T_EQ(ps_frames_owner_id(fp, f[7]).raw, 42);
     ps_frames_set_evictable(fp, f[7], true);
     ps_frames_touch(fp, f[7]);
     T_EQ(ps_frames_evictable_count(fp), 1);
@@ -84,19 +84,19 @@ static void test_alloc_release(void)
     T_EQ(ps_frames_free_count(fp), 1);
     T_EQ(ps_frames_evictable_count(fp), 0);
     T_CHECK(ps_frames_owner(fp, f[7]) == NULL);
-    T_EQ(ps_frames_owner_id(fp, f[7]), PS_FRAMES_NO_OWNER);
+    T_EQ(ps_frames_owner_id(fp, f[7]).raw, PS_FRAMES_NO_OWNER.raw);
 
     T_OK(ps_frames_alloc(fp, &extra));
     T_EQ(extra, f[7]);
     T_CHECK(ps_frames_owner(fp, extra) == NULL);
     T_EQ(ps_frames_free_count(fp), 0);
 
-    ps_frames_set_owner(fp, f[3], &v, 7);
+    ps_frames_set_owner(fp, f[3], &v, ps_page_id_from(7));
     ps_frames_set_evictable(fp, f[3], true);
     ps_frames_touch(fp, f[3]);
     ps_frames_detach(fp, f[3]);
     T_CHECK(ps_frames_owner(fp, f[3]) == NULL);
-    T_EQ(ps_frames_owner_id(fp, f[3]), PS_FRAMES_NO_OWNER);
+    T_EQ(ps_frames_owner_id(fp, f[3]).raw, PS_FRAMES_NO_OWNER.raw);
     T_EQ(ps_frames_evictable_count(fp), 0);
     T_EQ(ps_frames_free_count(fp), 0);
 
@@ -190,7 +190,7 @@ static void *conc_worker(void *p)
     for (u32 i = 0; i < CONC_ITERS; i++) {
         u32 f = 0;
         if (n < 4 && ps_frames_alloc(a->fp, &f) == 0) {
-            ps_frames_set_owner(a->fp, f, &a->tag, 1);
+            ps_frames_set_owner(a->fp, f, &a->tag, ps_page_id_from(1));
             *(u32 *) ps_frame(a->fp, f) = i;
             held[n++] = f;
         }

@@ -35,12 +35,12 @@ void ps_frames_detach(ps_frames *fp, u32 f);
 u32 ps_frames_free_count(const ps_frames *fp);
 
 /* ps_frames_owner_id of a free, detached or not yet owned frame. */
-#define PS_FRAMES_NO_OWNER UINT32_MAX
+#define PS_FRAMES_NO_OWNER PS_LITERAL(ps_page_id, UINT32_MAX)
 
-void ps_frames_set_owner(ps_frames *fp, u32 f, struct ps_vnode *owner, u32 id);
+void ps_frames_set_owner(ps_frames *fp, u32 f, struct ps_vnode *owner, ps_page_id id);
 struct ps_vnode *ps_frames_owner(const ps_frames *fp, u32 f);
 /* Page id of the owner, or PS_FRAMES_NO_OWNER. */
-u32 ps_frames_owner_id(const ps_frames *fp, u32 f);
+ps_page_id ps_frames_owner_id(const ps_frames *fp, u32 f);
 
 /* Setting the same value again leaves the evictable count alone. */
 void ps_frames_set_evictable(ps_frames *fp, u32 f, bool on);

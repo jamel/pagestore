@@ -31,6 +31,16 @@
 #define PS_STATIC_ASSERT(cond, msg) _Static_assert(cond, msg)
 #endif
 
+/* A struct value in an expression, such as PS_LITERAL(ps_page_id, 0). */
+#ifdef __cplusplus
+#define PS_LITERAL(type, ...) (type{__VA_ARGS__})
+#else
+#define PS_LITERAL(type, ...) ((type) {__VA_ARGS__})
+#endif
+
+/* Keeps clang quiet about a macro-generated function that a file never calls. */
+#define PS_MAYBE_UNUSED __attribute__((unused))
+
 /* In void report(int level, const char *fmt, ...), use PS_PRINTF(2, 3). */
 #define PS_PRINTF(fmt, args) __attribute__((format(printf, fmt, args)))
 

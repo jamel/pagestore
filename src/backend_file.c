@@ -124,9 +124,9 @@ static char *parent_of(const char *path)
 /* ---- small I/O helpers ---- */
 
 /* The first page-sized slot holds the data header. */
-static u64 page_off(u32 page_size, u32 id)
+static u64 page_off(u32 page_size, ps_page_id id)
 {
-    return ((u64) id + 1) * (u64) page_size;
+    return ((u64) id.raw + 1) * (u64) page_size;
 }
 
 /* Read exactly len bytes. A short read means EBADMSG here. */
@@ -175,12 +175,12 @@ static int apply_journal(ps_backend_ctx *c, const ps_journal_header *jh)
         }
         for (u32 j = 0; j < n; j++) {
             const u8 *e = c->buf + (usize) j * stride;
-            u32 id = 0;
+            ps_page_id id = PS_PAGE_ID_NONE;
             rv = ps_journal_entry_header_decode(e, &id);
             if (rv != 0) {
                 return rv;
             }
-            if (id == UINT32_MAX) {
+            if (id.raw == UINT32_MAX) {
                 return EBADMSG;
             }
             rv = c->vfs.pwrite(
@@ -446,10 +446,10 @@ static int fb_open(ps_backend_ctx *c, bool create, u32 page_size, ps_backend_inf
 
 /* ---- read ---- */
 
-static int fb_read_page(ps_backend_ctx *c, u32 id, void *buf)
+static int fb_read_page(ps_backend_ctx *c, ps_page_id id, void *buf)
 {
-    PS_ASSERT(c->opened && id != UINT32_MAX);
-    if (!c->opened || id == UINT32_MAX) {
+    PS_ASSERT(c->opened && id.raw != UINT32_MAX);
+    if (!c->opened || id.raw == UINT32_MAX) {
         return EINVAL;
     }
     usize got = 0;
@@ -533,10 +533,10 @@ static int fb_ckpt_begin(ps_backend_ctx *c, u64 lsn, u32 num_groups, u32 count)
     return 0;
 }
 
-static int fb_ckpt_write(ps_backend_ctx *c, u32 id, const void *page)
+static int fb_ckpt_write(ps_backend_ctx *c, ps_page_id id, const void *page)
 {
-    PS_ASSERT(c->state == FB_ACTIVE && c->written < c->jh.count && id != UINT32_MAX);
-    if (c->state != FB_ACTIVE || c->written >= c->jh.count || id == UINT32_MAX) {
+    PS_ASSERT(c->state == FB_ACTIVE && c->written < c->jh.count && id.raw != UINT32_MAX);
+    if (c->state != FB_ACTIVE || c->written >= c->jh.count || id.raw == UINT32_MAX) {
         return EINVAL;
     }
     const usize entry = (usize) PS_JOURNAL_ENTRY_HEADER_SIZE + c->page_size;

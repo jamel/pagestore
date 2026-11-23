@@ -58,38 +58,38 @@ static struct ps_stats stats(void)
     return st;
 }
 
-static u32 alloc_text(const char *text)
+static ps_page_id alloc_text(const char *text)
 {
-    u32 id = 0;
+    ps_page_id id = PS_PAGE_ID_NONE;
     ps_page *p = NULL;
     T_OK(ps_alloc(s, &id, &p));
     memcpy((u8 *) p + HDR, text, strlen(text) + 1);
     return id;
 }
 
-static u32 alloc_with(u64 lsn, const char *text)
+static ps_page_id alloc_with(u64 lsn, const char *text)
 {
     T_OK(ps_op_begin(s, lsn));
-    const u32 id = alloc_text(text);
+    const ps_page_id id = alloc_text(text);
     ps_op_commit(s);
     return id;
 }
 
-static void write_text(u32 id, const char *text)
+static void write_text(ps_page_id id, const char *text)
 {
     ps_page *p = NULL;
     T_OK(ps_write(s, id, &p));
     memcpy((u8 *) p + HDR, text, strlen(text) + 1);
 }
 
-static void write_with(u64 lsn, u32 id, const char *text)
+static void write_with(u64 lsn, ps_page_id id, const char *text)
 {
     T_OK(ps_op_begin(s, lsn));
     write_text(id, text);
     ps_op_commit(s);
 }
 
-static void free_with(u64 lsn, u32 id)
+static void free_with(u64 lsn, ps_page_id id)
 {
     T_OK(ps_op_begin(s, lsn));
     T_OK(ps_free(s, id));
@@ -104,12 +104,12 @@ static ps_snapshot *snap_open(void)
     return sn;
 }
 
-static const ps_page *snap_get(ps_snapshot *sn, u32 id)
+static const ps_page *snap_get(ps_snapshot *sn, ps_page_id id)
 {
     const ps_page *p = NULL;
     T_OK(ps_snapshot_read(sn, id, &p));
     T_CHECK(p != NULL);
-    T_EQ(p->page_id, id);
+    T_EQ(p->page_id.raw, id.raw);
     T_EQ(p->checksum, 0);
     T_CHECK(p->lsn <= ps_snapshot_lsn(sn));
     return p;
@@ -120,12 +120,12 @@ static bool has_text(const ps_page *p, const char *text)
     return strcmp((const char *) p + HDR, text) == 0;
 }
 
-static void snap_check(ps_snapshot *sn, u32 id, const char *text)
+static void snap_check(ps_snapshot *sn, ps_page_id id, const char *text)
 {
     T_CHECK(has_text(snap_get(sn, id), text));
 }
 
-static void op_check(u64 lsn, u32 id, const char *text)
+static void op_check(u64 lsn, ps_page_id id, const char *text)
 {
     T_OK(ps_op_begin(s, lsn));
     const ps_page *p = NULL;
@@ -142,13 +142,13 @@ static void disk_pages(u32 frames, u32 n)
     for (u32 i = 1; i <= n; i++) {
         char text[16];
         snprintf(text, sizeof(text), "P%u", i);
-        T_EQ(alloc_text(text), i);
+        T_EQ(alloc_text(text).raw, i);
     }
     ps_op_commit(s);
     T_OK(ps_checkpoint(s));
     reopen(frames);
     for (u32 i = 1; i <= n; i++) {
-        T_CHECK(!ps_test_has_entry(s, i));
+        T_CHECK(!ps_test_has_entry(s, ps_page_id_from(i)));
     }
 }
 
@@ -187,37 +187,37 @@ static void *bg_ckpt_main(void *arg)
 static void test_snapshot_sees_old(void)
 {
     open_store(64);
-    T_EQ(alloc_with(1, "A"), 1);
+    T_EQ(alloc_with(1, "A").raw, 1);
     ps_snapshot *s1 = snap_open();
-    write_with(2, 1, "B");
+    write_with(2, ps_page_id_from(1), "B");
     T_EQ(stats().frames_retired, 1);
-    snap_check(s1, 1, "A");
+    snap_check(s1, ps_page_id_from(1), "A");
     ps_snapshot *s2 = snap_open();
-    snap_check(s2, 1, "B");
+    snap_check(s2, ps_page_id_from(1), "B");
     T_EQ(stats().snapshots_open, 2);
     ps_snapshot_close(s1);
     T_EQ(stats().frames_retired, 0);
-    T_EQ(ps_test_chain_len(s, 1), 1);
-    snap_check(s2, 1, "B");
+    T_EQ(ps_test_chain_len(s, ps_page_id_from(1)), 1);
+    snap_check(s2, ps_page_id_from(1), "B");
     ps_snapshot_close(s2);
     T_EQ(stats().snapshots_open, 0);
-    T_EQ(ps_test_pins(s, 1), 0);
+    T_EQ(ps_test_pins(s, ps_page_id_from(1)), 0);
     close_store();
 }
 
 static void test_open_mid_operation(void)
 {
     open_store(64);
-    T_EQ(alloc_with(1, "A"), 1);
+    T_EQ(alloc_with(1, "A").raw, 1);
     T_OK(ps_op_begin(s, 2));
-    write_text(1, "B");
+    write_text(ps_page_id_from(1), "B");
     ps_snapshot *sn = snap_open();
     T_EQ(ps_snapshot_lsn(sn), 1);
-    snap_check(sn, 1, "A");
+    snap_check(sn, ps_page_id_from(1), "A");
     ps_op_commit(s);
-    snap_check(sn, 1, "A");
-    ps_snapshot_unpin(sn, 1);
-    snap_check(sn, 1, "A"); /* walks the chain again */
+    snap_check(sn, ps_page_id_from(1), "A");
+    ps_snapshot_unpin(sn, ps_page_id_from(1));
+    snap_check(sn, ps_page_id_from(1), "A"); /* walks the chain again */
     ps_snapshot_close(sn);
     T_EQ(stats().frames_retired, 0);
     close_store();
@@ -226,53 +226,53 @@ static void test_open_mid_operation(void)
 static void test_free_keeps_old(void)
 {
     open_store(64);
-    T_EQ(alloc_with(1, "A"), 1);
+    T_EQ(alloc_with(1, "A").raw, 1);
     ps_snapshot *sn = snap_open();
-    free_with(2, 1);
-    snap_check(sn, 1, "A");
+    free_with(2, ps_page_id_from(1));
+    snap_check(sn, ps_page_id_from(1), "A");
     ps_snapshot *s2 = snap_open();
     const ps_page *p = NULL;
-    T_ERR(ps_snapshot_read(s2, 1, &p), EINVAL);
+    T_ERR(ps_snapshot_read(s2, ps_page_id_from(1), &p), EINVAL);
     ps_snapshot_close(s2);
     ps_snapshot_close(sn);
     T_EQ(stats().frames_retired, 0);
-    T_EQ(ps_test_chain_len(s, 1), 1); /* the marker, until a checkpoint */
+    T_EQ(ps_test_chain_len(s, ps_page_id_from(1)), 1); /* the marker, until a checkpoint */
     T_OK(ps_checkpoint(s));
-    T_CHECK(!ps_test_has_entry(s, 1));
+    T_CHECK(!ps_test_has_entry(s, ps_page_id_from(1)));
     close_store();
 }
 
 static void test_pin_survives_cut_off(void)
 {
     open_store(64);
-    T_EQ(alloc_with(1, "A"), 1);
-    T_EQ(alloc_with(2, "X"), 2);
+    T_EQ(alloc_with(1, "A").raw, 1);
+    T_EQ(alloc_with(2, "X").raw, 2);
     T_CHECK(!ps_snap_cut_off_oldest(s));
     const u32 free0 = stats().frames_free;
 
     ps_snapshot *sn = snap_open();
-    const ps_page *p = snap_get(sn, 1);
+    const ps_page *p = snap_get(sn, ps_page_id_from(1));
     T_CHECK(has_text(p, "A"));
     T_CHECK(ps_snap_cut_off_oldest(s));
     T_EQ(stats().snapshots_cut_off, 1);
     T_EQ(stats().snapshots_open, 1);
     T_CHECK(!ps_snap_cut_off_oldest(s));
 
-    write_with(3, 1, "B");
+    write_with(3, ps_page_id_from(1), "B");
     T_EQ(stats().frames_retired, 0); /* nobody registered needs A */
-    T_EQ(ps_test_chain_len(s, 1), 2); /* A stays for the pin */
+    T_EQ(ps_test_chain_len(s, ps_page_id_from(1)), 2); /* A stays for the pin */
     T_CHECK(has_text(p, "A"));
     const ps_page *q = NULL;
-    T_ERR(ps_snapshot_read(sn, 2, &q), ESTALE);
-    T_ERR(ps_snapshot_read(sn, 1, &q), ESTALE);
+    T_ERR(ps_snapshot_read(sn, ps_page_id_from(2), &q), ESTALE);
+    T_ERR(ps_snapshot_read(sn, ps_page_id_from(1), &q), ESTALE);
     T_CHECK(has_text(p, "A"));
 
     ps_snapshot_close(sn);
     T_EQ(stats().frames_retired, 0);
     T_EQ(stats().frames_free, free0);
     T_EQ(stats().snapshots_open, 0);
-    T_EQ(ps_test_chain_len(s, 1), 1);
-    op_check(4, 1, "B");
+    T_EQ(ps_test_chain_len(s, ps_page_id_from(1)), 1);
+    op_check(4, ps_page_id_from(1), "B");
     close_store();
 }
 
@@ -281,22 +281,22 @@ static void test_same_id_one_pin(void)
     ps_config cfg = mb_config(64);
     cfg.snapshot_pin_cap = 1;
     open_cfg(&cfg);
-    T_EQ(alloc_with(1, "A"), 1);
-    T_EQ(alloc_with(2, "B"), 2);
+    T_EQ(alloc_with(1, "A").raw, 1);
+    T_EQ(alloc_with(2, "B").raw, 2);
 
     ps_snapshot *sn = snap_open();
-    const ps_page *a = snap_get(sn, 1);
-    const ps_page *b = snap_get(sn, 1);
+    const ps_page *a = snap_get(sn, ps_page_id_from(1));
+    const ps_page *b = snap_get(sn, ps_page_id_from(1));
     T_CHECK(a == b);
-    T_EQ(ps_test_pins(s, 1), 1);
+    T_EQ(ps_test_pins(s, ps_page_id_from(1)), 1);
     T_EQ(stats().frames_pinned, 1);
     const ps_page *p = NULL;
-    T_ERR(ps_snapshot_read(sn, 2, &p), ENOBUFS);
-    ps_snapshot_unpin(sn, 1);
-    T_EQ(ps_test_pins(s, 1), 0);
-    snap_check(sn, 2, "B");
+    T_ERR(ps_snapshot_read(sn, ps_page_id_from(2), &p), ENOBUFS);
+    ps_snapshot_unpin(sn, ps_page_id_from(1));
+    T_EQ(ps_test_pins(s, ps_page_id_from(1)), 0);
+    snap_check(sn, ps_page_id_from(2), "B");
     ps_snapshot_close(sn);
-    T_EQ(ps_test_pins(s, 2), 0);
+    T_EQ(ps_test_pins(s, ps_page_id_from(2)), 0);
     T_EQ(stats().frames_pinned, 0);
     close_store();
 }
@@ -308,23 +308,23 @@ static void test_pin_cap(void)
     open_cfg(&cfg);
     T_OK(ps_op_begin(s, 1));
     for (u32 i = 1; i <= 5; i++) {
-        T_EQ(alloc_text("x"), i);
+        T_EQ(alloc_text("x").raw, i);
     }
     ps_op_commit(s);
 
     ps_snapshot *sn = snap_open();
     for (u32 i = 1; i <= 4; i++) {
-        snap_get(sn, i);
+        snap_get(sn, ps_page_id_from(i));
     }
     const ps_page *p = NULL;
-    T_ERR(ps_snapshot_read(sn, 5, &p), ENOBUFS);
-    ps_snapshot_unpin(sn, 2);
-    T_EQ(ps_test_pins(s, 2), 0);
-    snap_get(sn, 5);
-    T_ERR(ps_snapshot_read(sn, 2, &p), ENOBUFS);
+    T_ERR(ps_snapshot_read(sn, ps_page_id_from(5), &p), ENOBUFS);
+    ps_snapshot_unpin(sn, ps_page_id_from(2));
+    T_EQ(ps_test_pins(s, ps_page_id_from(2)), 0);
+    snap_get(sn, ps_page_id_from(5));
+    T_ERR(ps_snapshot_read(sn, ps_page_id_from(2), &p), ENOBUFS);
     ps_snapshot_close(sn);
     for (u32 i = 1; i <= 5; i++) {
-        T_EQ(ps_test_pins(s, i), 0);
+        T_EQ(ps_test_pins(s, ps_page_id_from(i)), 0);
     }
     close_store();
 }
@@ -334,27 +334,27 @@ static void test_global_pin_limit(void)
     open_store(32); /* max_pinned = 8 */
     T_OK(ps_op_begin(s, 1));
     for (u32 i = 1; i <= 9; i++) {
-        T_EQ(alloc_text("x"), i);
+        T_EQ(alloc_text("x").raw, i);
     }
     ps_op_commit(s);
 
     ps_snapshot *s1 = snap_open();
     ps_snapshot *s2 = snap_open();
     for (u32 i = 1; i <= 5; i++) {
-        snap_get(s1, i);
+        snap_get(s1, ps_page_id_from(i));
     }
     for (u32 i = 6; i <= 8; i++) {
-        snap_get(s2, i);
+        snap_get(s2, ps_page_id_from(i));
     }
     const ps_page *p = NULL;
-    T_ERR(ps_snapshot_read(s2, 9, &p), ENOBUFS);
-    T_ERR(ps_snapshot_read(s1, 9, &p), ENOBUFS);
-    snap_get(s2, 6); /* already pinned: no new pin needed */
-    ps_snapshot_unpin(s1, 1);
-    snap_get(s2, 9);
-    T_ERR(ps_snapshot_read(s1, 1, &p), ENOBUFS);
+    T_ERR(ps_snapshot_read(s2, ps_page_id_from(9), &p), ENOBUFS);
+    T_ERR(ps_snapshot_read(s1, ps_page_id_from(9), &p), ENOBUFS);
+    snap_get(s2, ps_page_id_from(6)); /* already pinned: no new pin needed */
+    ps_snapshot_unpin(s1, ps_page_id_from(1));
+    snap_get(s2, ps_page_id_from(9));
+    T_ERR(ps_snapshot_read(s1, ps_page_id_from(1), &p), ENOBUFS);
     ps_snapshot_close(s2);
-    snap_get(s1, 1);
+    snap_get(s1, ps_page_id_from(1));
     ps_snapshot_close(s1);
     close_store();
 }
@@ -362,13 +362,13 @@ static void test_global_pin_limit(void)
 static void test_snapshot_bitmap_einval(void)
 {
     open_store(64);
-    T_EQ(alloc_with(1, "A"), 1);
+    T_EQ(alloc_with(1, "A").raw, 1);
     ps_snapshot *sn = snap_open();
     const ps_page *p = NULL;
-    T_ERR(ps_snapshot_read(sn, 0, &p), EINVAL);
-    T_ERR(ps_snapshot_read(sn, 32576, &p), EINVAL); /* group 1's bitmap id */
-    T_ERR(ps_snapshot_read(sn, UINT32_MAX, &p), EINVAL);
-    snap_check(sn, 1, "A");
+    T_ERR(ps_snapshot_read(sn, ps_page_id_from(0), &p), EINVAL);
+    T_ERR(ps_snapshot_read(sn, ps_page_id_from(32576), &p), EINVAL); /* group 1's bitmap id */
+    T_ERR(ps_snapshot_read(sn, ps_page_id_from(UINT32_MAX), &p), EINVAL);
+    snap_check(sn, ps_page_id_from(1), "A");
     ps_snapshot_close(sn);
     close_store();
 }
@@ -377,14 +377,14 @@ static void test_snapshot_bitmap_einval(void)
 static void test_not_yet_allocated_einval(void)
 {
     open_store(64);
-    T_EQ(alloc_with(1, "A"), 1);
+    T_EQ(alloc_with(1, "A").raw, 1);
     ps_snapshot *sn = snap_open();
-    T_EQ(alloc_with(2, "B"), 2);
+    T_EQ(alloc_with(2, "B").raw, 2);
     const ps_page *p = NULL;
-    T_ERR(ps_snapshot_read(sn, 2, &p), EINVAL);
+    T_ERR(ps_snapshot_read(sn, ps_page_id_from(2), &p), EINVAL);
     T_OK(ps_op_begin(s, 3));
-    T_EQ(alloc_text("C"), 3);
-    T_ERR(ps_snapshot_read(sn, 3, &p), EINVAL); /* only an in-op version */
+    T_EQ(alloc_text("C").raw, 3);
+    T_ERR(ps_snapshot_read(sn, ps_page_id_from(3), &p), EINVAL); /* only an uncommitted version */
     ps_op_abort(s);
     ps_snapshot_close(sn);
     close_store();
@@ -393,17 +393,17 @@ static void test_not_yet_allocated_einval(void)
 static void test_checkpoint_respects_snapshot(void)
 {
     open_store(64);
-    T_EQ(alloc_with(1, "A"), 1);
+    T_EQ(alloc_with(1, "A").raw, 1);
     ps_snapshot *sn = snap_open();
-    write_with(2, 1, "B");
-    write_with(3, 1, "C");
-    T_EQ(ps_test_chain_len(s, 1), 2); /* B was needed by nobody */
+    write_with(2, ps_page_id_from(1), "B");
+    write_with(3, ps_page_id_from(1), "C");
+    T_EQ(ps_test_chain_len(s, ps_page_id_from(1)), 2); /* B was needed by nobody */
     T_OK(ps_checkpoint(s));
     T_EQ(stats().frames_retired, 1);
-    snap_check(sn, 1, "A");
+    snap_check(sn, ps_page_id_from(1), "A");
     ps_snapshot_close(sn);
     T_EQ(stats().frames_retired, 0);
-    T_EQ(ps_test_chain_len(s, 1), 1);
+    T_EQ(ps_test_chain_len(s, ps_page_id_from(1)), 1);
     close_store();
 }
 
@@ -411,25 +411,26 @@ static void test_alloc_loads_frameless_old(void)
 {
     disk_pages(64, 5);
     ps_snapshot *sn = snap_open();
-    free_with(2, 5);
-    T_EQ(ps_test_chain_len(s, 5), 2); /* marker over the lsn-0 disk node, kept for sn */
+    free_with(2, ps_page_id_from(5));
+    /* marker over the lsn-0 disk node, kept for sn */
+    T_EQ(ps_test_chain_len(s, ps_page_id_from(5)), 2);
     T_EQ(stats().frames_retired, 0); /* frameless */
     const u64 misses = stats().cache_misses;
 
     T_OK(ps_op_begin(s, 3));
-    T_EQ(alloc_text("C"), 5);
+    T_EQ(alloc_text("C").raw, 5);
     T_EQ(stats().cache_misses, misses + 1); /* the old version was loaded */
     ps_op_commit(s);
     T_EQ(stats().frames_retired, 1);
     T_OK(ps_checkpoint(s));
-    T_CHECK(has_text((const ps_page *) mb_page(mb, 5), "C"));
+    T_CHECK(has_text((const ps_page *) mb_page(mb, ps_page_id_from(5)), "C"));
 
-    snap_check(sn, 5, "P5");
+    snap_check(sn, ps_page_id_from(5), "P5");
     T_EQ(stats().cache_misses, misses + 1);
     ps_snapshot_close(sn);
     T_EQ(stats().frames_retired, 0);
-    T_EQ(ps_test_chain_len(s, 5), 1);
-    op_check(4, 5, "C");
+    T_EQ(ps_test_chain_len(s, ps_page_id_from(5)), 1);
+    op_check(4, ps_page_id_from(5), "C");
     close_store();
 }
 
@@ -439,15 +440,15 @@ static void test_pagein_retired_counts(void)
     disk_pages(64, 5);
     const u32 free0 = stats().frames_free;
     ps_snapshot *sn = snap_open();
-    free_with(2, 5);
+    free_with(2, ps_page_id_from(5));
     T_EQ(stats().frames_retired, 0);
-    snap_check(sn, 5, "P5");
+    snap_check(sn, ps_page_id_from(5), "P5");
     T_EQ(stats().frames_retired, 1);
     T_EQ(stats().frames_free, free0 - 1);
     ps_snapshot_close(sn);
     T_EQ(stats().frames_retired, 0);
     T_EQ(stats().frames_free, free0);
-    T_EQ(ps_test_chain_len(s, 5), 1); /* the marker */
+    T_EQ(ps_test_chain_len(s, ps_page_id_from(5)), 1); /* the marker */
     close_store();
 }
 
@@ -460,7 +461,7 @@ static void test_retired_freed_at_checkpoint_end(void)
     pthread_cond_init(&h.cv, NULL);
     const ps_log_hooks hooks = {rec_flush, NULL, &h};
     ps_set_log_hooks(s, &hooks);
-    T_EQ(alloc_with(1, "A"), 1);
+    T_EQ(alloc_with(1, "A").raw, 1);
     const u32 free0 = stats().frames_free;
 
     mb_block_writes(mb, true);
@@ -472,18 +473,18 @@ static void test_retired_freed_at_checkpoint_end(void)
     }
     pthread_mutex_unlock(&h.mu);
 
-    write_with(2, 1, "B"); /* A is kept for the checkpoint at 1 */
+    write_with(2, ps_page_id_from(1), "B"); /* A is kept for the checkpoint at 1 */
     T_EQ(stats().frames_retired, 1);
-    write_with(3, 1, "C"); /* B is not */
+    write_with(3, ps_page_id_from(1), "C"); /* B is not */
     T_EQ(stats().frames_retired, 1);
-    T_EQ(ps_test_chain_len(s, 1), 2);
+    T_EQ(ps_test_chain_len(s, ps_page_id_from(1)), 2);
     mb_block_writes(mb, false);
     T_OK(pthread_join(b.t, NULL));
     T_OK(b.rv);
     T_EQ(stats().frames_retired, 0);
     T_EQ(stats().frames_free, free0);
-    T_EQ(ps_test_chain_len(s, 1), 1);
-    T_CHECK(has_text((const ps_page *) mb_page(mb, 1), "A"));
+    T_EQ(ps_test_chain_len(s, ps_page_id_from(1)), 1);
+    T_CHECK(has_text((const ps_page *) mb_page(mb, ps_page_id_from(1)), "A"));
 
     ps_set_log_hooks(s, NULL);
     pthread_cond_destroy(&h.cv);
@@ -513,19 +514,19 @@ static void test_pagein_and_close(void)
     disk_pages(64, 4);
     ps_snapshot *sn = snap_open();
     const u64 misses = stats().cache_misses;
-    snap_check(sn, 1, "P1");
-    snap_check(sn, 2, "P2");
-    snap_check(sn, 3, "P3");
+    snap_check(sn, ps_page_id_from(1), "P1");
+    snap_check(sn, ps_page_id_from(2), "P2");
+    snap_check(sn, ps_page_id_from(3), "P3");
     T_EQ(stats().cache_misses, misses + 3);
     T_EQ(stats().frames_pinned, 3);
-    ps_snapshot_unpin(sn, 2);
+    ps_snapshot_unpin(sn, ps_page_id_from(2));
     T_EQ(stats().frames_pinned, 2);
-    snap_check(sn, 2, "P2"); /* resident now: a hit */
+    snap_check(sn, ps_page_id_from(2), "P2"); /* resident now: a hit */
     T_EQ(stats().cache_misses, misses + 3);
     ps_snapshot_close(sn);
     T_EQ(stats().frames_pinned, 0);
     for (u32 i = 1; i <= 3; i++) {
-        T_EQ(ps_test_pins(s, i), 0);
+        T_EQ(ps_test_pins(s, ps_page_id_from(i)), 0);
     }
     T_EQ(stats().frames_evictable, 3);
     close_store();
@@ -539,26 +540,26 @@ static void test_abort_keeps_pinned_base(void)
 {
     disk_pages(64, 5);
     T_OK(ps_op_begin(s, 2));
-    T_OK(ps_free(s, 5));
+    T_OK(ps_free(s, ps_page_id_from(5)));
     ps_snapshot *sn = snap_open();
-    const ps_page *p = snap_get(sn, 5);
+    const ps_page *p = snap_get(sn, ps_page_id_from(5));
     T_CHECK(has_text(p, "P5"));
     ps_op_abort(s);
-    T_EQ(ps_test_chain_len(s, 5), 1);
-    T_EQ(ps_test_pins(s, 5), 1);
+    T_EQ(ps_test_chain_len(s, ps_page_id_from(5)), 1);
+    T_EQ(ps_test_pins(s, ps_page_id_from(5)), 1);
     T_CHECK(has_text(p, "P5"));
-    T_CHECK(snap_get(sn, 5) == p);
+    T_CHECK(snap_get(sn, ps_page_id_from(5)) == p);
     ps_snapshot_close(sn);
-    T_EQ(ps_test_chain_len(s, 5), 1); /* still the cached disk version */
+    T_EQ(ps_test_chain_len(s, ps_page_id_from(5)), 1); /* still the cached disk version */
     T_EQ(stats().frames_retired, 0);
 
     const u64 misses = stats().cache_misses;
-    op_check(3, 5, "P5");
+    op_check(3, ps_page_id_from(5), "P5");
     T_EQ(stats().cache_misses, misses);
-    free_with(4, 5); /* nothing registered: the resident version goes at commit */
-    T_EQ(ps_test_chain_len(s, 5), 1);
+    free_with(4, ps_page_id_from(5)); /* nothing registered: the resident version goes at commit */
+    T_EQ(ps_test_chain_len(s, ps_page_id_from(5)), 1);
     T_OK(ps_checkpoint(s));
-    T_CHECK(!ps_test_has_entry(s, 5));
+    T_CHECK(!ps_test_has_entry(s, ps_page_id_from(5)));
     close_store();
 }
 
@@ -568,14 +569,14 @@ static void test_abort_frees_unpinned_base(void)
     disk_pages(64, 5);
     const u32 free0 = stats().frames_free;
     T_OK(ps_op_begin(s, 2));
-    T_OK(ps_free(s, 5));
+    T_OK(ps_free(s, ps_page_id_from(5)));
     ps_snapshot *sn = snap_open();
-    snap_check(sn, 5, "P5");
-    ps_snapshot_unpin(sn, 5);
+    snap_check(sn, ps_page_id_from(5), "P5");
+    ps_snapshot_unpin(sn, ps_page_id_from(5));
     ps_op_abort(s);
-    T_CHECK(!ps_test_has_entry(s, 5));
+    T_CHECK(!ps_test_has_entry(s, ps_page_id_from(5)));
     T_EQ(stats().frames_free, free0);
-    snap_check(sn, 5, "P5"); /* from disk again */
+    snap_check(sn, ps_page_id_from(5), "P5"); /* from disk again */
     ps_snapshot_close(sn);
     close_store();
 }
@@ -592,7 +593,7 @@ typedef struct reader {
 static void *reader_main(void *arg)
 {
     reader *r = arg;
-    r->rv = ps_snapshot_read(r->sn, r->id, &r->p);
+    r->rv = ps_snapshot_read(r->sn, ps_page_id_from(r->id), &r->p);
     return NULL;
 }
 
@@ -632,7 +633,7 @@ typedef struct releaser {
 static void *releaser_main(void *arg)
 {
     const releaser *r = arg;
-    while (ps_test_waiters(s, r->id) < r->n) {
+    while (ps_test_waiters(s, ps_page_id_from(r->id)) < r->n) {
         sleep_ms(1);
     }
     mb_hold_reads(mb, false);
@@ -656,7 +657,7 @@ static void test_abort_waits_for_loading(void)
 {
     disk_pages(64, 5);
     T_OK(ps_op_begin(s, 2));
-    T_OK(ps_free(s, 5));
+    T_OK(ps_free(s, ps_page_id_from(5)));
     ps_snapshot *sn = snap_open();
     reader r;
     reader_start_loading(&r, sn, 5);
@@ -666,11 +667,11 @@ static void test_abort_waits_for_loading(void)
     releaser_join(&rel);
     T_OK(reader_join(&r));
     T_CHECK(has_text(r.p, "P5"));
-    T_EQ(ps_test_chain_len(s, 5), 1);
-    T_EQ(ps_test_pins(s, 5), 1);
+    T_EQ(ps_test_chain_len(s, ps_page_id_from(5)), 1);
+    T_EQ(ps_test_pins(s, ps_page_id_from(5)), 1);
     ps_snapshot_close(sn);
     T_EQ(stats().frames_retired, 0);
-    op_check(3, 5, "P5");
+    op_check(3, ps_page_id_from(5), "P5");
     close_store();
 }
 
@@ -686,19 +687,19 @@ static void test_writer_waits_for_snapshot_loading(void)
     releaser_start(&rel, 3, 1); /* releases once ps_read waits */
     T_OK(ps_op_begin(s, 2));
     const ps_page *p = NULL;
-    T_OK(ps_read(s, 3, &p));
+    T_OK(ps_read(s, ps_page_id_from(3), &p));
     releaser_join(&rel);
     T_OK(reader_join(&r));
     T_CHECK(p == r.p); /* one load, one version */
     T_EQ(stats().cache_misses, misses + 1);
-    T_EQ(ps_test_pins(s, 3), 2);
-    write_text(3, "W");
+    T_EQ(ps_test_pins(s, ps_page_id_from(3)), 2);
+    write_text(ps_page_id_from(3), "W");
     ps_op_commit(s);
     T_CHECK(has_text(r.p, "P3"));
     T_EQ(stats().frames_retired, 1);
     ps_snapshot_close(sn);
     T_EQ(stats().frames_retired, 0);
-    op_check(3, 3, "W");
+    op_check(3, ps_page_id_from(3), "W");
     close_store();
 }
 
@@ -720,10 +721,10 @@ static void test_two_snapshots_one_load(void)
     T_OK(reader_join(&r2));
     T_CHECK(r1.p == r2.p);
     T_EQ(stats().cache_misses, misses + 1);
-    T_EQ(ps_test_pins(s, 4), 2);
+    T_EQ(ps_test_pins(s, ps_page_id_from(4)), 2);
     ps_snapshot_close(s1);
     ps_snapshot_close(s2);
-    T_EQ(ps_test_pins(s, 4), 0);
+    T_EQ(ps_test_pins(s, ps_page_id_from(4)), 0);
     close_store();
 }
 
@@ -733,7 +734,7 @@ static void test_cutoff_during_load(void)
     disk_pages(64, 5);
     const u32 free0 = stats().frames_free;
     ps_snapshot *sn = snap_open();
-    free_with(2, 5); /* the lsn-0 node is retired for sn */
+    free_with(2, ps_page_id_from(5)); /* the lsn-0 node is retired for sn */
     reader r;
     reader_start_loading(&r, sn, 5);
     T_CHECK(ps_snap_cut_off_oldest(s)); /* the node is freed when the load's pin goes */
@@ -741,8 +742,8 @@ static void test_cutoff_during_load(void)
     T_ERR(reader_join(&r), ESTALE);
     T_EQ(stats().frames_retired, 0);
     T_EQ(stats().frames_free, free0);
-    T_EQ(ps_test_chain_len(s, 5), 1); /* the marker */
-    T_EQ(ps_test_pins(s, 5), 0);
+    T_EQ(ps_test_chain_len(s, ps_page_id_from(5)), 1); /* the marker */
+    T_EQ(ps_test_pins(s, ps_page_id_from(5)), 0);
     ps_snapshot_close(sn);
     T_EQ(stats().frames_retired, 0);
     close_store();
@@ -755,7 +756,7 @@ static void test_commit_during_load(void)
     const u32 free0 = stats().frames_free;
     ps_snapshot *sn = snap_open();
     T_OK(ps_op_begin(s, 2));
-    T_OK(ps_free(s, 5));
+    T_OK(ps_free(s, ps_page_id_from(5)));
     reader r;
     reader_start_loading(&r, sn, 5);
     ps_op_commit(s);
@@ -777,7 +778,7 @@ static void test_commit_dead_during_load(void)
     const u32 free0 = stats().frames_free;
     ps_snapshot *sn = snap_open();
     T_OK(ps_op_begin(s, 2));
-    T_OK(ps_free(s, 5));
+    T_OK(ps_free(s, ps_page_id_from(5)));
     reader r;
     reader_start_loading(&r, sn, 5);
     T_CHECK(ps_snap_cut_off_oldest(s));
@@ -786,8 +787,8 @@ static void test_commit_dead_during_load(void)
     T_ERR(reader_join(&r), ESTALE);
     T_EQ(stats().frames_retired, 0);
     T_EQ(stats().frames_free, free0);
-    T_EQ(ps_test_chain_len(s, 5), 1);
-    T_EQ(ps_test_pins(s, 5), 0);
+    T_EQ(ps_test_chain_len(s, ps_page_id_from(5)), 1);
+    T_EQ(ps_test_pins(s, ps_page_id_from(5)), 0);
     ps_snapshot_close(sn);
     close_store();
 }
@@ -797,26 +798,26 @@ static void test_alloc_during_snapshot_load(void)
 {
     disk_pages(64, 5);
     ps_snapshot *sn = snap_open();
-    free_with(2, 5);
+    free_with(2, ps_page_id_from(5));
     reader r;
     reader_start_loading(&r, sn, 5);
     const u64 misses = stats().cache_misses;
     releaser rel;
     releaser_start(&rel, 5, 1); /* releases once ps_alloc waits */
     T_OK(ps_op_begin(s, 3));
-    T_EQ(alloc_text("C"), 5);
+    T_EQ(alloc_text("C").raw, 5);
     ps_op_commit(s);
     releaser_join(&rel);
     T_OK(reader_join(&r));
     T_EQ(stats().cache_misses, misses + 1); /* loaded once */
     T_OK(ps_checkpoint(s));
-    T_CHECK(has_text((const ps_page *) mb_page(mb, 5), "C"));
+    T_CHECK(has_text((const ps_page *) mb_page(mb, ps_page_id_from(5)), "C"));
     T_CHECK(has_text(r.p, "P5"));
-    snap_check(sn, 5, "P5");
+    snap_check(sn, ps_page_id_from(5), "P5");
     T_EQ(stats().frames_retired, 1);
     ps_snapshot_close(sn);
     T_EQ(stats().frames_retired, 0);
-    op_check(4, 5, "C");
+    op_check(4, ps_page_id_from(5), "C");
     close_store();
 }
 
@@ -827,40 +828,40 @@ static void test_alloc_during_snapshot_load(void)
 static void test_newer_disk_version_einval(void)
 {
     open_store(64);
-    T_EQ(alloc_with(10, "A"), 1);
+    T_EQ(alloc_with(10, "A").raw, 1);
     ps_snapshot *sn = snap_open();
     T_EQ(ps_snapshot_lsn(sn), 10);
     T_OK(ps_op_begin(s, 15));
-    T_EQ(alloc_text("N2"), 2);
-    T_EQ(alloc_text("N3"), 3);
+    T_EQ(alloc_text("N2").raw, 2);
+    T_EQ(alloc_text("N3").raw, 3);
     ps_op_commit(s);
     T_OK(ps_checkpoint(s));
-    T_CHECK(ps_test_evict(s, 2));
-    T_CHECK(ps_test_evict(s, 3));
-    T_CHECK(!ps_test_has_entry(s, 2));
+    T_CHECK(ps_test_evict(s, ps_page_id_from(2)));
+    T_CHECK(ps_test_evict(s, ps_page_id_from(3)));
+    T_CHECK(!ps_test_has_entry(s, ps_page_id_from(2)));
 
     /* Empty chain: loaded, written at 15 > 10. */
     const ps_page *p = NULL;
-    T_ERR(ps_snapshot_read(sn, 3, &p), EINVAL);
-    T_ERR(ps_snapshot_read(sn, 3, &p), EINVAL); /* resident now */
-    T_EQ(ps_test_pins(s, 3), 0);
+    T_ERR(ps_snapshot_read(sn, ps_page_id_from(3), &p), EINVAL);
+    T_ERR(ps_snapshot_read(sn, ps_page_id_from(3), &p), EINVAL); /* resident now */
+    T_EQ(ps_test_pins(s, ps_page_id_from(3)), 0);
 
     /* lsn-0 node under the free marker, kept for sn. */
-    free_with(20, 2);
-    T_EQ(ps_test_chain_len(s, 2), 2);
-    T_ERR(ps_snapshot_read(sn, 2, &p), EINVAL);
-    T_ERR(ps_snapshot_read(sn, 2, &p), EINVAL); /* its LSN is known now */
-    T_EQ(ps_test_pins(s, 2), 0);
+    free_with(20, ps_page_id_from(2));
+    T_EQ(ps_test_chain_len(s, ps_page_id_from(2)), 2);
+    T_ERR(ps_snapshot_read(sn, ps_page_id_from(2), &p), EINVAL);
+    T_ERR(ps_snapshot_read(sn, ps_page_id_from(2), &p), EINVAL); /* its LSN is known now */
+    T_EQ(ps_test_pins(s, ps_page_id_from(2)), 0);
     T_EQ(stats().frames_retired, 1);
-    snap_check(sn, 1, "A");
+    snap_check(sn, ps_page_id_from(1), "A");
 
     ps_snapshot *s2 = snap_open();
-    T_ERR(ps_snapshot_read(s2, 2, &p), EINVAL); /* freed at 20 */
-    snap_check(s2, 3, "N3");
+    T_ERR(ps_snapshot_read(s2, ps_page_id_from(2), &p), EINVAL); /* freed at 20 */
+    snap_check(s2, ps_page_id_from(3), "N3");
     ps_snapshot_close(s2);
     ps_snapshot_close(sn);
     T_EQ(stats().frames_retired, 0);
-    T_EQ(ps_test_chain_len(s, 2), 1);
+    T_EQ(ps_test_chain_len(s, ps_page_id_from(2)), 1);
     close_store();
 }
 
@@ -889,9 +890,9 @@ static void set_value(ps_page *p, u64 v)
     memcpy((u8 *) p + HDR, &v, sizeof(v));
 }
 
-static void check_read(const ps_page *p, u32 id, u64 S)
+static void check_read(const ps_page *p, ps_page_id id, u64 S)
 {
-    T_EQ(p->page_id, id);
+    T_EQ(p->page_id.raw, id.raw);
     T_CHECK(p->lsn <= S);
     T_EQ(page_value(p), p->lsn);
 }
@@ -903,14 +904,15 @@ static void *cr_main(void *arg)
         ps_snapshot *sn = NULL;
         T_OK(ps_snapshot_open(s, &sn));
         const u64 S = ps_snapshot_lsn(sn);
-        for (u32 id = 1; id <= CR_PAGES; id++) {
+        for (u32 i = 1; i <= CR_PAGES; i++) {
+            const ps_page_id id = ps_page_id_from(i);
             const ps_page *p = NULL;
             T_OK(ps_snapshot_read(sn, id, &p));
             check_read(p, id, S);
             const ps_page *q = NULL;
             T_OK(ps_snapshot_read(sn, id, &q));
             T_CHECK(p == q);
-            if (id % 3 != 0) {
+            if (i % 3 != 0) {
                 ps_snapshot_unpin(sn, id);
             }
         }
@@ -918,7 +920,8 @@ static void *cr_main(void *arg)
          * A churn page may be unallocated at S: EINVAL while its free marker is in
          * memory, EBADMSG if it was never written. Check the version on success.
          */
-        for (u32 id = CR_PAGES + 1; id <= CR_PAGES + CR_CHURN; id++) {
+        for (u32 i = CR_PAGES + 1; i <= CR_PAGES + CR_CHURN; i++) {
+            const ps_page_id id = ps_page_id_from(i);
             const ps_page *p = NULL;
             const int rv = ps_snapshot_read(sn, id, &p);
             T_CHECK(rv == 0 || rv == EINVAL || rv == EBADMSG);
@@ -944,10 +947,10 @@ static void test_concurrent_readers(void)
     open_store(1024);
     T_OK(ps_op_begin(s, 1));
     for (u32 i = 1; i <= CR_PAGES; i++) {
-        u32 id = 0;
+        ps_page_id id = PS_PAGE_ID_NONE;
         ps_page *p = NULL;
         T_OK(ps_alloc(s, &id, &p));
-        T_EQ(id, i);
+        T_EQ(id.raw, i);
         set_value(p, 1);
     }
     ps_op_commit(s);
@@ -970,7 +973,7 @@ static void test_concurrent_readers(void)
         memcpy(next, live, sizeof(next));
         T_OK(ps_op_begin(s, lsn));
         for (u32 k = 0; k < 3; k++) {
-            const u32 id = 1 + (u32) (rng_next(&x) % CR_PAGES);
+            const ps_page_id id = ps_page_id_from(1 + (u32) (rng_next(&x) % CR_PAGES));
             ps_page *p = NULL;
             T_OK(ps_write(s, id, &p));
             set_value(p, lsn);
@@ -978,7 +981,7 @@ static void test_concurrent_readers(void)
         /* Free a live churn page (rewriting another first), or allocate one. */
         const u32 c = (u32) (rng_next(&x) % CR_CHURN);
         if (next[c] && rng_next(&x) % 2 == 0) {
-            T_OK(ps_free(s, CR_PAGES + 1 + c));
+            T_OK(ps_free(s, ps_page_id_from(CR_PAGES + 1 + c)));
             next[c] = false;
         } else {
             u32 n_live = 0;
@@ -986,12 +989,12 @@ static void test_concurrent_readers(void)
                 n_live += next[i] ? 1u : 0u;
             }
             if (n_live < CR_CHURN) {
-                u32 id = 0;
+                ps_page_id id = PS_PAGE_ID_NONE;
                 ps_page *p = NULL;
                 T_OK(ps_alloc(s, &id, &p));
-                T_CHECK(id > CR_PAGES && id <= CR_PAGES + CR_CHURN);
-                T_CHECK(!next[id - CR_PAGES - 1]);
-                next[id - CR_PAGES - 1] = true;
+                T_CHECK(id.raw > CR_PAGES && id.raw <= CR_PAGES + CR_CHURN);
+                T_CHECK(!next[id.raw - CR_PAGES - 1]);
+                next[id.raw - CR_PAGES - 1] = true;
                 set_value(p, lsn);
             }
         }
@@ -1013,9 +1016,9 @@ static void test_concurrent_readers(void)
     T_EQ(stats().frames_retired, 0);
     T_EQ(stats().frames_pinned, 0);
     T_EQ(stats().snapshots_open, 0);
-    for (u32 id = 1; id <= CR_PAGES + CR_CHURN; id++) {
-        T_EQ(ps_test_pins(s, id), 0);
-        T_CHECK(ps_test_chain_len(s, id) <= 1);
+    for (u32 i = 1; i <= CR_PAGES + CR_CHURN; i++) {
+        T_EQ(ps_test_pins(s, ps_page_id_from(i)), 0);
+        T_CHECK(ps_test_chain_len(s, ps_page_id_from(i)) <= 1);
     }
     close_store();
 }

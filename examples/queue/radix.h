@@ -47,7 +47,7 @@ PS_EXTERN_C_BEGIN
 #define RX_MAX_HEIGHT 8u
 
 typedef struct rx_array {
-    u32 root; /* top node's page ID, 0 while the array has no pages */
+    ps_page_id root; /* top node, PS_PAGE_ID_NONE while the array has no pages */
     u32 height; /* 0 when empty, 1 when the root is a leaf */
     u32 width; /* value bytes, 4 or 8 */
     u32 leaf_cap; /* values per leaf */

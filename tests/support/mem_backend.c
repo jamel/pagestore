@@ -16,14 +16,14 @@
 /* One durable page image. */
 typedef struct mb_page_rec {
     struct mb_page_rec *next;
-    u32 id;
+    ps_page_id id;
     u64 written_seq; /* 0 for a page injected with mb_put */
     u8 *data;
 } mb_page_rec;
 
 /* A page staged by the running checkpoint. */
 typedef struct mb_staged {
-    u32 id;
+    ps_page_id id;
     u8 *data;
 } mb_staged;
 
@@ -115,10 +115,10 @@ void mb_destroy(mem_backend *mb)
     free(mb);
 }
 
-static mb_page_rec *find(const mem_backend *mb, u32 id)
+static mb_page_rec *find(const mem_backend *mb, ps_page_id id)
 {
-    for (mb_page_rec *r = mb->buckets[id & (mb->nbuckets - 1)]; r != NULL; r = r->next) {
-        if (r->id == id) {
+    for (mb_page_rec *r = mb->buckets[id.raw & (mb->nbuckets - 1)]; r != NULL; r = r->next) {
+        if (ps_page_id_eq(r->id, id)) {
             return r;
         }
     }
@@ -133,8 +133,8 @@ static void rehash(mem_backend *mb)
         mb_page_rec *r = mb->buckets[b];
         while (r != NULL) {
             mb_page_rec *next = r->next;
-            r->next = nb[r->id & (n - 1)];
-            nb[r->id & (n - 1)] = r;
+            r->next = nb[r->id.raw & (n - 1)];
+            nb[r->id.raw & (n - 1)] = r;
             r = next;
         }
     }
@@ -144,7 +144,7 @@ static void rehash(mem_backend *mb)
 }
 
 /* Hold mu. Overwrite the bytes in place to keep mb_page pointers valid. */
-static void store_page(mem_backend *mb, u32 id, const void *page, u64 seq)
+static void store_page(mem_backend *mb, ps_page_id id, const void *page, u64 seq)
 {
     const u32 ps = mb->info.page_size;
     T_CHECK(ps != 0);
@@ -156,8 +156,8 @@ static void store_page(mem_backend *mb, u32 id, const void *page, u64 seq)
         r = xalloc(sizeof(*r));
         r->id = id;
         r->data = xalloc(ps);
-        r->next = mb->buckets[id & (mb->nbuckets - 1)];
-        mb->buckets[id & (mb->nbuckets - 1)] = r;
+        r->next = mb->buckets[id.raw & (mb->nbuckets - 1)];
+        mb->buckets[id.raw & (mb->nbuckets - 1)] = r;
         mb->npages++;
     }
     memcpy(r->data, page, ps);
@@ -227,7 +227,7 @@ static void sleep_ms(u32 ms)
     while (nanosleep(&ts, &ts) != 0) {}
 }
 
-static int be_read_page(ps_backend_ctx *ctx, u32 id, void *buf)
+static int be_read_page(ps_backend_ctx *ctx, ps_page_id id, void *buf)
 {
     mem_backend *mb = ctx->mb;
     pthread_mutex_lock(&mb->mu);
@@ -273,7 +273,7 @@ static int be_ckpt_begin(ps_backend_ctx *ctx, u64 lsn, u32 num_groups, u32 count
     return 0;
 }
 
-static int be_ckpt_write(ps_backend_ctx *ctx, u32 id, const void *page)
+static int be_ckpt_write(ps_backend_ctx *ctx, ps_page_id id, const void *page)
 {
     mem_backend *mb = ctx->mb;
     const u8 *p = page;
@@ -287,7 +287,7 @@ static int be_ckpt_write(ps_backend_ctx *ctx, u32 id, const void *page)
     u32 sum;
     memcpy(&pid, p + MB_HDR_PAGE_ID, 4);
     memcpy(&sum, p + MB_HDR_CHECKSUM, 4);
-    T_EQ(pid, id);
+    T_EQ(pid, id.raw);
     T_EQ(sum, page_checksum(p, mb->info.page_size));
     const int rv = take_fault(mb, MB_WRITE);
     if (rv == 0) {
@@ -390,7 +390,7 @@ int mb_open(mem_backend *mb, u32 frames, u32 flags, ps_store **out)
     return ps_open_backend(&be, &cfg, flags, out);
 }
 
-const u8 *mb_page(mem_backend *mb, u32 id)
+const u8 *mb_page(mem_backend *mb, ps_page_id id)
 {
     pthread_mutex_lock(&mb->mu);
     const mb_page_rec *r = find(mb, id);
@@ -399,7 +399,7 @@ const u8 *mb_page(mem_backend *mb, u32 id)
     return p;
 }
 
-void mb_put(mem_backend *mb, u32 id, const void *page)
+void mb_put(mem_backend *mb, ps_page_id id, const void *page)
 {
     pthread_mutex_lock(&mb->mu);
     store_page(mb, id, page, 0);
@@ -438,7 +438,7 @@ u64 mb_abort_count(mem_backend *mb)
     return n;
 }
 
-bool mb_written_last(mem_backend *mb, u32 id)
+bool mb_written_last(mem_backend *mb, ps_page_id id)
 {
     pthread_mutex_lock(&mb->mu);
     const mb_page_rec *r = find(mb, id);

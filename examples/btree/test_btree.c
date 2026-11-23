@@ -23,7 +23,7 @@ typedef struct fixture {
     char *dir;
     ps_store *s;
     bt_tree t;
-    u32 meta;
+    ps_page_id meta;
     u64 lsn; /* the last LSN handed to ps_op_begin */
 } fixture;
 
@@ -729,8 +729,9 @@ static void test_check_finds_damage(void)
     fx_begin(&f);
     const ps_page *meta;
     T_OK(ps_read(f.s, f.meta, &meta));
-    u32 root;
-    memcpy(&root, (const u8 *) meta + PS_PAGE_HEADER_SIZE, sizeof(root));
+    u32 root_raw;
+    memcpy(&root_raw, (const u8 *) meta + PS_PAGE_HEADER_SIZE, sizeof(root_raw));
+    const ps_page_id root = ps_page_id_from(root_raw);
     ps_page *leaf;
     T_OK(ps_write(f.s, root, &leaf));
     swap_first_slots(leaf);
