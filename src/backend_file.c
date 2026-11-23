@@ -7,10 +7,10 @@
  * Reopen can finish a checkpoint from a durable journal even if the data
  * pages or header were only partly written.
  *
- * The journal's own fsync doesn't make its directory entry durable. If the
- * entry is lost, recovery finds no journal and keeps the torn pages. Each open
- * therefore syncs the directory once, before its first checkpoint, which also
- * covers an earlier open that created the journal or data and then failed.
+ * Without a durable directory entry for the journal, recovery would keep
+ * torn pages, so each open syncs the directory before its first checkpoint.
+ * Replay syncs the journal and directory before touching data, because a
+ * failed journal fsync can leave the journal readable but not durable.
  */
 
 #include "backend_file.h"
@@ -356,6 +356,15 @@ static int recover(ps_backend_ctx *c)
     if (header_ok && jh.page_size != h.page_size) {
         return EBADMSG;
     }
+    /* After a failed fsync, the journal may exist only in the cache. */
+    rv = c->vfs.fsync(c->vfs.ctx, &c->journal);
+    if (rv == 0) {
+        rv = c->vfs.fsync_dir(c->vfs.ctx, c->dir);
+    }
+    if (rv != 0) {
+        return rv;
+    }
+    c->dir_synced = true;
     rv = apply_journal(c, &jh);
     if (rv != 0) {
         return rv;

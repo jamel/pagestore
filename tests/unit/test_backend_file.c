@@ -686,6 +686,74 @@ static void test_crash_every_point_checkpoint(void)
     T_CHECK(k > 5);
 }
 
+typedef enum pending_journal {
+    PENDING_FSYNC_FAILED,
+    PENDING_ENTRY_UNSYNCED
+} pending_journal;
+
+/* Leave checkpoint B in a complete journal that reopen can read but isn't durable. */
+static void setup_pending_journal(pending_journal kind, u64 seed)
+{
+    setup_image_a(seed);
+    if (kind == PENDING_ENTRY_UNSYNCED) {
+        /* As if an older version wrote the journal without syncing its directory entry. */
+        T_OK(v->unlink(v->ctx, DIR "/journal"));
+        T_OK(v->fsync_dir(v->ctx, DIR));
+        write_journal(2, 2, b_ids, b_fills, 4);
+        return;
+    }
+    ps_backend be;
+    ps_backend_info info;
+    T_OK(be_open(&be, false, &info));
+    /* Point 1 syncs the directory and point 2 writes the journal. Fail its fsync. */
+    fault_vfs_fail_at(fv, fault_vfs_points(fv) + 3, EIO);
+    bool fatal = false;
+    T_ERR(ckpt_b(&be, &fatal), EIO);
+    T_CHECK(fatal);
+    be_close(&be);
+}
+
+/* k counts from the start of the open that replays the journal. */
+static bool crash_replay_run(pending_journal kind, u64 k, fault_mode mode, u64 seed)
+{
+    setup_pending_journal(kind, seed);
+    ps_backend be;
+    ps_backend_info info;
+    fault_vfs_crash_at(fv, fault_vfs_points(fv) + k);
+    T_OK(ps_file_backend_new(DIR, v, &be));
+    const int rv = be.open(be.ctx, false, PS, &info);
+    const bool crashed = fault_vfs_crashed(fv);
+    be_close(&be);
+    if (!crashed) {
+        T_OK(rv);
+        T_EQ(info.seq, 2);
+    }
+    fault_vfs_reboot(fv, mode);
+    T_OK(be_open(&be, false, &info));
+    check_image_a_or_b(&be, &info);
+    be_close(&be);
+    teardown();
+    return crashed;
+}
+
+static void test_crash_every_point_replay(void)
+{
+    const pending_journal kinds[] = {PENDING_FSYNC_FAILED, PENDING_ENTRY_UNSYNCED};
+    for (u32 i = 0; i < sizeof(kinds) / sizeof(kinds[0]); i++) {
+        u64 k = 1;
+        for (;; k++) {
+            const bool crashed = crash_replay_run(kinds[i], k, FAULT_DROP_UNSYNCED, k);
+            for (u32 s = 0; s < 4 * t_scale(); s++) {
+                T_EQ(crash_replay_run(kinds[i], k, FAULT_RANDOM_UNSYNCED, k * 1000 + s), crashed);
+            }
+            if (!crashed) {
+                break;
+            }
+        }
+        T_CHECK(k > 5);
+    }
+}
+
 /* Returns false if format completes before reaching point k. */
 static bool crash_format_run(u64 k, fault_mode mode, u64 seed)
 {
@@ -798,6 +866,7 @@ int main(int argc, char **argv)
     T_RUN(test_journal_creation_sync_retry);
     T_RUN(test_crash_every_point_checkpoint);
     T_RUN(test_crash_every_point_format);
+    T_RUN(test_crash_every_point_replay);
     T_RUN(test_read_concurrent_with_checkpoint);
     return t_done();
 }
