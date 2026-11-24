@@ -12,8 +12,7 @@
  * serialized, and open and close run alone.
  */
 
-#include "pagestore/compiler.h"
-#include "pagestore/types.h"
+#include "pagestore/types.h" // IWYU pragma: export
 
 PS_EXTERN_C_BEGIN
 

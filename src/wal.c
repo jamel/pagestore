@@ -4,14 +4,16 @@
  * successor, so a published header links back to durable records.
  */
 
-#include "pagestore/wal.h"
-
 #include "crc32c.h"
 #include "format.h"
-#include "pagestore/bytes.h"
 #include "store.h"
 #include "util.h"
 #include "wal_internal.h"
+
+#include "pagestore/bytes.h"
+#include "pagestore/pagestore.h"
+#include "pagestore/vfs.h"
+#include "pagestore/wal.h"
 
 #include <errno.h>
 #include <pthread.h>

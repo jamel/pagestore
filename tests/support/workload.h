@@ -15,10 +15,9 @@
  */
 
 #include "model.h"
-#include "pagestore/pagestore.h"
-#include "pagestore/types.h"
-#include "pagestore/wal.h"
 #include "rng.h"
+
+#include "pagestore/wal.h"
 
 typedef enum w_kind {
     W_ALLOC, /* id: the id the store must return */

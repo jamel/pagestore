@@ -1,5 +1,6 @@
-#include "pagestore/vfs.h"
 #include "test.h"
+
+#include "pagestore/vfs.h"
 
 #include <errno.h>
 #include <stdio.h>

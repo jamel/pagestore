@@ -8,8 +8,7 @@
  * durable directory, sync the new file and then the directory itself.
  */
 
-#include "pagestore/compiler.h"
-#include "pagestore/types.h"
+#include "pagestore/types.h" // IWYU pragma: export
 
 PS_EXTERN_C_BEGIN
 

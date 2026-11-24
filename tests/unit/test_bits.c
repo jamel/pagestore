@@ -1,7 +1,8 @@
 #include "bitmap.h"
-#include "pagestore/bytes.h"
 #include "test.h"
 #include "util.h"
+
+#include "pagestore/bytes.h"
 
 #include <string.h>
 

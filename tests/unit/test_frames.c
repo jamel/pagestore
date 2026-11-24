@@ -1,10 +1,12 @@
 #include "frames.h"
 #include "test.h"
-#include "util.h"
+
+#include "pagestore/types.h"
 
 #include <errno.h>
 #include <pthread.h>
 #include <stdlib.h>
+#include <string.h>
 
 /* Only the pointer identity matters to the frame pool. */
 struct ps_vnode {

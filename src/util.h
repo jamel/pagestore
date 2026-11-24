@@ -5,11 +5,9 @@
  * little-endian host check live in the public pagestore/bytes.h.
  */
 
-#include "pagestore/compiler.h"
 #include "pagestore/types.h"
 
 #include <assert.h>
-#include <string.h>
 
 /* In release builds sizeof keeps the expression in scope without evaluating it. */
 #ifdef NDEBUG

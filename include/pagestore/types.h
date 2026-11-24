@@ -6,11 +6,11 @@
  * host, so keep them out of the on-disk format.
  */
 
-#include "pagestore/compiler.h"
+#include "pagestore/compiler.h" // IWYU pragma: export
 
-#include <stdbool.h>
-#include <stddef.h>
-#include <stdint.h>
+#include <stdbool.h> // IWYU pragma: export
+#include <stddef.h> // IWYU pragma: export
+#include <stdint.h> // IWYU pragma: export
 
 typedef int8_t i8;
 typedef int16_t i16;
@@ -60,3 +60,5 @@ PS_STATIC_ASSERT(sizeof(isize) == sizeof(usize), "isize and usize must have the 
 PS_NEWTYPE(ps_page_id, u32);
 
 #define PS_PAGE_ID_NONE PS_LITERAL(ps_page_id, 0)
+
+typedef struct ps_store ps_store;

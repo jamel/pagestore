@@ -14,7 +14,6 @@
  */
 
 #include "backend_file.h"
-
 #include "crc32c.h"
 #include "format.h"
 #include "util.h"

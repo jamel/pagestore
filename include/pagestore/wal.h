@@ -18,9 +18,7 @@
  * A record can survive a flush error and be replayed at the next open.
  */
 
-#include "pagestore/compiler.h"
-#include "pagestore/pagestore.h"
-#include "pagestore/types.h"
+#include "pagestore/types.h" // IWYU pragma: export
 
 PS_EXTERN_C_BEGIN
 

@@ -1,5 +1,4 @@
 #include "fault_vfs.h"
-
 #include "rng.h"
 
 #include <errno.h>

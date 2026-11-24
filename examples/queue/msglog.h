@@ -43,8 +43,9 @@
  *     }
  */
 
-#include "pagestore/pagestore.h"
 #include "radix.h"
+
+#include "pagestore/pagestore.h"
 
 PS_EXTERN_C_BEGIN
 

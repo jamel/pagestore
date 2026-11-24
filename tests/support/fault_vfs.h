@@ -15,7 +15,6 @@
  * back into the VFS.
  */
 
-#include "pagestore/types.h"
 #include "pagestore/vfs.h"
 
 typedef struct fault_vfs fault_vfs;

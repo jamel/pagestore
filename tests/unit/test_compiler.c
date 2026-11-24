@@ -1,5 +1,6 @@
-#include "pagestore/compiler.h"
 #include "test.h"
+
+#include "pagestore/types.h"
 
 /* These helpers fail -Werror=unused-parameter if PS_UNUSED misses an argument. */
 static int one(int a)

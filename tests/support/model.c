@@ -1,9 +1,8 @@
-#include "model.h"
-
 #include "allocator.h"
-#include "pagestore/compiler.h"
-#include "pagestore/pagestore.h"
+#include "model.h"
 #include "test.h"
+
+#include "pagestore/pagestore.h"
 
 #include <errno.h>
 #include <stdlib.h>

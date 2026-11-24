@@ -1,7 +1,13 @@
+#include "frames.h"
+#include "ptable.h"
 #include "store.h"
 #include "util.h"
 
+#include "pagestore/pagestore.h"
+
 #include <errno.h>
+#include <pthread.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 
 /*

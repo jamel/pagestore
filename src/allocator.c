@@ -5,11 +5,11 @@
  */
 
 #include "allocator.h"
-
 #include "bitmap.h"
 #include "format.h"
-#include "pagestore/bytes.h"
 #include "util.h"
+
+#include "pagestore/bytes.h"
 
 #include <errno.h>
 #include <stdlib.h>

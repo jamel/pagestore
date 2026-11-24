@@ -8,12 +8,14 @@
 #include "fault_vfs.h"
 #include "format.h"
 #include "model.h"
-#include "pagestore/bytes.h"
-#include "pagestore/pagestore.h"
-#include "pagestore/wal.h"
 #include "rng.h"
 #include "test.h"
 #include "workload.h"
+
+#include "pagestore/bytes.h"
+#include "pagestore/pagestore.h"
+#include "pagestore/vfs.h"
+#include "pagestore/wal.h"
 
 #include <errno.h>
 #include <pthread.h>

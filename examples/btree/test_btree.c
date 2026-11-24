@@ -7,9 +7,11 @@
  */
 
 #include "btree.h"
-#include "pagestore/bytes.h"
 #include "rng.h"
 #include "test.h"
+
+#include "pagestore/bytes.h"
+#include "pagestore/pagestore.h"
 
 #include <errno.h>
 #include <pthread.h>

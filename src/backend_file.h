@@ -6,7 +6,6 @@
  */
 
 #include "pagestore/backend.h"
-#include "pagestore/types.h"
 #include "pagestore/vfs.h"
 
 /*

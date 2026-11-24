@@ -6,15 +6,15 @@
 
 #include "mem_backend.h"
 #include "model.h"
-#include "pagestore/pagestore.h"
 #include "rng.h"
-#include "store.h"
 #include "test.h"
 #include "workload.h"
 
+#include "pagestore/backend.h"
+#include "pagestore/pagestore.h"
+
 #include <errno.h>
 #include <stdlib.h>
-#include <string.h>
 
 #define PS 4096u
 #define OPS 1500u

@@ -42,6 +42,8 @@
 #include <string.h>
 #include <time.h>
 
+// IWYU pragma: no_forward_declare timespec
+
 /*
  * The store has no place to record the log's meta page ID, so mq uses a
  * fixed one. In a new store page 0 holds the allocator's bitmap, so the

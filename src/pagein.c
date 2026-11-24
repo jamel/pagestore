@@ -1,8 +1,13 @@
 #include "crc32c.h"
+#include "frames.h"
+#include "ptable.h"
 #include "store.h"
 #include "util.h"
 
+#include "pagestore/pagestore.h"
+
 #include <errno.h>
+#include <stdatomic.h>
 
 /*
  * Load one page from disk. The LOADING flag lets other callers wait for

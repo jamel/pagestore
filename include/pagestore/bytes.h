@@ -11,8 +11,7 @@
  *     const u64 lsn = ps_get_le64(rec + 4);
  */
 
-#include "pagestore/compiler.h"
-#include "pagestore/types.h"
+#include "pagestore/types.h" // IWYU pragma: export
 
 /* Page header fields also go to disk in host byte order. */
 #if defined(__BYTE_ORDER__) && defined(__ORDER_LITTLE_ENDIAN__)

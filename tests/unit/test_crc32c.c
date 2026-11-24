@@ -1,6 +1,8 @@
 #include "crc32c.h"
 #include "test.h"
 
+#include "pagestore/types.h"
+
 #include <stdlib.h>
 #include <string.h>
 

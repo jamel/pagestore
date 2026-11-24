@@ -1,8 +1,11 @@
 #include "allocator.h"
 #include "mem_backend.h"
-#include "pagestore/pagestore.h"
+#include "ptable.h"
 #include "store.h"
 #include "test.h"
+
+#include "pagestore/backend.h"
+#include "pagestore/pagestore.h"
 
 #include <errno.h>
 #include <pthread.h>

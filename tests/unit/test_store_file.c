@@ -1,7 +1,9 @@
 #include "backend_file.h"
-#include "pagestore/pagestore.h"
 #include "store.h"
 #include "test.h"
+
+#include "pagestore/pagestore.h"
+#include "pagestore/vfs.h"
 
 #include <errno.h>
 #include <stdio.h>

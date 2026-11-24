@@ -15,7 +15,6 @@
  * worker thread.
  */
 
-#include "pagestore/compiler.h"
 #include "pagestore/types.h"
 
 void t_init(int argc, char **argv);
@@ -106,7 +105,7 @@ PS_NORETURN void t_fail_mem(
             t_fail_mem(__FILE__, __LINE__, #a, #b, t_a_, t_b_, t_n_); \
     } while (0)
 
-#include <string.h>
+#include <string.h> // IWYU pragma: keep
 
 /* Reads PS_TEST_SCALE. Values outside 1..1000000 fall back to 1. */
 u32 t_scale(void);

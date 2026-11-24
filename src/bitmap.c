@@ -6,7 +6,6 @@
 #include "bitmap.h"
 
 #include "pagestore/bytes.h"
-#include "pagestore/compiler.h"
 
 #include <string.h>
 

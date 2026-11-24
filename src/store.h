@@ -13,8 +13,11 @@
 
 #include "allocator.h"
 #include "frames.h"
-#include "pagestore/pagestore.h"
 #include "ptable.h"
+
+#include "pagestore/backend.h" // IWYU pragma: keep
+#include "pagestore/pagestore.h"
+#include "pagestore/vfs.h" // IWYU pragma: keep
 
 #include <pthread.h>
 #include <stdatomic.h>

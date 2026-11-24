@@ -5,8 +5,8 @@
  */
 
 #include "crc32c.h"
-
 #include "crc32c_tables.h"
+
 #include "pagestore/bytes.h"
 
 u32 ps_crc32c(u32 crc, const void *buf, usize len)

@@ -4,12 +4,12 @@
  */
 
 #include "fault_vfs.h"
-#include "pagestore/pagestore.h"
 #include "rng.h"
 #include "test.h"
 
+#include "pagestore/pagestore.h"
+
 #include <errno.h>
-#include <stdlib.h>
 #include <string.h>
 
 #define PS 4096u

@@ -1,9 +1,9 @@
-#include "mem_backend.h"
-
 #include "crc32c.h"
 #include "format.h"
-#include "pagestore/bytes.h"
+#include "mem_backend.h"
 #include "test.h"
+
+#include "pagestore/bytes.h"
 
 #include <errno.h>
 #include <pthread.h>

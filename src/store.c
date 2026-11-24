@@ -1,13 +1,18 @@
-#include "store.h"
-
 #include "backend_file.h"
 #include "format.h"
+#include "store.h"
 #include "util.h"
+
+#include "pagestore/backend.h"
+#include "pagestore/vfs.h"
 
 #include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+
+// IWYU pragma: no_include <features.h>
 
 /*
  * Store setup, teardown and statistics. Open formats a new store or loads

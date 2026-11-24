@@ -5,13 +5,13 @@
  */
 
 #include "ptable.h"
-
 #include "util.h"
 
 #include <errno.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define PS_PTABLE_MIN_BUCKETS 64u
 #define PS_PTABLE_MAX_LATCHES 1024u

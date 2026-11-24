@@ -3,9 +3,8 @@
  * page latches.
  */
 
-#include "frames.h"
-
 #include "format.h"
+#include "frames.h"
 #include "util.h"
 
 #include <errno.h>

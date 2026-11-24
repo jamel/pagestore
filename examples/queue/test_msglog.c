@@ -6,10 +6,12 @@
  */
 
 #include "msglog.h"
-#include "pagestore/bytes.h"
 #include "radix.h"
 #include "rng.h"
 #include "test.h"
+
+#include "pagestore/bytes.h"
+#include "pagestore/pagestore.h"
 
 #include <errno.h>
 #include <stdio.h>

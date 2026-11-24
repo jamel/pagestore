@@ -1,5 +1,11 @@
+#include "frames.h"
+#include "ptable.h"
 #include "store.h"
 #include "util.h"
+
+#include "pagestore/pagestore.h"
+
+#include <stdatomic.h>
 
 /*
  * Change page version chains and their frame accounting under the page

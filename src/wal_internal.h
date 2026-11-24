@@ -2,7 +2,6 @@
 
 /* Recovery uses this internal accessor to check that the WAL belongs to the store. */
 
-#include "pagestore/pagestore.h"
 #include "pagestore/wal.h"
 
 /* Returns the borrowed store pointer captured at WAL open. */

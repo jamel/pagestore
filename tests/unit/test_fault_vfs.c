@@ -1,7 +1,8 @@
 #include "fault_vfs.h"
-#include "pagestore/vfs.h"
 #include "rng.h"
 #include "test.h"
+
+#include "pagestore/vfs.h"
 
 #include <errno.h>
 #include <pthread.h>

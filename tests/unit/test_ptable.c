@@ -1,6 +1,7 @@
 #include "ptable.h"
 #include "test.h"
-#include "util.h"
+
+#include "pagestore/types.h"
 
 #include <errno.h>
 #include <pthread.h>

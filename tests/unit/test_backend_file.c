@@ -2,9 +2,10 @@
 #include "crc32c.h"
 #include "fault_vfs.h"
 #include "format.h"
-#include "pagestore/backend.h"
 #include "test.h"
-#include "util.h"
+
+#include "pagestore/backend.h"
+#include "pagestore/vfs.h"
 
 #include <errno.h>
 #include <pthread.h>

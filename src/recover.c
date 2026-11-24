@@ -3,9 +3,11 @@
  * apply callback. A restart skips any records checkpointed during replay.
  */
 
-#include "pagestore/wal.h"
 #include "store.h"
 #include "wal_internal.h"
+
+#include "pagestore/pagestore.h"
+#include "pagestore/wal.h"
 
 #include <errno.h>
 

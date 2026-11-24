@@ -21,7 +21,10 @@
  */
 
 #include "mq.h"
+#include "msglog.h"
+
 #include "pagestore/bytes.h"
+#include "pagestore/pagestore.h"
 
 #include <errno.h>
 #include <pthread.h>

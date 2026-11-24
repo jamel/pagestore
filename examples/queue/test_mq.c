@@ -9,9 +9,12 @@
 
 #include "fault_vfs.h"
 #include "mq.h"
-#include "pagestore/bytes.h"
+#include "msglog.h"
 #include "rng.h"
 #include "test.h"
+
+#include "pagestore/bytes.h"
+#include "pagestore/pagestore.h"
 
 #include <errno.h>
 #include <pthread.h>

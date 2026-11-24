@@ -1,9 +1,9 @@
 #include "fault_vfs.h"
-#include "format.h"
+#include "test.h"
+
 #include "pagestore/bytes.h"
 #include "pagestore/pagestore.h"
 #include "pagestore/wal.h"
-#include "test.h"
 
 #include <errno.h>
 #include <pthread.h>

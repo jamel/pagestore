@@ -1,15 +1,16 @@
 #include "allocator.h"
 #include "crc32c.h"
 #include "mem_backend.h"
-#include "pagestore/pagestore.h"
 #include "store.h"
 #include "test.h"
+
+#include "pagestore/backend.h"
+#include "pagestore/pagestore.h"
 
 #include <errno.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 

@@ -16,7 +16,6 @@
 
 #include "pagestore/backend.h"
 #include "pagestore/pagestore.h"
-#include "pagestore/types.h"
 
 typedef struct mem_backend mem_backend;
 

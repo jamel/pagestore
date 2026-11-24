@@ -29,8 +29,6 @@
 /* ps_vnode.frame of a node without a frame. */
 #define PS_NO_FRAME UINT32_MAX
 
-struct ps_entry;
-
 typedef struct ps_vnode {
     u64 lsn; /* producing op's LSN, or 0 until ps_free's disk node is loaded */
     struct ps_vnode *older; /* chain, newest first (latch); free-list link while unallocated */

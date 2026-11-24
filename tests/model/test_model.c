@@ -6,11 +6,12 @@
 #include "allocator.h"
 #include "mem_backend.h"
 #include "model.h"
-#include "pagestore/pagestore.h"
 #include "rng.h"
 #include "store.h"
 #include "test.h"
 #include "workload.h"
+
+#include "pagestore/pagestore.h"
 
 #include <errno.h>
 #include <stdio.h>

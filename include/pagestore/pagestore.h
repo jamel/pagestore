@@ -49,15 +49,13 @@
  *     ps_op_commit(s);
  */
 
-#include "pagestore/backend.h"
-#include "pagestore/compiler.h"
-#include "pagestore/types.h"
-#include "pagestore/vfs.h"
+#include "pagestore/types.h" // IWYU pragma: export
 
 PS_EXTERN_C_BEGIN
 
-typedef struct ps_store ps_store;
 typedef struct ps_snapshot ps_snapshot;
+typedef struct ps_backend ps_backend;
+typedef struct ps_vfs ps_vfs;
 
 /* Every page starts with this 24-byte header. The rest belongs to the caller. */
 typedef struct ps_page {
