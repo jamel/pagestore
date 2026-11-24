@@ -60,7 +60,7 @@ struct ps_backend_ctx {
     /* Only checkpoint code updates the durable header after open. */
     u32 num_groups;
     u64 seq;
-    u64 lsn;
+    ps_lsn lsn;
 
     fb_state state;
     ps_journal_header jh;
@@ -287,7 +287,8 @@ static int format_data(ps_backend_ctx *c, u32 page_size)
     if (rv != 0) {
         return rv;
     }
-    const ps_data_header h = {.page_size = page_size, .num_groups = 1, .seq = 0, .durable_lsn = 0};
+    const ps_data_header h =
+        {.page_size = page_size, .num_groups = 1, .seq = 0, .durable_lsn = PS_LSN_NONE};
     rv = write_header(c, &f, &h);
     if (rv == 0) {
         rv = c->vfs.fsync(c->vfs.ctx, &f);
@@ -489,7 +490,7 @@ static void reset_ckpt(ps_backend_ctx *c)
     c->written = 0;
 }
 
-static int fb_ckpt_begin(ps_backend_ctx *c, u64 lsn, u32 num_groups, u32 count)
+static int fb_ckpt_begin(ps_backend_ctx *c, ps_lsn lsn, u32 num_groups, u32 count)
 {
     if (c->state == FB_FAILED) {
         return EIO;

@@ -105,19 +105,19 @@ static bool self_valid(const ps_page *p, u32 id)
         return false;
     }
     u8 want[CALLER];
-    w_pattern_fill(fill_of(id, p->lsn), 0, want, pattern_len);
+    w_pattern_fill(fill_of(id, p->lsn.raw), 0, want, pattern_len);
     return memcmp((const u8 *) p + HDR, want, pattern_len) == 0;
 }
 
 /* True if p is exactly the version of id written at lsn. */
 static bool is_version(const ps_page *p, u32 id, u64 lsn)
 {
-    return p->lsn == lsn && self_valid(p, id);
+    return p->lsn.raw == lsn && self_valid(p, id);
 }
 
 static void begin(void)
 {
-    T_OK(ps_op_begin(s, next_lsn++));
+    T_OK(ps_op_begin(s, ps_lsn_from(next_lsn++)));
 }
 
 /* The LSN from the last begin, even after its operation has committed. */
@@ -192,7 +192,7 @@ static void reopen(const ps_config *cfg)
 {
     ps_close(s);
     open_cfg(cfg, 0);
-    T_EQ(ps_committed_lsn(s), next_lsn - 1);
+    T_EQ(ps_committed_lsn(s).raw, next_lsn - 1);
 }
 
 /* Pass the frame cost of the next action before attempting it. */
@@ -473,7 +473,7 @@ static void *pl_reader_main(void *arg)
     while (!atomic_load(&pl_stop)) {
         ps_snapshot *sn = NULL;
         T_OK(ps_snapshot_open(s, &sn));
-        const u64 S = ps_snapshot_lsn(sn);
+        const u64 S = ps_snapshot_lsn(sn).raw;
         for (u32 k = 0; k < 2 * PL_CAP; k++) {
             const u32 id = 1 + (u32) rng_below(&g, PL_LIVE);
             const ps_page *p = NULL;
@@ -487,7 +487,7 @@ static void *pl_reader_main(void *arg)
                 break;
             }
             T_OK(rv);
-            T_CHECK(p->lsn <= S);
+            T_CHECK(p->lsn.raw <= S);
             T_CHECK(self_valid(p, id));
             r->reads++;
         }

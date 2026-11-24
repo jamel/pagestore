@@ -63,11 +63,11 @@ struct ps_wal {
     bool have_seg;
     u64 cur_seq;
     u64 file_off; /* excludes records still buffered */
-    u64 written;
-    u64 synced;
+    ps_lsn written;
+    ps_lsn synced;
     bool sealed; /* set until the next segment is published */
     u64 first_seq; /* oldest live segment */
-    u64 *prev_lsns; /* prev_lsn of segments first_seq..cur_seq */
+    ps_lsn *prev_lsns; /* prev_lsn of segments first_seq..cur_seq */
     usize nsegs;
     usize segs_cap;
     u32 iters; /* truncation skips deletion while iterators are open */
@@ -75,7 +75,7 @@ struct ps_wal {
     /* buf_mu */
     u8 *buf;
     usize buf_len;
-    u64 appended;
+    ps_lsn appended;
 
     /* appender only */
     u64 seg_end; /* includes bytes still buffered */
@@ -240,14 +240,14 @@ static int drain(ps_wal *w)
 }
 
 /* Larger records bypass the append buffer. The caller has drained it first. */
-static int write_direct(ps_wal *w, u64 lsn, const void *payload, u32 len)
+static int write_direct(ps_wal *w, ps_lsn lsn, const void *payload, u32 len)
 {
     u8 hdr[PS_WAL_REC_HEADER_SIZE];
     u8 lsn_le[8];
-    ps_put_le64(lsn_le, lsn);
+    ps_put_le64(lsn_le, lsn.raw);
     ps_put_le32(hdr, len);
     ps_put_le32(hdr + 4, ps_crc32c(ps_crc32c(0, lsn_le, sizeof(lsn_le)), payload, len));
-    ps_put_le64(hdr + 8, lsn);
+    ps_put_le64(hdr + 8, lsn.raw);
     const usize size = ps_wal_rec_size(len);
     const usize pad = size - PS_WAL_REC_HEADER_SIZE - len;
     u64 off = w->file_off;
@@ -279,7 +279,7 @@ static bool is_disk_full(int err)
  * allows a retry after disk exhaustion during create or preallocation,
  * provided no temp file remains.
  */
-static int publish(ps_wal *w, u64 seq, u64 prev_lsn, ps_file *out, bool *clean)
+static int publish(ps_wal *w, u64 seq, ps_lsn prev_lsn, ps_file *out, bool *clean)
 {
     *clean = false;
     ps_file f;
@@ -329,7 +329,7 @@ static int reserve_seg(ps_wal *w)
         return 0;
     }
     const usize cap = w->segs_cap == 0 ? 8 : w->segs_cap * 2;
-    u64 *p = realloc(w->prev_lsns, cap * sizeof(*p));
+    ps_lsn *p = realloc(w->prev_lsns, cap * sizeof(*p));
     if (p == NULL) {
         return ENOMEM;
     }
@@ -385,13 +385,13 @@ static int rotate(ps_wal *w, bool *fatal, const char **what)
 
 /* ---- public API ---------------------------------------------------------- */
 
-int ps_wal_append(ps_wal *w, u64 lsn, const void *buf, usize len)
+int ps_wal_append(ps_wal *w, ps_lsn lsn, const void *buf, usize len)
 {
     atomic_store_explicit(&w->appending, true, memory_order_release);
     if (is_failed(w)) {
         return EIO;
     }
-    if (lsn <= w->appended || len > w->cfg.max_record_size) {
+    if (ps_lsn_le(lsn, w->appended) || len > w->cfg.max_record_size) {
         return EINVAL;
     }
     const u32 n = (u32) len;
@@ -475,7 +475,7 @@ int ps_wal_append(ps_wal *w, u64 lsn, const void *buf, usize len)
     return 0;
 }
 
-int ps_wal_flush(ps_wal *w, u64 lsn)
+int ps_wal_flush(ps_wal *w, ps_lsn lsn)
 {
     if (is_failed(w)) {
         return EIO;
@@ -486,9 +486,9 @@ int ps_wal_flush(ps_wal *w, u64 lsn)
         return EIO;
     }
     pthread_mutex_lock(&w->buf_mu);
-    const u64 target = PS_MIN(lsn, w->appended);
+    const ps_lsn target = ps_lsn_lt(lsn, w->appended) ? lsn : w->appended;
     pthread_mutex_unlock(&w->buf_mu);
-    if (w->synced >= target) {
+    if (ps_lsn_ge(w->synced, target)) {
         pthread_mutex_unlock(&w->io_mu);
         return 0;
     }
@@ -511,13 +511,13 @@ int ps_wal_flush(ps_wal *w, u64 lsn)
     return 0;
 }
 
-int ps_wal_truncate(ps_wal *w, u64 lsn)
+int ps_wal_truncate(ps_wal *w, ps_lsn lsn)
 {
     pthread_mutex_lock(&w->io_mu);
     int rv = 0;
     usize drop = 0;
     /* Recovery can be reading these files while the checkpoint runs. */
-    while (w->iters == 0 && w->nsegs - drop >= 2 && w->prev_lsns[drop + 1] <= lsn) {
+    while (w->iters == 0 && w->nsegs - drop >= 2 && ps_lsn_le(w->prev_lsns[drop + 1], lsn)) {
         rv = w->vfs.unlink(w->vfs.ctx, seg_path(w, w->path, w->first_seq + drop, false));
         if (rv != 0 && rv != ENOENT) {
             break;
@@ -547,12 +547,12 @@ int ps_wal_truncate(ps_wal *w, u64 lsn)
 
 /* ---- hooks --------------------------------------------------------------- */
 
-static int hook_flush_log(ps_log_hooks_ctx *ctx, u64 lsn)
+static int hook_flush_log(ps_log_hooks_ctx *ctx, ps_lsn lsn)
 {
     return ps_wal_flush(ctx->w, lsn);
 }
 
-static void hook_checkpoint_done(ps_log_hooks_ctx *ctx, u64 lsn)
+static void hook_checkpoint_done(ps_log_hooks_ctx *ctx, ps_lsn lsn)
 {
     ps_wal_truncate(ctx->w, lsn); /* Logs unlink errors and retries leftovers on a later call. */
 }
@@ -659,7 +659,7 @@ typedef struct seg_scan {
     bool have_f;
     u64 size;
     u64 off;
-    u64 last; /* starts at the header's prev_lsn */
+    ps_lsn last; /* starts at the header's prev_lsn */
     u8 *buf; /* window for file bytes [win_off, win_off + win_len) */
     usize cap;
     u64 win_off;
@@ -758,7 +758,7 @@ static int scan_open(
 static int scan_next(
     const ps_vfs *vfs,
     seg_scan *sc,
-    u64 *lsn,
+    ps_lsn *lsn,
     const u8 **payload,
     u32 *len,
     bool *ok)
@@ -793,16 +793,16 @@ static int cmp_u64(const void *a, const void *b)
     return x < y ? -1 : x > y ? 1 : 0;
 }
 
-/* An empty WAL starts at segment 1 when the store's durable LSN is 0. */
+/* An empty WAL starts at segment 1 when the store's durable LSN is PS_LSN_NONE. */
 static int open_fresh(ps_wal *w)
 {
-    if (ps_durable_lsn(w->store) != 0) {
+    if (!ps_lsn_is_none(ps_durable_lsn(w->store))) {
         ps_log(
             w->store,
             PS_LOG_ERROR,
             "WAL %s has no segments but the store's durable LSN is %llu: the log was lost",
             w->dir,
-            (unsigned long long) ps_durable_lsn(w->store));
+            (unsigned long long) ps_durable_lsn(w->store).raw);
         return EBADMSG;
     }
     int rv = reserve_seg(w);
@@ -810,14 +810,14 @@ static int open_fresh(ps_wal *w)
         return rv;
     }
     bool clean = false;
-    rv = publish(w, 1, 0, &w->seg, &clean);
+    rv = publish(w, 1, PS_LSN_NONE, &w->seg, &clean);
     if (rv != 0) {
         return rv;
     }
     w->have_seg = true;
     w->cur_seq = 1;
     w->first_seq = 1;
-    w->prev_lsns[0] = 0;
+    w->prev_lsns[0] = PS_LSN_NONE;
     w->nsegs = 1;
     w->file_off = PS_WAL_SEG_HEADER_SIZE;
     w->seg_end = PS_WAL_SEG_HEADER_SIZE;
@@ -830,8 +830,8 @@ static int find_anchor(
     seg_scan *sc,
     const u64 *segs,
     usize n,
-    u64 d,
-    u64 *prev,
+    ps_lsn d,
+    ps_lsn *prev,
     usize *anchor)
 {
     for (usize i = n; i-- > 0;) {
@@ -850,7 +850,7 @@ static int find_anchor(
             return rv;
         }
         prev[i] = h.prev_lsn;
-        if (h.prev_lsn <= d) {
+        if (ps_lsn_le(h.prev_lsn, d)) {
             *anchor = i;
             return 0;
         }
@@ -864,7 +864,7 @@ static int find_anchor(
                 "WAL %s: segment %016llx is missing (records after the durable LSN %llu are lost)",
                 w->dir,
                 (unsigned long long) (segs[i] - 1),
-                (unsigned long long) d);
+                (unsigned long long) d.raw);
             return EBADMSG;
         }
     }
@@ -873,9 +873,9 @@ static int find_anchor(
         PS_LOG_ERROR,
         "WAL %s: no segment starts at or before the durable LSN %llu (oldest %016llx starts after %llu)",
         w->dir,
-        (unsigned long long) d,
+        (unsigned long long) d.raw,
         (unsigned long long) segs[0],
-        (unsigned long long) prev[0]);
+        (unsigned long long) prev[0].raw);
     return EBADMSG;
 }
 
@@ -889,31 +889,31 @@ static int validate(
     const u64 *segs,
     usize n,
     usize anchor,
-    const u64 *prev,
-    u64 *last,
+    const ps_lsn *prev,
+    ps_lsn *last,
     u64 *end,
     u64 *size)
 {
     for (usize i = anchor; i < n; i++) {
-        if (i > anchor && prev[i] != last[i - 1]) {
+        if (i > anchor && !ps_lsn_eq(prev[i], last[i - 1])) {
             ps_log(
                 w->store,
                 PS_LOG_ERROR,
                 "WAL %s: segment %016llx starts after LSN %llu but segment %016llx ends at LSN %llu",
                 w->dir,
                 (unsigned long long) segs[i],
-                (unsigned long long) prev[i],
+                (unsigned long long) prev[i].raw,
                 (unsigned long long) segs[i - 1],
-                (unsigned long long) last[i - 1]);
+                (unsigned long long) last[i - 1].raw);
             return EBADMSG;
         }
         ps_wal_seg_header h;
         int rv = scan_open(&w->vfs, seg_path(w, w->path, segs[i], false), sc, segs[i], &h);
-        if (rv == 0 && h.prev_lsn != prev[i]) {
+        if (rv == 0 && !ps_lsn_eq(h.prev_lsn, prev[i])) {
             rv = EBADMSG; /* The header changed after find_anchor read it. */
         }
         while (rv == 0) {
-            u64 lsn = 0;
+            ps_lsn lsn = PS_LSN_NONE;
             const u8 *payload = NULL;
             u32 len = 0;
             bool ok = false;
@@ -991,9 +991,9 @@ static int seal_at_open(ps_wal *w, u64 seq, u64 end, u64 size)
 static int open_existing(ps_wal *w, u64 *segs, usize n)
 {
     qsort(segs, n, sizeof(*segs), cmp_u64);
-    const u64 d = ps_durable_lsn(w->store);
-    u64 *prev = calloc(n, sizeof(*prev));
-    u64 *last = calloc(n, sizeof(*last));
+    const ps_lsn d = ps_durable_lsn(w->store);
+    ps_lsn *prev = calloc(n, sizeof(*prev));
+    ps_lsn *last = calloc(n, sizeof(*last));
     seg_scan sc;
     memset(&sc, 0, sizeof(sc));
     int rv = prev == NULL || last == NULL ? ENOMEM : 0;
@@ -1032,16 +1032,16 @@ static int open_existing(ps_wal *w, u64 *segs, usize n)
     if (rv == 0) {
         rv = seal_at_open(w, newest, end, size);
     }
-    const u64 last_lsn = rv == 0 ? last[n - 1] : 0;
-    if (rv == 0 && last_lsn < d) {
+    const ps_lsn last_lsn = rv == 0 ? last[n - 1] : PS_LSN_NONE;
+    if (rv == 0 && ps_lsn_lt(last_lsn, d)) {
         ps_log(
             w->store,
             PS_LOG_WARN,
             "WAL %s: the last valid LSN %llu is below the store's durable LSN %llu "
             "(operations not logged, or the newest segments were lost)",
             w->dir,
-            (unsigned long long) last_lsn,
-            (unsigned long long) d);
+            (unsigned long long) last_lsn.raw,
+            (unsigned long long) d.raw);
     }
     if (rv == 0) {
         bool clean = false;
@@ -1068,8 +1068,8 @@ static int open_existing(ps_wal *w, u64 *segs, usize n)
             w->dir,
             (unsigned long long) segs[anchor],
             (unsigned long long) newest,
-            (unsigned long long) last_lsn,
-            (unsigned long long) d);
+            (unsigned long long) last_lsn.raw,
+            (unsigned long long) d.raw);
     }
     free(prev);
     free(last);
@@ -1182,11 +1182,11 @@ ps_store *ps_wal_store(const ps_wal *w)
 
 struct ps_wal_iter {
     ps_wal *w;
-    u64 from;
+    ps_lsn from;
     u64 first_seq;
     u64 seq; /* the current or next segment to read */
     u64 end_seq; /* new segment, empty until the first append */
-    u64 *prevs; /* copies segment prev_lsn values from first_seq through end_seq */
+    ps_lsn *prevs; /* copy of prev_lsn for segments first_seq..end_seq */
     char *path;
     seg_scan sc;
     bool done;
@@ -1197,7 +1197,7 @@ static bool appending(ps_wal *w)
     return atomic_load_explicit(&w->appending, memory_order_acquire);
 }
 
-int ps_wal_iter_open(ps_wal *w, u64 from_lsn, ps_wal_iter **out)
+int ps_wal_iter_open(ps_wal *w, ps_lsn from_lsn, ps_wal_iter **out)
 {
     if (out != NULL) {
         *out = NULL;
@@ -1253,7 +1253,7 @@ static int iter_changed(ps_wal_iter *it, const char *what)
     return EBADMSG;
 }
 
-int ps_wal_iter_next(ps_wal_iter *it, u64 *lsn, const void **buf, usize *len)
+int ps_wal_iter_next(ps_wal_iter *it, ps_lsn *lsn, const void **buf, usize *len)
 {
     ps_wal *w = it->w;
     if (appending(w)) {
@@ -1268,7 +1268,7 @@ int ps_wal_iter_next(ps_wal_iter *it, u64 *lsn, const void **buf, usize *len)
                 break;
             }
             /* The next header tells us whether we can skip this whole file. */
-            if (it->prevs[idx + 1] < it->from) {
+            if (ps_lsn_lt(it->prevs[idx + 1], it->from)) {
                 it->seq++;
                 continue;
             }
@@ -1279,7 +1279,7 @@ int ps_wal_iter_next(ps_wal_iter *it, u64 *lsn, const void **buf, usize *len)
                 scan_close(&w->vfs, &it->sc);
                 return iter_changed(it, "was deleted");
             }
-            if (rv == EBADMSG || (rv == 0 && h.prev_lsn != it->prevs[idx])) {
+            if (rv == EBADMSG || (rv == 0 && !ps_lsn_eq(h.prev_lsn, it->prevs[idx]))) {
                 scan_close(&w->vfs, &it->sc);
                 return iter_changed(it, "has a different header");
             }
@@ -1288,7 +1288,7 @@ int ps_wal_iter_next(ps_wal_iter *it, u64 *lsn, const void **buf, usize *len)
                 return rv;
             }
         }
-        u64 l = 0;
+        ps_lsn l = PS_LSN_NONE;
         const u8 *payload = NULL;
         u32 n = 0;
         bool ok = false;
@@ -1298,14 +1298,14 @@ int ps_wal_iter_next(ps_wal_iter *it, u64 *lsn, const void **buf, usize *len)
         }
         if (!ok) {
             /* This segment is sealed. Expect EOF at the next header's prev_lsn. */
-            if (it->sc.off != it->sc.size || it->sc.last != it->prevs[idx + 1]) {
+            if (it->sc.off != it->sc.size || !ps_lsn_eq(it->sc.last, it->prevs[idx + 1])) {
                 return iter_changed(it, "changed");
             }
             scan_close(&w->vfs, &it->sc);
             it->seq++;
             continue;
         }
-        if (l < it->from) {
+        if (ps_lsn_lt(l, it->from)) {
             continue;
         }
         *lsn = l;

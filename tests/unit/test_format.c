@@ -13,7 +13,7 @@ static void test_data_header_layout(void)
         .page_size = 8192,
         .num_groups = 3,
         .seq = 0x0102030405060708ull,
-        .durable_lsn = 0x1112131415161718ull,
+        .durable_lsn = ps_lsn_from(0x1112131415161718ull),
     };
     u8 b[PS_DATA_HEADER_SIZE];
 
@@ -31,7 +31,8 @@ static void test_data_header_layout(void)
 
 static void test_data_header_roundtrip_and_corruption(void)
 {
-    ps_data_header h = {.page_size = 4096, .num_groups = 3, .seq = 7, .durable_lsn = 1234};
+    ps_data_header h =
+        {.page_size = 4096, .num_groups = 3, .seq = 7, .durable_lsn = ps_lsn_from(1234)};
     ps_data_header g;
     u8 b[PS_DATA_HEADER_SIZE];
 
@@ -84,7 +85,8 @@ static void test_data_header_roundtrip_and_corruption(void)
 
 static void test_journal_layout(void)
 {
-    ps_journal_header h = {.page_size = 4096, .num_groups = 2, .count = 3, .seq = 9, .lsn = 77};
+    ps_journal_header h =
+        {.page_size = 4096, .num_groups = 2, .count = 3, .seq = 9, .lsn = ps_lsn_from(77)};
     ps_journal_header g;
     u8 b[PS_JOURNAL_HEADER_SIZE];
     u8 t[PS_JOURNAL_TRAILER_SIZE];
@@ -120,7 +122,7 @@ static void test_journal_layout(void)
     T_EQ(g.num_groups, 2);
     T_EQ(g.count, 3);
     T_EQ(g.seq, 9);
-    T_EQ(g.lsn, 77);
+    T_EQ(g.lsn.raw, 77);
 
     h.count = 0;
     ps_journal_header_encode(&h, b);
@@ -178,7 +180,9 @@ static void test_journal_layout(void)
 
 static void test_wal_header_roundtrip(void)
 {
-    const ps_wal_seg_header h = {.seq = 0x0102030405060708ull, .prev_lsn = 0xA1A2A3A4A5A6A7A8ull};
+    const ps_wal_seg_header h = {
+        .seq = 0x0102030405060708ull,
+        .prev_lsn = ps_lsn_from(0xA1A2A3A4A5A6A7A8ull)};
     ps_wal_seg_header g;
     u8 b[PS_WAL_SEG_HEADER_SIZE];
 
@@ -188,7 +192,7 @@ static void test_wal_header_roundtrip(void)
     T_EQ(ps_get_le32(b + 8), 1);
     T_EQ(ps_get_le32(b + 12), 0);
     T_EQ(ps_get_le64(b + 16), h.seq);
-    T_EQ(ps_get_le64(b + 24), h.prev_lsn);
+    T_EQ(ps_get_le64(b + 24), h.prev_lsn.raw);
     T_EQ(ps_get_le32(b + 32), ps_crc32c(0, b, 32));
     T_EQ(ps_get_le32(b + 36), 0);
 
@@ -229,13 +233,13 @@ static void test_wal_rec_roundtrip_and_rejects(void)
 {
     u8 b[64];
     u8 lsn_le[8];
-    u64 lsn = 0;
+    ps_lsn lsn = PS_LSN_NONE;
     const u8 *payload = NULL;
     u32 len = 0;
     usize size = 0;
 
     memset(b, 0xCC, sizeof(b));
-    ps_wal_rec_encode(b, 42, "hello", 5);
+    ps_wal_rec_encode(b, ps_lsn_from(42), "hello", 5);
     T_EQ(ps_get_le32(b), 5);
     ps_put_le64(lsn_le, 42);
     T_EQ(ps_get_le32(b + 4), ps_crc32c(ps_crc32c(0, lsn_le, 8), "hello", 5));
@@ -244,59 +248,61 @@ static void test_wal_rec_roundtrip_and_rejects(void)
     T_MEMEQ(b + 21, "\0\0\0", 3);
     T_EQ(b[24], 0xCC); /* byte after the record */
 
-    T_OK(ps_wal_rec_decode(b, sizeof(b), 41, &lsn, &payload, &len, &size));
-    T_EQ(lsn, 42);
+    T_OK(ps_wal_rec_decode(b, sizeof(b), ps_lsn_from(41), &lsn, &payload, &len, &size));
+    T_EQ(lsn.raw, 42);
     T_EQ(len, 5);
     T_EQ(size, 24);
     T_CHECK(payload == b + 16);
     T_MEMEQ(payload, "hello", 5);
 
-    T_OK(ps_wal_rec_decode(b, 24, 0, &lsn, &payload, &len, &size));
+    T_OK(ps_wal_rec_decode(b, 24, PS_LSN_NONE, &lsn, &payload, &len, &size));
 
-    T_ERR(ps_wal_rec_decode(b, sizeof(b), 42, &lsn, &payload, &len, &size), EBADMSG);
-    T_ERR(ps_wal_rec_decode(b, sizeof(b), 100, &lsn, &payload, &len, &size), EBADMSG);
+    T_ERR(ps_wal_rec_decode(b, sizeof(b), ps_lsn_from(42), &lsn, &payload, &len, &size), EBADMSG);
+    T_ERR(ps_wal_rec_decode(b, sizeof(b), ps_lsn_from(100), &lsn, &payload, &len, &size), EBADMSG);
 
-    T_ERR(ps_wal_rec_decode(b, 23, 41, &lsn, &payload, &len, &size), EBADMSG);
-    T_ERR(ps_wal_rec_decode(b, 15, 41, &lsn, &payload, &len, &size), EBADMSG);
-    T_ERR(ps_wal_rec_decode(b, 0, 41, &lsn, &payload, &len, &size), EBADMSG);
+    T_ERR(ps_wal_rec_decode(b, 23, ps_lsn_from(41), &lsn, &payload, &len, &size), EBADMSG);
+    T_ERR(ps_wal_rec_decode(b, 15, ps_lsn_from(41), &lsn, &payload, &len, &size), EBADMSG);
+    T_ERR(ps_wal_rec_decode(b, 0, ps_lsn_from(41), &lsn, &payload, &len, &size), EBADMSG);
 
     for (int i = 0; i < 24; i++) {
         for (int bit = 0; bit < 8; bit++) {
             b[i] ^= (u8) (1u << bit);
-            T_ERR(ps_wal_rec_decode(b, sizeof(b), 0, &lsn, &payload, &len, &size), EBADMSG);
+            T_ERR(
+                ps_wal_rec_decode(b, sizeof(b), PS_LSN_NONE, &lsn, &payload, &len, &size),
+                EBADMSG);
             b[i] ^= (u8) (1u << bit);
         }
     }
-    T_OK(ps_wal_rec_decode(b, sizeof(b), 0, &lsn, &payload, &len, &size));
+    T_OK(ps_wal_rec_decode(b, sizeof(b), PS_LSN_NONE, &lsn, &payload, &len, &size));
 
     memset(b, 0, sizeof(b));
-    T_ERR(ps_wal_rec_decode(b, sizeof(b), 0, &lsn, &payload, &len, &size), EBADMSG);
+    T_ERR(ps_wal_rec_decode(b, sizeof(b), PS_LSN_NONE, &lsn, &payload, &len, &size), EBADMSG);
 
-    ps_wal_rec_encode(b, 1, NULL, 0);
-    T_OK(ps_wal_rec_decode(b, sizeof(b), 0, &lsn, &payload, &len, &size));
-    T_EQ(lsn, 1);
+    ps_wal_rec_encode(b, ps_lsn_from(1), NULL, 0);
+    T_OK(ps_wal_rec_decode(b, sizeof(b), PS_LSN_NONE, &lsn, &payload, &len, &size));
+    T_EQ(lsn.raw, 1);
     T_EQ(len, 0);
     T_EQ(size, 16);
-    ps_wal_rec_encode(b, 0xFFFFFFFFFFFFFFFFull, "12345678", 8);
-    T_OK(ps_wal_rec_decode(b, sizeof(b), 7, &lsn, &payload, &len, &size));
-    T_EQ(lsn, 0xFFFFFFFFFFFFFFFFull);
+    ps_wal_rec_encode(b, PS_LSN_MAX, "12345678", 8);
+    T_OK(ps_wal_rec_decode(b, sizeof(b), ps_lsn_from(7), &lsn, &payload, &len, &size));
+    T_EQ(lsn.raw, 0xFFFFFFFFFFFFFFFFull);
     T_EQ(len, 8);
     T_EQ(size, 24);
     T_MEMEQ(payload, "12345678", 8);
 
-    ps_wal_rec_encode(b, 10, "abc", 3);
-    ps_wal_rec_encode(b + ps_wal_rec_size(3), 11, "defghijkl", 9);
-    T_OK(ps_wal_rec_decode(b, sizeof(b), 9, &lsn, &payload, &len, &size));
-    T_EQ(lsn, 10);
+    ps_wal_rec_encode(b, ps_lsn_from(10), "abc", 3);
+    ps_wal_rec_encode(b + ps_wal_rec_size(3), ps_lsn_from(11), "defghijkl", 9);
+    T_OK(ps_wal_rec_decode(b, sizeof(b), ps_lsn_from(9), &lsn, &payload, &len, &size));
+    T_EQ(lsn.raw, 10);
     T_OK(ps_wal_rec_decode(b + size, sizeof(b) - size, lsn, &lsn, &payload, &len, &size));
-    T_EQ(lsn, 11);
+    T_EQ(lsn.raw, 11);
     T_EQ(len, 9);
     T_EQ(size, 32);
     T_MEMEQ(payload, "defghijkl", 9);
 
     /* The claimed length overflows the padded size on a 32-bit host. */
     ps_put_le32(b, 0xFFFFFFF0u);
-    T_ERR(ps_wal_rec_decode(b, sizeof(b), 0, &lsn, &payload, &len, &size), EBADMSG);
+    T_ERR(ps_wal_rec_decode(b, sizeof(b), PS_LSN_NONE, &lsn, &payload, &len, &size), EBADMSG);
 }
 
 int main(int argc, char **argv)

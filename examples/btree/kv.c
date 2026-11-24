@@ -68,7 +68,7 @@ typedef struct kv {
     ps_wal *wal;
     bt_tree tree;
     bool tree_open;
-    u64 next_lsn;
+    ps_lsn next_lsn;
     u8 *rec; /* holds one encoded record */
     struct ps_log_ctx log;
 } kv;
@@ -144,7 +144,7 @@ struct ps_apply_ctx {
     bt_tree *tree;
 };
 
-static int replay(ps_apply_ctx *ctx, ps_store *s, u64 lsn, const void *rec, usize len)
+static int replay(ps_apply_ctx *ctx, ps_store *s, ps_lsn lsn, const void *rec, usize len)
 {
     int rv = ps_op_begin(s, lsn);
     if (rv != 0) {
@@ -167,7 +167,7 @@ static int replay(ps_apply_ctx *ctx, ps_store *s, u64 lsn, const void *rec, usiz
  */
 static int kv_change(kv *db, const u8 *rec, usize len, bool flush)
 {
-    const u64 lsn = db->next_lsn;
+    const ps_lsn lsn = db->next_lsn;
     int rv = ps_op_begin(db->store, lsn);
     if (rv != 0) {
         return rv;
@@ -184,14 +184,15 @@ static int kv_change(kv *db, const u8 *rec, usize len, bool flush)
         return rv;
     }
     ps_op_commit(db->store);
-    db->next_lsn = lsn + 1;
+    db->next_lsn = ps_lsn_next(lsn);
     return 0;
 }
 
 /* Makes everything committed so far durable in the log. */
 static int kv_flush(kv *db)
 {
-    return db->next_lsn > 1 ? ps_wal_flush(db->wal, db->next_lsn - 1) : 0;
+    const ps_lsn last = ps_committed_lsn(db->store);
+    return ps_lsn_is_none(last) ? 0 : ps_wal_flush(db->wal, last);
 }
 
 /* Releases whatever kv_open set up. Checkpoints first if asked to. */
@@ -258,8 +259,8 @@ static int kv_open(kv *db, const char *dir, bool create, bool verbose)
         report("cannot replay the log", rv);
         return rv;
     }
-    db->next_lsn = ps_committed_lsn(db->store) + 1;
-    if (ps_committed_lsn(db->store) == 0) {
+    db->next_lsn = ps_lsn_next(ps_committed_lsn(db->store));
+    if (ps_lsn_is_none(ps_committed_lsn(db->store))) {
         const u8 rec = REC_CREATE;
         rv = kv_change(db, &rec, 1, true);
         if (rv != 0) {
@@ -560,8 +561,8 @@ static int cmd_stats(kv *db, int argc, char **argv)
         "cache           %llu hits, %llu misses\n",
         (unsigned long long) ss.cache_hits,
         (unsigned long long) ss.cache_misses);
-    printf("committed LSN   %llu\n", (unsigned long long) ss.committed_lsn);
-    printf("durable LSN     %llu\n", (unsigned long long) ss.durable_lsn);
+    printf("committed LSN   %llu\n", (unsigned long long) ss.committed_lsn.raw);
+    printf("durable LSN     %llu\n", (unsigned long long) ss.durable_lsn.raw);
     return EXIT_SUCCESS;
 }
 

@@ -97,17 +97,17 @@ int ps_page_in(ps_store *s, ps_entry *e, ps_vnode *frameless, bool writer, ps_vn
     }
 
     /* A disk version may be too new for a snapshot, but it must be committed. */
-    PS_ASSERT(p->lsn <= atomic_load(&s->committed_lsn));
+    PS_ASSERT(ps_lsn_le(p->lsn, ps_lsn_from(atomic_load(&s->committed_lsn))));
     if (frameless != NULL) {
         v = frameless;
-        if (v->lsn == 0) {
+        if (ps_lsn_is_none(v->lsn)) {
             /*
              * ps_free can leave a disk node without knowing its LSN. The
              * actual LSN keeps it below all the newer nodes in the chain.
              */
             v->lsn = p->lsn;
         } else {
-            PS_ASSERT(p->lsn == v->lsn); /* a kept version is exactly the disk copy */
+            PS_ASSERT(ps_lsn_eq(p->lsn, v->lsn)); /* a kept version is exactly the disk copy */
         }
     } else {
         PS_ASSERT(e->head == NULL); /* nobody changes a LOADING entry's chain */

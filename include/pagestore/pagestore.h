@@ -10,32 +10,8 @@
  *
  * An operation that allocates a page and writes its first payload byte:
  *
- * Start with the defaults before overriding a setting.
- *
- *     ps_config cfg;
- *     ps_config_init(&cfg);
- *     cfg.cache_size = 8u << 20;
- *     ps_store *s;
- *     int rv = ps_open(dir, &cfg, PS_CREATE, &s);
- *
- * Use s only if rv is 0, then close it with ps_close.
- *
- * This operation allocates a page and writes its first payload byte.
- *
- *     int alloc_byte(ps_store *s, u64 lsn, ps_page_id *id)
- *     {
- *         int rv = ps_op_begin(s, lsn);
- *         if (rv != 0) {
- *             return rv;
- *         }
- *         ps_page *page;
- *         rv = ps_alloc(s, id, &page);
- *         if (rv == 0) {
- *             ((u8 *) page)[PS_PAGE_HEADER_SIZE] = 42;
- *             ps_op_commit(s);
- *         } else {
- *             ps_op_abort(s);
- *         }
+ *     int rv = ps_op_begin(s, lsn);
+ *     if (rv != 0) {
  *         return rv;
  *     }
  *     ps_page_id id;
@@ -63,7 +39,7 @@ typedef struct ps_page {
     ps_page_id id; /* store-owned */
     u32 checksum; /* CRC32C on disk, always 0 in memory */
     u32 flags; /* store-owned, see PS_PAGE_FLAG_* */
-    u64 lsn; /* store-owned, set by the operation that produced this version */
+    ps_lsn lsn; /* store-owned, set by the operation that produced this version */
 } ps_page;
 
 #define PS_PAGE_HEADER_SIZE 24
@@ -139,8 +115,8 @@ void ps_close(ps_store *s);
 
 u32 ps_page_size(const ps_store *s);
 /* The committed LSN can be ahead of the last durable checkpoint. */
-u64 ps_committed_lsn(const ps_store *s);
-u64 ps_durable_lsn(const ps_store *s);
+ps_lsn ps_committed_lsn(const ps_store *s);
+ps_lsn ps_durable_lsn(const ps_store *s);
 
 /*
  * op_frames includes copies, allocations, distinct ps_read pins and a
@@ -167,7 +143,7 @@ typedef struct ps_pressure {
  * If another thread owns the operation, begin waits before checking lsn.
  * An old LSN or a nested begin returns EINVAL. A failed store returns EIO.
  */
-int ps_op_begin(ps_store *s, u64 lsn);
+int ps_op_begin(ps_store *s, ps_lsn lsn);
 /* Publishes the operation in memory without allocating or doing I/O. */
 void ps_op_commit(ps_store *s);
 /* Discards every change of the operation. */
@@ -192,7 +168,7 @@ int ps_write(ps_store *s, ps_page_id id, ps_page **page);
  * existing snapshots can read only resident pages.
  */
 int ps_snapshot_open(ps_store *s, ps_snapshot **out);
-u64 ps_snapshot_lsn(const ps_snapshot *snap);
+ps_lsn ps_snapshot_lsn(const ps_snapshot *snap);
 /*
  * Pins the page until unpin or close. Reading a pinned ID again returns the
  * same pointer without a second pin. ENOBUFS when pins or frames run out.
@@ -221,9 +197,9 @@ typedef struct ps_log_hooks_ctx ps_log_hooks_ctx;
  * Runs before checkpoint page writes. Return 0 once the log is durable
  * through lsn. Any other return fails the store.
  */
-typedef int (*ps_flush_log_fn)(ps_log_hooks_ctx *ctx, u64 lsn);
+typedef int (*ps_flush_log_fn)(ps_log_hooks_ctx *ctx, ps_lsn lsn);
 /* Runs after the checkpoint is durable. Log records through lsn can be dropped. */
-typedef void (*ps_checkpoint_done_fn)(ps_log_hooks_ctx *ctx, u64 lsn);
+typedef void (*ps_checkpoint_done_fn)(ps_log_hooks_ctx *ctx, ps_lsn lsn);
 
 /* Either log hook may be NULL. */
 typedef struct ps_log_hooks {
@@ -258,9 +234,9 @@ struct ps_stats {
     u64 snapshots_cut_off;
     u64 checkpoints_run;
     u64 checkpoints_failed;
-    u64 writer_waits; /* frame requests (writer or reader) that waited for the checkpointer */
-    u64 committed_lsn;
-    u64 durable_lsn;
+    u64 writer_waits; /* waits for the checkpointer, readers included */
+    ps_lsn committed_lsn;
+    ps_lsn durable_lsn;
     bool failed;
 };
 

@@ -233,7 +233,7 @@ static int append_tagged(ps_wal *w, u64 lsn, u32 len, u32 tag)
 {
     u8 buf[MAXREC + 8];
     fill_payload(buf, lsn, len, tag);
-    return ps_wal_append(w, lsn, buf, len);
+    return ps_wal_append(w, ps_lsn_from(lsn), buf, len);
 }
 
 static void append_rec(ps_wal *w, u64 lsn, u32 len)
@@ -261,11 +261,11 @@ static u64 check_iter_tagged(
     u64 *count)
 {
     ps_wal_iter *it = NULL;
-    T_OK(ps_wal_iter_open(w, from_lsn, &it));
+    T_OK(ps_wal_iter_open(w, ps_lsn_from(from_lsn), &it));
     u64 want = from_lsn == 0 ? 1 : from_lsn;
     u64 n = 0;
     for (;;) {
-        u64 lsn = 0;
+        ps_lsn lsn = PS_LSN_NONE;
         const void *buf = NULL;
         usize len = 0;
         const int rv = ps_wal_iter_next(it, &lsn, &buf, &len);
@@ -273,16 +273,16 @@ static u64 check_iter_tagged(
             break;
         }
         T_OK(rv);
-        T_EQ(lsn, want);
-        const u32 l = fixed_len != 0 ? fixed_len : rec_len(lsn);
+        T_EQ(lsn.raw, want);
+        const u32 l = fixed_len != 0 ? fixed_len : rec_len(lsn.raw);
         T_EQ(len, l);
         u8 exp[MAXREC + 8];
-        fill_payload(exp, lsn, l, lsn > tag_split ? tag_above : 0);
+        fill_payload(exp, lsn.raw, l, lsn.raw > tag_split ? tag_above : 0);
         T_MEMEQ(buf, exp, l);
         want++;
         n++;
     }
-    u64 lsn = 0;
+    ps_lsn lsn = PS_LSN_NONE;
     const void *buf = NULL;
     usize len = 0;
     T_ERR(ps_wal_iter_next(it, &lsn, &buf, &len), ENOENT);
@@ -312,11 +312,11 @@ static u64 seg_bytes(u64 first, u64 last)
 static int iter_until_err(ps_wal *w, u64 from_lsn, u64 *count)
 {
     ps_wal_iter *it = NULL;
-    T_OK(ps_wal_iter_open(w, from_lsn, &it));
+    T_OK(ps_wal_iter_open(w, ps_lsn_from(from_lsn), &it));
     *count = 0;
     int rv = 0;
     for (;;) {
-        u64 lsn = 0;
+        ps_lsn lsn = PS_LSN_NONE;
         const void *buf = NULL;
         usize len = 0;
         rv = ps_wal_iter_next(it, &lsn, &buf, &len);
@@ -332,7 +332,7 @@ static int iter_until_err(ps_wal *w, u64 from_lsn, u64 *count)
 /* Advance the store LSN independently of the WAL by committing one allocation. */
 static void commit_op(ps_store *s, u64 lsn)
 {
-    T_OK(ps_op_begin(s, lsn));
+    T_OK(ps_op_begin(s, ps_lsn_from(lsn)));
     ps_page_id id = PS_PAGE_ID_NONE;
     ps_page *p = NULL;
     T_OK(ps_alloc(s, &id, &p));
@@ -346,7 +346,7 @@ static void checkpoint_at(ps_store *s, u64 lsn)
     commit_op(s, lsn);
     ps_set_log_hooks(s, NULL);
     T_OK(ps_checkpoint(s));
-    T_EQ(ps_durable_lsn(s), lsn);
+    T_EQ(ps_durable_lsn(s).raw, lsn);
 }
 
 /* ---- tests ---- */
@@ -356,7 +356,7 @@ static void test_reopen_lists_records(void)
     ps_store *s = setup();
     ps_wal *w = open_wal(s);
     append_range(w, 1, 20, 0);
-    T_OK(ps_wal_flush(w, 20));
+    T_OK(ps_wal_flush(w, ps_lsn_from(20)));
     const u64 end1 = seg_size(1);
     T_EQ(end1, SEG);
     close_both(s, w);
@@ -372,20 +372,20 @@ static void test_reopen_lists_records(void)
         end += ps_wal_rec_size(rec_len(lsn));
     }
     T_EQ(seg_size(1), end);
-    T_EQ(seg_header(2).prev_lsn, 20);
+    T_EQ(seg_header(2).prev_lsn.raw, 20);
     T_EQ(seg_size(2), SEG);
     T_EQ(count_files().segs, 2);
     T_EQ(count_files().tmps, 0);
 
-    T_ERR(ps_wal_append(w, 20, NULL, 0), EINVAL);
+    T_ERR(ps_wal_append(w, ps_lsn_from(20), NULL, 0), EINVAL);
     append_range(w, 21, 25, 0);
-    T_OK(ps_wal_flush(w, 25));
+    T_OK(ps_wal_flush(w, ps_lsn_from(25)));
     close_both(s, w);
     fault_vfs_reboot(fv, FAULT_DROP_UNSYNCED);
     s = open_store(0);
     w = open_wal(s);
     T_EQ(check_iter(w, 1, 0, NULL), 25);
-    T_EQ(seg_header(3).prev_lsn, 25);
+    T_EQ(seg_header(3).prev_lsn.raw, 25);
     close_both(s, w);
     teardown();
 }
@@ -396,7 +396,7 @@ static void test_iter_spans_segments(void)
     ps_wal *w = open_wal(s);
     const u64 n = 3 * PER_SEG + 4;
     append_range(w, 1, n, BIG);
-    T_OK(ps_wal_flush(w, n));
+    T_OK(ps_wal_flush(w, ps_lsn_from(n)));
     close_both(s, w);
     s = open_store(0);
     w = open_wal(s);
@@ -418,18 +418,18 @@ static void test_iter_spans_segments(void)
     T_EQ(cnt, 0);
     ps_wal_iter *a = NULL;
     ps_wal_iter *b = NULL;
-    T_OK(ps_wal_iter_open(w, 1, &a));
-    T_OK(ps_wal_iter_open(w, 20, &b));
-    u64 la = 0;
-    u64 lb = 0;
+    T_OK(ps_wal_iter_open(w, ps_lsn_from(1), &a));
+    T_OK(ps_wal_iter_open(w, ps_lsn_from(20), &b));
+    ps_lsn la = PS_LSN_NONE;
+    ps_lsn lb = PS_LSN_NONE;
     const void *pa = NULL;
     const void *pb = NULL;
     usize na = 0;
     usize nb = 0;
     T_OK(ps_wal_iter_next(a, &la, &pa, &na));
     T_OK(ps_wal_iter_next(b, &lb, &pb, &nb));
-    T_EQ(la, 1);
-    T_EQ(lb, 20);
+    T_EQ(la.raw, 1);
+    T_EQ(lb.raw, 20);
     ps_wal_iter_close(a);
     ps_wal_iter_close(b);
     ps_wal_iter_close(NULL);
@@ -453,24 +453,24 @@ static void test_iter_invalid_after_append(void)
     ps_store *s = setup();
     ps_wal *w = open_wal(s);
     append_range(w, 1, 5, 0);
-    T_OK(ps_wal_flush(w, 5));
+    T_OK(ps_wal_flush(w, ps_lsn_from(5)));
     close_both(s, w);
     s = open_store(0);
     w = open_wal(s);
     ps_wal_iter *it = NULL;
-    T_OK(ps_wal_iter_open(w, 1, &it));
-    u64 lsn = 0;
+    T_OK(ps_wal_iter_open(w, ps_lsn_from(1), &it));
+    ps_lsn lsn = PS_LSN_NONE;
     const void *buf = NULL;
     usize len = 0;
     T_OK(ps_wal_iter_next(it, &lsn, &buf, &len));
-    T_EQ(lsn, 1);
+    T_EQ(lsn.raw, 1);
     append_rec(w, 6, 10);
     T_ERR(ps_wal_iter_next(it, &lsn, &buf, &len), EINVAL);
     ps_wal_iter_close(it);
     it = NULL;
-    T_ERR(ps_wal_iter_open(w, 1, &it), EINVAL);
+    T_ERR(ps_wal_iter_open(w, ps_lsn_from(1), &it), EINVAL);
     T_CHECK(it == NULL);
-    T_ERR(ps_wal_iter_open(NULL, 1, &it), EINVAL);
+    T_ERR(ps_wal_iter_open(NULL, ps_lsn_from(1), &it), EINVAL);
     close_both(s, w);
     teardown();
 }
@@ -480,29 +480,29 @@ static void test_iter_holds_off_truncate(void)
     ps_store *s = setup();
     ps_wal *w = open_wal(s);
     append_range(w, 1, 2 * PER_SEG + 3, BIG);
-    T_OK(ps_wal_flush(w, 2 * PER_SEG + 3));
+    T_OK(ps_wal_flush(w, ps_lsn_from(2 * PER_SEG + 3)));
     close_both(s, w);
     s = open_store(0);
     w = open_wal(s);
     ps_wal_iter *it = NULL;
-    T_OK(ps_wal_iter_open(w, 1, &it));
+    T_OK(ps_wal_iter_open(w, ps_lsn_from(1), &it));
     /* Simulate truncation by a checkpoint while recovery has an iterator open. */
-    T_OK(ps_wal_truncate(w, UINT64_MAX));
+    T_OK(ps_wal_truncate(w, PS_LSN_MAX));
     T_CHECK(seg_exists(1));
     T_CHECK(seg_exists(2));
-    u64 lsn = 0;
+    ps_lsn lsn = PS_LSN_NONE;
     const void *buf = NULL;
     usize len = 0;
     u64 want = 1;
     int rv = 0;
     while ((rv = ps_wal_iter_next(it, &lsn, &buf, &len)) == 0) {
-        T_EQ(lsn, want);
+        T_EQ(lsn.raw, want);
         want++;
     }
     T_ERR(rv, ENOENT);
     T_EQ(want, 2 * PER_SEG + 4);
     ps_wal_iter_close(it);
-    T_OK(ps_wal_truncate(w, UINT64_MAX));
+    T_OK(ps_wal_truncate(w, PS_LSN_MAX));
     T_CHECK(!seg_exists(1));
     T_CHECK(!seg_exists(3));
     T_CHECK(seg_exists(4));
@@ -518,10 +518,10 @@ static void test_torn_tail(void)
         c.buffer_size = 0; /* leave unsynced bytes in the file for the simulated crash */
         ps_wal *w = open_wal_cfg(s, &c);
         append_range(w, 1, 10, 0);
-        T_OK(ps_wal_flush(w, 10));
+        T_OK(ps_wal_flush(w, ps_lsn_from(10)));
         append_range(w, 11, 15, 0);
         fault_vfs_crash_at(fv, fault_vfs_points(fv) + 1);
-        T_ERR(ps_wal_flush(w, 15), EIO);
+        T_ERR(ps_wal_flush(w, ps_lsn_from(15)), EIO);
         T_CHECK(fault_vfs_crashed(fv));
         fault_vfs_reboot(fv, FAULT_RANDOM_UNSYNCED);
         close_both(s, w);
@@ -530,7 +530,7 @@ static void test_torn_tail(void)
         w = open_wal(s);
         const u64 k = check_iter(w, 1, 0, NULL);
         T_CHECK(k >= 10 && k <= 15);
-        T_EQ(seg_header(2).prev_lsn, k);
+        T_EQ(seg_header(2).prev_lsn.raw, k);
         close_both(s, w);
         fault_vfs_reboot(fv, FAULT_RANDOM_UNSYNCED);
         s = open_store(0);
@@ -546,7 +546,7 @@ static void build_segments(u64 last_lsn)
     ps_store *s = setup();
     ps_wal *w = open_wal(s);
     append_range(w, 1, last_lsn, BIG);
-    T_OK(ps_wal_flush(w, last_lsn));
+    T_OK(ps_wal_flush(w, ps_lsn_from(last_lsn)));
     close_both(s, w);
 }
 
@@ -603,7 +603,7 @@ static void test_corrupt_newest_is_tail(void)
     ps_store *s = open_store(0);
     ps_wal *w = open_wal(s);
     T_EQ(check_iter(w, 1, BIG, NULL), PER_SEG + 2);
-    T_EQ(seg_header(3).prev_lsn, PER_SEG + 2);
+    T_EQ(seg_header(3).prev_lsn.raw, PER_SEG + 2);
     close_both(s, w);
     teardown();
 }
@@ -618,7 +618,7 @@ static void test_broken_chain(void)
     u8 *buf = read_file(p, &size);
     ps_wal_seg_header h;
     T_OK(ps_wal_seg_header_decode(buf, &h));
-    h.prev_lsn = PER_SEG + 1;
+    h.prev_lsn = ps_lsn_from(PER_SEG + 1);
     ps_wal_seg_header_encode(&h, buf);
     free(buf);
     ps_file f;
@@ -654,13 +654,13 @@ static void test_obsolete_gap_tolerated(void)
     ps_store *s = setup();
     ps_wal *w = open_wal(s);
     append_range(w, 1, 2 * PER_SEG + 5, BIG);
-    T_OK(ps_wal_flush(w, 2 * PER_SEG + 5));
+    T_OK(ps_wal_flush(w, ps_lsn_from(2 * PER_SEG + 5)));
     checkpoint_at(s, 2 * PER_SEG + 2);
     close_both(s, w);
     T_CHECK(seg_exists(1));
     unlink_seg(2);
     s = open_store(0);
-    T_EQ(ps_durable_lsn(s), 2 * PER_SEG + 2);
+    T_EQ(ps_durable_lsn(s).raw, 2 * PER_SEG + 2);
     w = open_wal(s);
     T_CHECK(!seg_exists(1));
     T_CHECK(seg_exists(3));
@@ -669,12 +669,12 @@ static void test_obsolete_gap_tolerated(void)
     T_EQ(check_iter(w, 2 * PER_SEG + 1, BIG, &cnt), 2 * PER_SEG + 5);
     T_EQ(cnt, 5);
     ps_wal_iter *it = NULL;
-    T_OK(ps_wal_iter_open(w, 1, &it));
-    u64 lsn = 0;
+    T_OK(ps_wal_iter_open(w, ps_lsn_from(1), &it));
+    ps_lsn lsn = PS_LSN_NONE;
     const void *buf = NULL;
     usize len = 0;
     T_OK(ps_wal_iter_next(it, &lsn, &buf, &len));
-    T_EQ(lsn, 2 * PER_SEG + 1);
+    T_EQ(lsn.raw, 2 * PER_SEG + 1);
     ps_wal_iter_close(it);
     close_both(s, w);
     teardown();
@@ -685,7 +685,7 @@ static void test_obsolete_corrupt_ignored(void)
     ps_store *s = setup();
     ps_wal *w = open_wal(s);
     append_range(w, 1, 2 * PER_SEG + 5, BIG);
-    T_OK(ps_wal_flush(w, 2 * PER_SEG + 5));
+    T_OK(ps_wal_flush(w, ps_lsn_from(2 * PER_SEG + 5)));
     checkpoint_at(s, 2 * PER_SEG + 2);
     close_both(s, w);
     char p[64];
@@ -706,7 +706,7 @@ static void test_anchor_is_newest(void)
     ps_store *s = setup();
     ps_wal *w = open_wal(s);
     append_range(w, 1, 2 * PER_SEG + 5, BIG);
-    T_OK(ps_wal_flush(w, 2 * PER_SEG + 5));
+    T_OK(ps_wal_flush(w, ps_lsn_from(2 * PER_SEG + 5)));
     checkpoint_at(s, 2 * PER_SEG + 9); /* advance the store without logging this operation */
     close_both(s, w);
     s = open_store(0);
@@ -714,7 +714,7 @@ static void test_anchor_is_newest(void)
     T_CHECK(!seg_exists(1));
     T_CHECK(!seg_exists(2));
     T_CHECK(seg_exists(3));
-    T_EQ(seg_header(4).prev_lsn, 2 * PER_SEG + 5);
+    T_EQ(seg_header(4).prev_lsn.raw, 2 * PER_SEG + 5);
     u64 cnt = 0;
     check_iter(w, 2 * PER_SEG + 10, BIG, &cnt);
     T_EQ(cnt, 0);
@@ -729,7 +729,7 @@ static void test_no_anchor(void)
     ps_store *s = setup();
     ps_wal *w = open_wal(s);
     append_range(w, 1, 4 * PER_SEG + 10, BIG);
-    T_OK(ps_wal_flush(w, 4 * PER_SEG + 10));
+    T_OK(ps_wal_flush(w, ps_lsn_from(4 * PER_SEG + 10)));
     checkpoint_at(s, 50);
     close_both(s, w);
     for (u64 seq = 1; seq <= 4; seq++) {
@@ -745,7 +745,7 @@ static void test_no_anchor(void)
     s = setup();
     w = open_wal(s);
     append_range(w, 1, 4 * PER_SEG + 10, BIG);
-    T_OK(ps_wal_flush(w, 4 * PER_SEG + 10));
+    T_OK(ps_wal_flush(w, ps_lsn_from(4 * PER_SEG + 10)));
     checkpoint_at(s, 50);
     close_both(s, w);
     unlink_seg(4);
@@ -760,7 +760,7 @@ static void test_lost_log_nonzero_durable(void)
     ps_store *s = setup();
     ps_wal *w = open_wal(s);
     append_range(w, 1, 5, 0);
-    T_OK(ps_wal_flush(w, 5));
+    T_OK(ps_wal_flush(w, ps_lsn_from(5)));
     checkpoint_at(s, 5);
     close_both(s, w);
     unlink_seg(1);
@@ -801,7 +801,7 @@ static void test_repeated_reopen_no_appends(void)
         T_EQ(cnt, PER_SEG + 3);
         /* Empty segments can share the same prev_lsn across reopens. */
         T_EQ(count_files().segs, 3 + i);
-        T_EQ(seg_header(3 + i).prev_lsn, PER_SEG + 3);
+        T_EQ(seg_header(3 + i).prev_lsn.raw, PER_SEG + 3);
         if (i > 0) {
             T_EQ(seg_size(2 + i), PS_WAL_SEG_HEADER_SIZE);
         }
@@ -854,7 +854,7 @@ static void test_seal_failure(void)
         c.buffer_size = 0;
         ps_wal *w = open_wal_cfg(s, &c);
         append_range(w, 1, 4, 0);
-        T_OK(ps_wal_flush(w, 4));
+        T_OK(ps_wal_flush(w, ps_lsn_from(4)));
         close_both(s, w);
         s = open_store(0);
         fault_vfs_fail_at(fv, fault_vfs_points(fv) + k, EIO);
@@ -959,7 +959,7 @@ static void test_iter_detects_change(void)
                 break;
             case CH_HEADER_PREV: {
                 u8 hdr[PS_WAL_SEG_HEADER_SIZE];
-                const ps_wal_seg_header h = {.seq = 2, .prev_lsn = PER_SEG - 1};
+                const ps_wal_seg_header h = {.seq = 2, .prev_lsn = ps_lsn_from(PER_SEG - 1)};
                 ps_wal_seg_header_encode(&h, hdr);
                 ps_file f;
                 T_OK(vfs->open(vfs->ctx, p, 0, &f));
@@ -995,7 +995,7 @@ static void test_crash_truncate(void)
         ps_wal *w = open_wal(s);
         for (u64 lsn = 1; lsn <= n; lsn++) {
             append_rec(w, lsn, BIG);
-            T_OK(ps_wal_flush(w, lsn));
+            T_OK(ps_wal_flush(w, ps_lsn_from(lsn)));
             commit_op(s, lsn);
             if (lsn == PER_SEG + 4) {
                 T_OK(ps_checkpoint(s));
@@ -1009,7 +1009,7 @@ static void test_crash_truncate(void)
         fault_vfs_reboot(fv, FAULT_RANDOM_UNSYNCED);
         close_both(s, w);
         s = open_store(0);
-        const u64 d = ps_durable_lsn(s);
+        const u64 d = ps_durable_lsn(s).raw;
         T_CHECK(d == PER_SEG + 4 || d == n);
         w = open_wal(s);
         u64 cnt = 0;
@@ -1036,7 +1036,7 @@ static void test_double_crash_no_resurrection(void)
         c.buffer_size = 0;
         ps_wal *w = open_wal_cfg(s, &c);
         append_range(w, 1, 5, 0);
-        T_OK(ps_wal_flush(w, 5));
+        T_OK(ps_wal_flush(w, ps_lsn_from(5)));
         append_range(w, 6, 8, 0);
         fault_vfs_reboot(fv, FAULT_RANDOM_UNSYNCED);
         close_both(s, w);
@@ -1050,7 +1050,7 @@ static void test_double_crash_no_resurrection(void)
             T_OK(append_tagged(w, lsn, rec_len(lsn), 1));
         }
         if (seed % 2 == 0) {
-            T_OK(ps_wal_flush(w, p + 1));
+            T_OK(ps_wal_flush(w, ps_lsn_from(p + 1)));
         }
         fault_vfs_reboot(fv, FAULT_RANDOM_UNSYNCED);
         close_both(s, w);
@@ -1077,7 +1077,7 @@ static u64 crash_workload(ps_wal *w, u64 *acked)
             return lsn - 1;
         }
         if (lsn % 4 == 0) {
-            if (ps_wal_flush(w, lsn) != 0) {
+            if (ps_wal_flush(w, ps_lsn_from(lsn)) != 0) {
                 return lsn;
             }
             *acked = lsn;
@@ -1089,10 +1089,10 @@ static u64 crash_workload(ps_wal *w, u64 *acked)
 static u64 crash_check(ps_wal *w, u64 acked)
 {
     ps_wal_iter *it = NULL;
-    T_OK(ps_wal_iter_open(w, 1, &it));
+    T_OK(ps_wal_iter_open(w, ps_lsn_from(1), &it));
     u64 want = 1;
     for (;;) {
-        u64 lsn = 0;
+        ps_lsn lsn = PS_LSN_NONE;
         const void *buf = NULL;
         usize len = 0;
         const int rv = ps_wal_iter_next(it, &lsn, &buf, &len);
@@ -1100,11 +1100,11 @@ static u64 crash_check(ps_wal *w, u64 acked)
             break;
         }
         T_OK(rv);
-        T_EQ(lsn, want);
-        const u32 l = lsn % 5 == 0 ? BIG : rec_len(lsn) * 10u;
+        T_EQ(lsn.raw, want);
+        const u32 l = lsn.raw % 5 == 0 ? BIG : rec_len(lsn.raw) * 10u;
         T_EQ(len, l);
         u8 exp[MAXREC + 8];
-        fill_payload(exp, lsn, l, 0);
+        fill_payload(exp, lsn.raw, l, 0);
         T_MEMEQ(buf, exp, l);
         want++;
     }

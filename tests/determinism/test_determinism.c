@@ -81,9 +81,9 @@ static void compare_memory(dstore *d, const model *m)
     ps_snapshot *sn[NSTORES];
     const u64 lsn = model_last_lsn(m);
     for (u32 k = 0; k < NSTORES; k++) {
-        T_EQ(ps_committed_lsn(d[k].s), lsn);
+        T_EQ(ps_committed_lsn(d[k].s).raw, lsn);
         T_OK(ps_snapshot_open(d[k].s, &sn[k]));
-        T_EQ(ps_snapshot_lsn(sn[k]), lsn);
+        T_EQ(ps_snapshot_lsn(sn[k]).raw, lsn);
         struct ps_stats st;
         ps_stats(d[k].s, &st);
         T_EQ(st.allocated_pages, model_allocated_at(m, lsn, NULL, 0));
@@ -118,13 +118,13 @@ static void compare_durable(dstore *d, const model *m)
     const u64 lsn = model_last_lsn(m);
     const ps_backend_info i0 = mb_info(d[0].mb);
     T_EQ(i0.page_size, PS);
-    T_EQ(i0.durable_lsn, lsn);
+    T_EQ(i0.durable_lsn.raw, lsn);
     T_EQ(i0.num_groups, model_num_groups(m));
     for (u32 k = 1; k < NSTORES; k++) {
         const ps_backend_info ik = mb_info(d[k].mb);
         T_EQ(ik.page_size, i0.page_size);
         T_EQ(ik.num_groups, i0.num_groups);
-        T_EQ(ik.durable_lsn, i0.durable_lsn);
+        T_EQ(ik.durable_lsn.raw, i0.durable_lsn.raw);
     }
     const u32 gs = model_group_size(m);
     for (u32 g = 0; g < i0.num_groups; g++) {
@@ -196,15 +196,15 @@ static void run_seed(u64 seed)
 
     for (u32 k = 0; k < NSTORES; k++) {
         T_OK(ps_checkpoint(d[k].s));
-        T_EQ(ps_durable_lsn(d[k].s), model_last_lsn(m));
+        T_EQ(ps_durable_lsn(d[k].s).raw, model_last_lsn(m));
     }
     compare_durable(d, m);
 
     for (u32 k = 0; k < NSTORES; k++) {
         ps_close(d[k].s);
         open_one(&d[k], 0);
-        T_EQ(ps_committed_lsn(d[k].s), model_last_lsn(m));
-        T_EQ(ps_durable_lsn(d[k].s), model_last_lsn(m));
+        T_EQ(ps_committed_lsn(d[k].s).raw, model_last_lsn(m));
+        T_EQ(ps_durable_lsn(d[k].s).raw, model_last_lsn(m));
     }
     compare_memory(d, m);
     compare_durable(d, m);

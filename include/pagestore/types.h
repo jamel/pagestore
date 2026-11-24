@@ -33,9 +33,10 @@ PS_STATIC_ASSERT(sizeof(f64) == 8, "f64 must be 64 bits");
 PS_STATIC_ASSERT(sizeof(isize) == sizeof(usize), "isize and usize must have the same width");
 
 /*
- * A struct around one base value, so the compiler rejects mixing the two.
- * name_from wraps a value, name_eq compares, name_is_none tests for 0, and
- * .raw reads the value back.
+ * A struct around one integer value, so the compiler rejects mixing the
+ * two. name_from wraps a value and .raw reads it back. name_eq, name_lt,
+ * name_le, name_gt and name_ge compare, and name_is_none tests for 0.
+ * name_next adds one, and the caller must make sure it cannot overflow.
  */
 #define PS_NEWTYPE(name, base) \
     typedef struct name { \
@@ -50,15 +51,39 @@ PS_STATIC_ASSERT(sizeof(isize) == sizeof(usize), "isize and usize must have the 
     { \
         return a.raw == b.raw; \
     } \
+    PS_MAYBE_UNUSED static inline bool name##_lt(name a, name b) \
+    { \
+        return a.raw < b.raw; \
+    } \
+    PS_MAYBE_UNUSED static inline bool name##_le(name a, name b) \
+    { \
+        return a.raw <= b.raw; \
+    } \
+    PS_MAYBE_UNUSED static inline bool name##_gt(name a, name b) \
+    { \
+        return a.raw > b.raw; \
+    } \
+    PS_MAYBE_UNUSED static inline bool name##_ge(name a, name b) \
+    { \
+        return a.raw >= b.raw; \
+    } \
     PS_MAYBE_UNUSED static inline bool name##_is_none(name a) \
     { \
         return a.raw == 0; \
     } \
+    PS_MAYBE_UNUSED static inline name name##_next(name a) \
+    { \
+        return name##_from((base) (a.raw + 1)); \
+    } \
     PS_STATIC_ASSERT(sizeof(name) == sizeof(base), #name " must be the size of " #base)
 
-/* The store never hands out PS_PAGE_ID_NONE, so layers on top can use it to mean "no page". */
+/* A page's index in the store. Page 0 is a bitmap, so PS_PAGE_ID_NONE can mean "no page". */
 PS_NEWTYPE(ps_page_id, u32);
-
 #define PS_PAGE_ID_NONE PS_LITERAL(ps_page_id, 0)
+
+/* A log sequence number (LSN) orders operations. A new store starts at PS_LSN_NONE. */
+PS_NEWTYPE(ps_lsn, u64);
+#define PS_LSN_NONE PS_LITERAL(ps_lsn, 0)
+#define PS_LSN_MAX PS_LITERAL(ps_lsn, UINT64_MAX)
 
 typedef struct ps_store ps_store;

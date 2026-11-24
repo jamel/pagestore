@@ -74,7 +74,7 @@ static void fill_page(u64 seed, ps_page *p, u32 id, u64 lsn)
 static void check_page(u64 seed, const ps_page *p, u32 id, u64 lsn)
 {
     T_EQ(p->id.raw, id);
-    T_EQ(p->lsn, lsn);
+    T_EQ(p->lsn.raw, lsn);
     T_EQ(p->magic, MAGIC);
     T_EQ(p->flags, 0);
     T_EQ(p->checksum, 0);
@@ -186,7 +186,7 @@ static void sleep_us(u32 us)
 static void hold_snapshot(const stress *st, u64 S, u32 commits)
 {
     for (u32 waited = 0; waited < HOLD_MAX_US && !atomic_load(&st->stop); waited += 100) {
-        if (ps_committed_lsn(st->s) >= S + commits) {
+        if (ps_committed_lsn(st->s).raw >= S + commits) {
             return;
         }
         sleep_us(100);
@@ -239,7 +239,7 @@ static void *reader_main(void *arg)
         ps_snapshot *sn = NULL;
         T_OK(ps_snapshot_open(st->s, &sn));
         r->snapshots++;
-        const u64 S = ps_snapshot_lsn(sn);
+        const u64 S = ps_snapshot_lsn(sn).raw;
         T_CHECK(S >= last_lsn);
         last_lsn = S;
         u32 nheld = 0;
@@ -382,7 +382,7 @@ static void writer_op(writer *w)
     stress *st = w->st;
     ps_store *s = st->s;
     const u64 lsn = w->next_lsn++;
-    T_OK(ps_op_begin(s, lsn));
+    T_OK(ps_op_begin(s, ps_lsn_from(lsn)));
     change c[MAX_ACTIONS];
     u32 nc = 0;
     u32 cursor = 0;
@@ -446,7 +446,7 @@ static void writer_op(writer *w)
     }
     pthread_rwlock_unlock(&st->mu);
     ps_op_commit(s);
-    T_EQ(ps_committed_lsn(s), lsn);
+    T_EQ(ps_committed_lsn(s).raw, lsn);
     w->last_committed = lsn;
     w->commits++;
     for (u32 i = 0; i < nc; i++) {
@@ -462,10 +462,10 @@ static void writer_op(writer *w)
 static void check_final(stress *st, writer *w, ps_store *s)
 {
     const u64 L = w->last_committed;
-    T_EQ(ps_committed_lsn(s), L);
+    T_EQ(ps_committed_lsn(s).raw, L);
     ps_snapshot *sn = NULL;
     T_OK(ps_snapshot_open(s, &sn));
-    T_EQ(ps_snapshot_lsn(sn), L);
+    T_EQ(ps_snapshot_lsn(sn).raw, L);
     const u32 end = atomic_load(&st->id_end);
     T_CHECK(end <= ID_MAX);
     u32 n = 0;
@@ -591,8 +591,8 @@ static void test_writer_readers_checkpoint(void)
     T_EQ(ss.num_groups, 1);
     T_EQ(ss.frames_total, FRAMES);
     T_EQ(ss.frames_free + ss.frames_evictable + ss.num_groups, ss.frames_total);
-    T_EQ(ss.committed_lsn, w->last_committed);
-    T_EQ(ss.durable_lsn, w->last_committed);
+    T_EQ(ss.committed_lsn.raw, w->last_committed);
+    T_EQ(ss.durable_lsn.raw, w->last_committed);
     T_EQ(ss.allocated_pages, w->nlive);
 
     check_final(st, w, s);
@@ -600,7 +600,7 @@ static void test_writer_readers_checkpoint(void)
     T_OK(mb_open(st->mb, FRAMES, 0, &st->s));
     s = st->s;
     check_final(st, w, s);
-    T_OK(ps_op_begin(s, w->next_lsn));
+    T_OK(ps_op_begin(s, ps_lsn_from(w->next_lsn)));
     ps_page_id id = PS_PAGE_ID_NONE;
     ps_page *p = NULL;
     T_OK(ps_alloc(s, &id, &p));

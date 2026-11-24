@@ -92,7 +92,7 @@ void w_apply_model(model *m, const w_op *op);
  * Use as the ps_recover callback for w_encode records. EAGAIN triggers
  * a checkpoint and retry. Pass any callback context, including NULL.
  */
-int w_apply_record(ps_apply_ctx *ctx, ps_store *s, u64 lsn, const void *rec, usize len);
+int w_apply_record(ps_apply_ctx *ctx, ps_store *s, ps_lsn lsn, const void *rec, usize len);
 
 /*
  * Check a healthy store with no operations in flight. A read can

@@ -34,7 +34,7 @@ void ps_data_header_encode(const ps_data_header *h, u8 out[PS_DATA_HEADER_SIZE])
     ps_put_le32(out + 16, h->num_groups);
     ps_put_le32(out + 20, 0);
     ps_put_le64(out + 24, h->seq);
-    ps_put_le64(out + 32, h->durable_lsn);
+    ps_put_le64(out + 32, h->durable_lsn.raw);
     ps_put_le32(out + 40, ps_crc32c(0, out, 40));
 }
 
@@ -57,7 +57,7 @@ int ps_data_header_decode(const u8 *buf, ps_data_header *h)
     h->page_size = page_size;
     h->num_groups = num_groups;
     h->seq = ps_get_le64(buf + 24);
-    h->durable_lsn = ps_get_le64(buf + 32);
+    h->durable_lsn = ps_lsn_from(ps_get_le64(buf + 32));
     return 0;
 }
 
@@ -69,7 +69,7 @@ void ps_journal_header_encode(const ps_journal_header *h, u8 out[PS_JOURNAL_HEAD
     ps_put_le32(out + 8, PS_FORMAT_VERSION);
     ps_put_le32(out + 12, h->page_size);
     ps_put_le64(out + 16, h->seq);
-    ps_put_le64(out + 24, h->lsn);
+    ps_put_le64(out + 24, h->lsn.raw);
     ps_put_le32(out + 32, h->num_groups);
     ps_put_le32(out + 36, h->count);
     ps_put_le64(out + 40, 0);
@@ -92,7 +92,7 @@ int ps_journal_header_decode(const u8 *buf, ps_journal_header *h)
     h->num_groups = num_groups;
     h->count = ps_get_le32(buf + 36);
     h->seq = ps_get_le64(buf + 16);
-    h->lsn = ps_get_le64(buf + 24);
+    h->lsn = ps_lsn_from(ps_get_le64(buf + 24));
     return 0;
 }
 
@@ -145,7 +145,7 @@ void ps_wal_seg_header_encode(const ps_wal_seg_header *h, u8 out[PS_WAL_SEG_HEAD
     ps_put_le32(out + 8, PS_FORMAT_VERSION);
     ps_put_le32(out + 12, 0);
     ps_put_le64(out + 16, h->seq);
-    ps_put_le64(out + 24, h->prev_lsn);
+    ps_put_le64(out + 24, h->prev_lsn.raw);
     ps_put_le32(out + 32, ps_crc32c(0, out, 32));
     ps_put_le32(out + 36, 0);
 }
@@ -162,7 +162,7 @@ int ps_wal_seg_header_decode(const u8 *buf, ps_wal_seg_header *h)
         return EBADMSG;
     }
     h->seq = ps_get_le64(buf + 16);
-    h->prev_lsn = ps_get_le64(buf + 24);
+    h->prev_lsn = ps_lsn_from(ps_get_le64(buf + 24));
     return 0;
 }
 
@@ -173,19 +173,19 @@ usize ps_wal_rec_size(u32 len)
     return (usize) PS_WAL_REC_HEADER_SIZE + (((usize) len + 7) & ~(usize) 7);
 }
 
-static u32 ps_wal_rec_crc(u64 lsn, const void *payload, u32 len)
+static u32 ps_wal_rec_crc(ps_lsn lsn, const void *payload, u32 len)
 {
     u8 lsn_le[8];
-    ps_put_le64(lsn_le, lsn);
+    ps_put_le64(lsn_le, lsn.raw);
     return ps_crc32c(ps_crc32c(0, lsn_le, sizeof(lsn_le)), payload, len);
 }
 
-void ps_wal_rec_encode(u8 *out, u64 lsn, const void *payload, u32 len)
+void ps_wal_rec_encode(u8 *out, ps_lsn lsn, const void *payload, u32 len)
 {
     const usize size = ps_wal_rec_size(len);
     ps_put_le32(out, len);
     ps_put_le32(out + 4, ps_wal_rec_crc(lsn, payload, len));
-    ps_put_le64(out + 8, lsn);
+    ps_put_le64(out + 8, lsn.raw);
     if (len != 0) {
         memcpy(out + PS_WAL_REC_HEADER_SIZE, payload, len);
     }
@@ -195,8 +195,8 @@ void ps_wal_rec_encode(u8 *out, u64 lsn, const void *payload, u32 len)
 int ps_wal_rec_decode(
     const u8 *buf,
     usize avail,
-    u64 after_lsn,
-    u64 *lsn,
+    ps_lsn after_lsn,
+    ps_lsn *lsn,
     const u8 **payload,
     u32 *len,
     usize *size)
@@ -213,8 +213,8 @@ int ps_wal_rec_decode(
     if (sz > avail) {
         return EBADMSG;
     }
-    const u64 l = ps_get_le64(buf + 8);
-    if (l <= after_lsn) {
+    const ps_lsn l = ps_lsn_from(ps_get_le64(buf + 8));
+    if (ps_lsn_le(l, after_lsn)) {
         return EBADMSG;
     }
     const u8 *p = buf + PS_WAL_REC_HEADER_SIZE;

@@ -119,7 +119,7 @@ static bool wait_ckpt_count_above(u64 c, u32 ms)
 static bool wait_durable(u64 lsn, u32 ms)
 {
     const u64 end = t_now_ms() + ms;
-    while (ps_durable_lsn(s) < lsn) {
+    while (ps_durable_lsn(s).raw < lsn) {
         if (t_now_ms() >= end) {
             return false;
         }
@@ -169,7 +169,7 @@ static bool stamped(const ps_page *p, ps_page_id id, u32 tag)
 /* Commit one operation that allocates a page stamped with tag. Returns its ID. */
 static ps_page_id commit_alloc(u32 tag)
 {
-    T_OK(ps_op_begin(s, next_lsn++));
+    T_OK(ps_op_begin(s, ps_lsn_from(next_lsn++)));
     ps_page_id id = PS_PAGE_ID_NONE;
     ps_page *p = NULL;
     T_OK(ps_alloc(s, &id, &p));
@@ -181,7 +181,7 @@ static ps_page_id commit_alloc(u32 tag)
 /* Abort on allocation failure so later attempts can open their own operation. */
 static int try_commit_alloc(u32 tag, ps_page_id *id)
 {
-    T_OK(ps_op_begin(s, next_lsn));
+    T_OK(ps_op_begin(s, ps_lsn_from(next_lsn)));
     ps_page *p = NULL;
     const int rv = ps_alloc(s, id, &p);
     if (rv != 0) {
@@ -207,7 +207,7 @@ struct ps_log_hooks_ctx {
     bool held; /* a flush_log is blocked now */
 };
 
-static int note_flush(ps_log_hooks_ctx *h, u64 lsn)
+static int note_flush(ps_log_hooks_ctx *h, ps_lsn lsn)
 {
     PS_UNUSED(lsn);
     atomic_fetch_add(&h->nflush, 1);
@@ -375,7 +375,7 @@ static void test_writer_waits(void)
 
     /* Everything reads back; page-ins of evicted pages wait the same way. */
     for (u32 i = 0; i < n; i++) {
-        T_OK(ps_op_begin(s, next_lsn++));
+        T_OK(ps_op_begin(s, ps_lsn_from(next_lsn++)));
         const ps_page *p = NULL;
         T_OK(ps_read(s, ps_page_id_from(i + 1), &p));
         T_CHECK(stamped(p, ps_page_id_from(i + 1), i + 1));
@@ -387,7 +387,7 @@ static void test_writer_waits(void)
 /* Put all n allocations in one operation to share its bitmap spare. */
 static void commit_allocs(u32 n, u32 tag)
 {
-    T_OK(ps_op_begin(s, next_lsn++));
+    T_OK(ps_op_begin(s, ps_lsn_from(next_lsn++)));
     for (u32 i = 0; i < n; i++) {
         ps_page_id id = PS_PAGE_ID_NONE;
         ps_page *p = NULL;
@@ -474,7 +474,7 @@ static void test_waiter_gets_error_then_recovers(void)
     st = stats();
     T_CHECK(!st.failed);
     T_CHECK(st.checkpoints_run >= 2);
-    T_CHECK(ps_durable_lsn(s) >= 2);
+    T_CHECK(ps_durable_lsn(s).raw >= 2);
     close_store();
 }
 
@@ -580,7 +580,7 @@ static void test_fatal_wakes_waiters(void)
 
     /* Everything else is EIO, at once. */
     const u64 t = t_now_ms();
-    T_ERR(ps_op_begin(s, next_lsn), EIO);
+    T_ERR(ps_op_begin(s, ps_lsn_from(next_lsn)), EIO);
     T_ERR(ps_checkpoint(s), EIO);
     ps_snapshot *sn2 = NULL;
     T_ERR(ps_snapshot_open(s, &sn2), EIO);
@@ -672,7 +672,7 @@ static void test_close_during_checkpoint(void)
     T_CHECK(cr.released_ms != 0 && done >= cr.released_ms); /* close waited for the attempt */
     T_CHECK(done - t < 2000);
     T_EQ(mb_ckpt_count(mb), c0 + 1); /* it finished before the store was torn down */
-    T_EQ(mb_info(mb).durable_lsn, 2);
+    T_EQ(mb_info(mb).durable_lsn.raw, 2);
     mb_destroy(mb);
     mb = NULL;
     destroy_note_hooks(&h);
@@ -705,7 +705,7 @@ static void test_close_failed_no_leak(void)
     commit_alloc(2);
     T_OK(ps_checkpoint(s));
     /* Leave an old page version and a bitmap copy for teardown to free. */
-    T_OK(ps_op_begin(s, next_lsn++));
+    T_OK(ps_op_begin(s, ps_lsn_from(next_lsn++)));
     ps_page *p = NULL;
     T_OK(ps_write(s, ps_page_id_from(1), &p));
     stamp(p, ps_page_id_from(1), 3);

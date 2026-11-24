@@ -39,7 +39,7 @@ typedef struct ps_data_header {
     u32 page_size;
     u32 num_groups;
     u64 seq;
-    u64 durable_lsn;
+    ps_lsn durable_lsn;
 } ps_data_header;
 
 #define PS_DATA_HEADER_SIZE 44
@@ -74,7 +74,7 @@ typedef struct ps_journal_header {
     u32 num_groups;
     u32 count;
     u64 seq;
-    u64 lsn;
+    ps_lsn lsn;
 } ps_journal_header;
 
 #define PS_JOURNAL_HEADER_SIZE 48
@@ -142,7 +142,7 @@ int ps_journal_trailer_decode(const u8 *buf, u32 *crc);
  */
 typedef struct ps_wal_seg_header {
     u64 seq;
-    u64 prev_lsn;
+    ps_lsn prev_lsn;
 } ps_wal_seg_header;
 
 #define PS_WAL_SEG_HEADER_SIZE 40
@@ -173,7 +173,7 @@ int ps_wal_seg_header_decode(const u8 *buf, ps_wal_seg_header *h);
 usize ps_wal_rec_size(u32 len);
 
 /* Supply ps_wal_rec_size(len) bytes of output. A zero-length payload may be NULL. */
-void ps_wal_rec_encode(u8 *out, u64 lsn, const void *payload, u32 len);
+void ps_wal_rec_encode(u8 *out, ps_lsn lsn, const void *payload, u32 len);
 
 /*
  * *payload points into buf. *size includes the padding so the caller can
@@ -182,8 +182,8 @@ void ps_wal_rec_encode(u8 *out, u64 lsn, const void *payload, u32 len);
 int ps_wal_rec_decode(
     const u8 *buf,
     usize avail,
-    u64 after_lsn,
-    u64 *lsn,
+    ps_lsn after_lsn,
+    ps_lsn *lsn,
     const u8 **payload,
     u32 *len,
     usize *size);

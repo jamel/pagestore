@@ -52,7 +52,7 @@ static void sleep_ms(u32 ms)
 }
 
 /* Create a committed page in its own operation at lsn. */
-static ps_page_id alloc_with(u64 lsn, const char *text)
+static ps_page_id alloc_with(ps_lsn lsn, const char *text)
 {
     T_OK(ps_op_begin(s, lsn));
     ps_page_id id = PS_PAGE_ID_NONE;
@@ -125,17 +125,17 @@ static void test_bad_config(void)
     mb = mb_create();
     T_ERR(mb_open(mb, 64, 0, &s), ENOENT);
     /* A seq 0 header is an interrupted format. */
-    const ps_backend_info seq0 = {PS, 1, 0, 0};
+    const ps_backend_info seq0 = {PS, 1, 0, PS_LSN_NONE};
     mb_set_info(mb, seq0);
     T_ERR(mb_open(mb, 64, 0, &s), ENOENT);
     /* PS_CREATE resumes by formatting from scratch. */
     T_OK(mb_open(mb, 64, PS_CREATE, &s));
-    T_EQ(ps_committed_lsn(s), 0);
+    T_EQ(ps_committed_lsn(s).raw, 0);
     T_EQ(mb_info(mb).seq, 1);
     close_store();
 
     mb = mb_create();
-    ps_backend_info info = {8192, 1, 1, 0};
+    ps_backend_info info = {8192, 1, 1, PS_LSN_NONE};
     mb_set_info(mb, info);
     cfg = mb_config(64);
     mb_backend(mb, &be);
@@ -148,8 +148,8 @@ static void test_format(void)
 {
     open_store(64);
     T_EQ(ps_page_size(s), PS);
-    T_EQ(ps_committed_lsn(s), 0);
-    T_EQ(ps_durable_lsn(s), 0);
+    T_EQ(ps_committed_lsn(s).raw, 0);
+    T_EQ(ps_durable_lsn(s).raw, 0);
     struct ps_stats st;
     ps_stats(s, &st);
     T_EQ(st.num_groups, 1);
@@ -168,13 +168,13 @@ static void test_format(void)
 static void test_alloc_write_read(void)
 {
     open_store(64);
-    T_OK(ps_op_begin(s, 1));
+    T_OK(ps_op_begin(s, ps_lsn_from(1)));
     ps_page_id id = PS_PAGE_ID_NONE;
     ps_page *p = NULL;
     T_OK(ps_alloc(s, &id, &p));
     T_EQ(id.raw, 1);
     T_EQ(p->id.raw, 1);
-    T_EQ(p->lsn, 1);
+    T_EQ(p->lsn.raw, 1);
     T_EQ(p->magic, 0);
     T_EQ(p->flags, 0);
     T_EQ(p->checksum, 0);
@@ -188,13 +188,13 @@ static void test_alloc_write_read(void)
     T_OK(ps_write(s, ps_page_id_from(1), &wp));
     T_CHECK(wp == p);
     ps_op_commit(s);
-    T_EQ(ps_committed_lsn(s), 1);
-    T_EQ(ps_durable_lsn(s), 0);
+    T_EQ(ps_committed_lsn(s).raw, 1);
+    T_EQ(ps_durable_lsn(s).raw, 0);
 
-    T_OK(ps_op_begin(s, 2));
+    T_OK(ps_op_begin(s, ps_lsn_from(2)));
     check_text(ps_page_id_from(1), "hello");
     ps_op_commit(s);
-    T_EQ(ps_committed_lsn(s), 2);
+    T_EQ(ps_committed_lsn(s).raw, 2);
     T_EQ(ps_test_pins(s, ps_page_id_from(1)), 0);
     close_store();
 }
@@ -202,19 +202,19 @@ static void test_alloc_write_read(void)
 static void test_lsn_must_increase(void)
 {
     open_store(64);
-    T_OK(ps_op_begin(s, 1));
+    T_OK(ps_op_begin(s, ps_lsn_from(1)));
     ps_op_commit(s);
-    T_ERR(ps_op_begin(s, 1), EINVAL);
-    T_ERR(ps_op_begin(s, 0), EINVAL);
+    T_ERR(ps_op_begin(s, ps_lsn_from(1)), EINVAL);
+    T_ERR(ps_op_begin(s, PS_LSN_NONE), EINVAL);
     /* Gaps are allowed. */
-    T_OK(ps_op_begin(s, 10));
+    T_OK(ps_op_begin(s, ps_lsn_from(10)));
     ps_op_commit(s);
-    T_EQ(ps_committed_lsn(s), 10);
-    T_ERR(ps_op_begin(s, 9), EINVAL);
-    T_OK(ps_op_begin(s, 11));
+    T_EQ(ps_committed_lsn(s).raw, 10);
+    T_ERR(ps_op_begin(s, ps_lsn_from(9)), EINVAL);
+    T_OK(ps_op_begin(s, ps_lsn_from(11)));
     ps_op_abort(s);
-    T_EQ(ps_committed_lsn(s), 10);
-    T_OK(ps_op_begin(s, 11));
+    T_EQ(ps_committed_lsn(s).raw, 10);
+    T_OK(ps_op_begin(s, ps_lsn_from(11)));
     ps_op_commit(s);
     close_store();
 }
@@ -232,17 +232,17 @@ static void test_nested_begin_einval(void)
     mb_backend(mb, &be);
     T_OK(ps_open_backend(&be, &cfg, PS_CREATE, &s));
 
-    T_OK(ps_op_begin(s, 1));
-    T_ERR(ps_op_begin(s, 2), EINVAL);
+    T_OK(ps_op_begin(s, ps_lsn_from(1)));
+    T_ERR(ps_op_begin(s, ps_lsn_from(2)), EINVAL);
     T_EQ(atomic_load(&lc.errors), 1);
     /* A newer LSN still cannot bypass the ownership check. */
-    T_ERR(ps_op_begin(s, 1), EINVAL);
+    T_ERR(ps_op_begin(s, ps_lsn_from(1)), EINVAL);
     ps_page_id id = PS_PAGE_ID_NONE;
     ps_page *p = NULL;
     T_OK(ps_alloc(s, &id, &p));
     ps_op_abort(s);
-    T_EQ(ps_committed_lsn(s), 0);
-    T_OK(ps_op_begin(s, 2));
+    T_EQ(ps_committed_lsn(s).raw, 0);
+    T_OK(ps_op_begin(s, ps_lsn_from(2)));
     ps_op_commit(s);
     close_store();
 }
@@ -256,9 +256,9 @@ typedef struct waiter_arg {
 static void *begin_waiter(void *p)
 {
     waiter_arg *a = p;
-    T_OK(ps_op_begin(s, 2));
+    T_OK(ps_op_begin(s, ps_lsn_from(2)));
     a->begun_ms = t_now_ms();
-    a->saw_commit = atomic_load(&a->committed) && ps_committed_lsn(s) == 1;
+    a->saw_commit = atomic_load(&a->committed) && ps_committed_lsn(s).raw == 1;
     ps_op_commit(s);
     return NULL;
 }
@@ -271,7 +271,7 @@ static void test_begin_waits_for_other_thread(void)
     a.begun_ms = 0;
     a.saw_commit = false;
 
-    T_OK(ps_op_begin(s, 1));
+    T_OK(ps_op_begin(s, ps_lsn_from(1)));
     const u64 t0 = t_now_ms();
     pthread_t th;
     T_OK(pthread_create(&th, NULL, begin_waiter, &a));
@@ -284,25 +284,25 @@ static void test_begin_waits_for_other_thread(void)
     T_OK(pthread_join(th, NULL));
     T_CHECK(a.begun_ms >= t0 + 100);
     T_CHECK(a.saw_commit);
-    T_EQ(ps_committed_lsn(s), 2);
+    T_EQ(ps_committed_lsn(s).raw, 2);
     close_store();
 }
 
 static void test_write_copies(void)
 {
     open_store(64);
-    T_EQ(alloc_with(1, "A").raw, 1);
+    T_EQ(alloc_with(ps_lsn_from(1), "A").raw, 1);
 
-    T_OK(ps_op_begin(s, 2));
+    T_OK(ps_op_begin(s, ps_lsn_from(2)));
     const ps_page *old = NULL;
     T_OK(ps_read(s, ps_page_id_from(1), &old));
     ps_page *neu = NULL;
     T_OK(ps_write(s, ps_page_id_from(1), &neu));
     T_CHECK(neu != old);
-    T_EQ(neu->lsn, 2);
+    T_EQ(neu->lsn.raw, 2);
     T_EQ(neu->id.raw, 1);
     T_EQ(neu->checksum, 0);
-    T_EQ(old->lsn, 1);
+    T_EQ(old->lsn.raw, 1);
     memcpy((u8 *) neu + HDR, "B", 2);
     T_EQ(strcmp((const char *) old + HDR, "A"), 0);
     const ps_page *again = NULL;
@@ -317,7 +317,7 @@ static void test_write_copies(void)
     /* The replaced version was freed at commit (no snapshots), and the operation's pin with it. */
     T_EQ(ps_test_chain_len(s, ps_page_id_from(1)), 1);
     T_EQ(ps_test_pins(s, ps_page_id_from(1)), 0);
-    T_OK(ps_op_begin(s, 3));
+    T_OK(ps_op_begin(s, ps_lsn_from(3)));
     check_text(ps_page_id_from(1), "B");
     ps_op_commit(s);
     close_store();
@@ -326,11 +326,11 @@ static void test_write_copies(void)
 static void test_read_pins_once(void)
 {
     open_store(64);
-    alloc_with(1, "A");
+    alloc_with(ps_lsn_from(1), "A");
     struct ps_stats st0;
     ps_stats(s, &st0);
 
-    T_OK(ps_op_begin(s, 2));
+    T_OK(ps_op_begin(s, ps_lsn_from(2)));
     const ps_page *a = NULL;
     const ps_page *b = NULL;
     T_OK(ps_read(s, ps_page_id_from(1), &a));
@@ -353,13 +353,13 @@ static void test_read_pins_once(void)
 static void test_read_then_replace(void)
 {
     open_store(64);
-    alloc_with(1, "A");
-    alloc_with(2, "B");
+    alloc_with(ps_lsn_from(1), "A");
+    alloc_with(ps_lsn_from(2), "B");
     struct ps_stats st0;
     ps_stats(s, &st0);
 
     /* Abort drops the pins but leaves the committed versions. */
-    T_OK(ps_op_begin(s, 3));
+    T_OK(ps_op_begin(s, ps_lsn_from(3)));
     const ps_page *a = NULL;
     const ps_page *b = NULL;
     T_OK(ps_read(s, ps_page_id_from(1), &a));
@@ -376,7 +376,7 @@ static void test_read_then_replace(void)
     T_EQ(ps_test_chain_len(s, ps_page_id_from(2)), 1);
 
     /* Both old pointers stay valid up to commit, including for the freed page. */
-    T_OK(ps_op_begin(s, 4));
+    T_OK(ps_op_begin(s, ps_lsn_from(4)));
     T_OK(ps_read(s, ps_page_id_from(1), &a));
     T_OK(ps_read(s, ps_page_id_from(2), &b));
     T_OK(ps_write(s, ps_page_id_from(1), &w));
@@ -394,7 +394,7 @@ static void test_read_then_replace(void)
     T_EQ(st.frames_free, st0.frames_free + 1); /* page 2's frame */
     T_EQ(st.allocated_pages, 1);
 
-    T_OK(ps_op_begin(s, 5));
+    T_OK(ps_op_begin(s, ps_lsn_from(5)));
     check_text(ps_page_id_from(1), "C");
     ps_op_commit(s);
     close_store();
@@ -403,8 +403,8 @@ static void test_read_then_replace(void)
 static void test_abort_discards(void)
 {
     open_store(64);
-    alloc_with(1, "A");
-    T_OK(ps_op_begin(s, 2));
+    alloc_with(ps_lsn_from(1), "A");
+    T_OK(ps_op_begin(s, ps_lsn_from(2)));
     ps_page *p = NULL;
     T_OK(ps_write(s, ps_page_id_from(1), &p));
     memcpy((u8 *) p + HDR, "B", 2);
@@ -412,7 +412,7 @@ static void test_abort_discards(void)
     struct ps_stats st0;
     ps_stats(s, &st0);
 
-    T_OK(ps_op_begin(s, 3));
+    T_OK(ps_op_begin(s, ps_lsn_from(3)));
     ps_page_id a = PS_PAGE_ID_NONE;
     ps_page_id b = PS_PAGE_ID_NONE;
     T_OK(ps_alloc(s, &a, &p));
@@ -433,7 +433,7 @@ static void test_abort_discards(void)
     T_CHECK(!ps_test_has_entry(s, b));
     T_EQ(ps_test_chain_len(s, ps_page_id_from(1)), 1);
 
-    T_OK(ps_op_begin(s, 4));
+    T_OK(ps_op_begin(s, ps_lsn_from(4)));
     check_text(ps_page_id_from(1), "B");
     ps_page_id a2 = PS_PAGE_ID_NONE;
     ps_page_id b2 = PS_PAGE_ID_NONE;
@@ -450,8 +450,8 @@ static void test_abort_discards(void)
 static void test_freed_page_einval(void)
 {
     open_store(64);
-    alloc_with(1, "A");
-    T_OK(ps_op_begin(s, 2));
+    alloc_with(ps_lsn_from(1), "A");
+    T_OK(ps_op_begin(s, ps_lsn_from(2)));
     T_OK(ps_free(s, ps_page_id_from(1)));
     /* Within the freeing operation too. */
     const ps_page *rp = NULL;
@@ -462,7 +462,7 @@ static void test_freed_page_einval(void)
     ps_op_commit(s);
     T_EQ(ps_test_chain_len(s, ps_page_id_from(1)), 1); /* the marker, until a checkpoint */
 
-    T_OK(ps_op_begin(s, 3));
+    T_OK(ps_op_begin(s, ps_lsn_from(3)));
     T_ERR(ps_read(s, ps_page_id_from(1), &rp), EINVAL);
     T_ERR(ps_write(s, ps_page_id_from(1), &wp), EINVAL);
     T_ERR(ps_free(s, ps_page_id_from(1)), EINVAL);
@@ -474,7 +474,7 @@ static void test_freed_page_einval(void)
     ps_page_id id = PS_PAGE_ID_NONE;
     T_OK(ps_alloc(s, &id, &wp));
     T_EQ(id.raw, 1);
-    T_EQ(wp->lsn, 3);
+    T_EQ(wp->lsn.raw, 3);
     T_CHECK(all_zero((const u8 *) wp + HDR, PS - HDR));
     ps_op_commit(s);
     T_EQ(ps_test_chain_len(s, ps_page_id_from(1)), 1); /* the marker was replaced and freed */
@@ -484,13 +484,13 @@ static void test_freed_page_einval(void)
 static void test_free_in_op(void)
 {
     open_store(64);
-    alloc_with(1, "A");
-    alloc_with(2, "B");
+    alloc_with(ps_lsn_from(1), "A");
+    alloc_with(ps_lsn_from(2), "B");
     struct ps_stats st0;
     ps_stats(s, &st0);
 
-    T_OK(ps_op_begin(s, 3));
-    /* Allocated and freed in the op: cancelled, nothing remains. */
+    T_OK(ps_op_begin(s, ps_lsn_from(3)));
+    /* Allocated and freed in the operation: cancelled, nothing remains. */
     ps_page_id id = PS_PAGE_ID_NONE;
     ps_page *p = NULL;
     T_OK(ps_alloc(s, &id, &p));
@@ -514,7 +514,7 @@ static void test_free_in_op(void)
     T_EQ(ps_test_chain_len(s, ps_page_id_from(1)), 1);
     T_EQ(st.frames_free, st0.frames_free); /* -1 for page 1, +1 for page 4 */
 
-    T_OK(ps_op_begin(s, 4));
+    T_OK(ps_op_begin(s, ps_lsn_from(4)));
     T_OK(ps_alloc(s, &id, &p));
     T_EQ(id.raw, 1);
     T_OK(ps_alloc(s, &id, &p));
@@ -526,8 +526,8 @@ static void test_free_in_op(void)
 static void test_bitmap_ids_einval(void)
 {
     open_store(64);
-    alloc_with(1, "A");
-    T_OK(ps_op_begin(s, 2));
+    alloc_with(ps_lsn_from(1), "A");
+    T_OK(ps_op_begin(s, ps_lsn_from(2)));
     const ps_page *rp = NULL;
     ps_page *wp = NULL;
     T_ERR(ps_read(s, ps_page_id_from(0), &rp), EINVAL);
@@ -551,7 +551,7 @@ static void test_bitmap_ids_einval(void)
 static void test_outside_op_einval(void)
 {
     open_store(64);
-    alloc_with(1, "A");
+    alloc_with(ps_lsn_from(1), "A");
     const ps_page *rp = NULL;
     ps_page *wp = NULL;
     ps_page_id id = PS_PAGE_ID_NONE;
@@ -559,12 +559,12 @@ static void test_outside_op_einval(void)
     T_ERR(ps_write(s, ps_page_id_from(1), &wp), EINVAL);
     T_ERR(ps_alloc(s, &id, &wp), EINVAL);
     T_ERR(ps_free(s, ps_page_id_from(1)), EINVAL);
-    T_EQ(ps_committed_lsn(s), 1);
+    T_EQ(ps_committed_lsn(s).raw, 1);
     close_store();
 }
 
 /* Seal a fixture page so it can be read back from the backend. */
-static void make_page(u8 *buf, ps_page_id id, u64 lsn, const char *text)
+static void make_page(u8 *buf, ps_page_id id, ps_lsn lsn, const char *text)
 {
     memset(buf, 0, PS);
     ps_page *p = (ps_page *) buf;
@@ -579,7 +579,7 @@ static void make_page(u8 *buf, ps_page_id id, u64 lsn, const char *text)
 static void setup_pagein_store(void)
 {
     mb = mb_create();
-    ps_backend_info info = {PS, 1, 1, 9};
+    ps_backend_info info = {PS, 1, 1, ps_lsn_from(9)};
     mb_set_info(mb, info);
     u8 *buf = calloc(1, PS);
     T_CHECK(buf != NULL);
@@ -587,16 +587,16 @@ static void setup_pagein_store(void)
     p->magic = PS_BITMAP_MAGIC;
     p->id = ps_page_id_from(0);
     p->flags = PS_PAGE_FLAG_BITMAP;
-    p->lsn = 9;
+    p->lsn = ps_lsn_from(9);
     buf[HDR] = 0x0F; /* bits 0..3 */
     mb_seal_page(buf, PS);
     mb_put(mb, ps_page_id_from(0), buf);
 
-    make_page(buf, ps_page_id_from(1), 5, "one");
+    make_page(buf, ps_page_id_from(1), ps_lsn_from(5), "one");
     mb_put(mb, ps_page_id_from(1), buf);
-    make_page(buf, ps_page_id_from(7), 6, "two");
+    make_page(buf, ps_page_id_from(7), ps_lsn_from(6), "two");
     mb_put(mb, ps_page_id_from(2), buf);
-    make_page(buf, ps_page_id_from(3), 7, "three");
+    make_page(buf, ps_page_id_from(3), ps_lsn_from(7), "three");
     buf[100] ^= 1;
     mb_put(mb, ps_page_id_from(3), buf);
     free(buf);
@@ -606,20 +606,20 @@ static void test_pagein_checks(void)
 {
     setup_pagein_store();
     T_OK(mb_open(mb, 64, 0, &s));
-    T_EQ(ps_committed_lsn(s), 9);
-    T_EQ(ps_durable_lsn(s), 9);
+    T_EQ(ps_committed_lsn(s).raw, 9);
+    T_EQ(ps_durable_lsn(s).raw, 9);
     struct ps_stats st;
     ps_stats(s, &st);
     T_EQ(st.allocated_pages, 3);
     const u64 misses0 = st.cache_misses;
     T_EQ(misses0, 1); /* the bitmap page */
 
-    T_OK(ps_op_begin(s, 10));
+    T_OK(ps_op_begin(s, ps_lsn_from(10)));
     const ps_page *p = NULL;
     T_OK(ps_read(s, ps_page_id_from(1), &p));
     T_EQ(strcmp((const char *) p + HDR, "one"), 0);
     T_EQ(p->checksum, 0);
-    T_EQ(p->lsn, 5);
+    T_EQ(p->lsn.raw, 5);
     T_EQ(p->magic, 0x1234);
     T_ERR(ps_read(s, ps_page_id_from(2), &p), EBADMSG);
     T_ERR(ps_read(s, ps_page_id_from(3), &p), EBADMSG);
@@ -631,7 +631,7 @@ static void test_pagein_checks(void)
     T_EQ(st.cache_misses, misses0 + 4);
     ps_op_abort(s);
 
-    T_OK(ps_op_begin(s, 10));
+    T_OK(ps_op_begin(s, ps_lsn_from(10)));
     T_OK(ps_read(s, ps_page_id_from(1), &p));
     T_EQ(strcmp((const char *) p + HDR, "one"), 0);
     ps_stats(s, &st);
@@ -641,7 +641,7 @@ static void test_pagein_checks(void)
     T_OK(ps_alloc(s, &id, &wp));
     T_EQ(id.raw, 4);
     ps_op_commit(s);
-    T_EQ(ps_committed_lsn(s), 10);
+    T_EQ(ps_committed_lsn(s).raw, 10);
     close_store();
 }
 
@@ -649,7 +649,7 @@ static void test_pagein_read_error(void)
 {
     setup_pagein_store();
     T_OK(mb_open(mb, 64, 0, &s));
-    T_OK(ps_op_begin(s, 10));
+    T_OK(ps_op_begin(s, ps_lsn_from(10)));
     mb_fail(mb, MB_READ, EIO, 1);
     const ps_page *p = NULL;
     T_ERR(ps_read(s, ps_page_id_from(1), &p), EIO);
@@ -677,13 +677,13 @@ static void test_free_unloaded(void)
     T_OK(mb_open(mb, 64, 0, &s));
     struct ps_stats st0;
     ps_stats(s, &st0);
-    T_OK(ps_op_begin(s, 10));
+    T_OK(ps_op_begin(s, ps_lsn_from(10)));
     T_OK(ps_free(s, ps_page_id_from(1)));
     T_EQ(ps_test_chain_len(s, ps_page_id_from(1)), 2);
     ps_op_abort(s);
     T_CHECK(!ps_test_has_entry(s, ps_page_id_from(1)));
 
-    T_OK(ps_op_begin(s, 11));
+    T_OK(ps_op_begin(s, ps_lsn_from(11)));
     T_OK(ps_free(s, ps_page_id_from(1)));
     ps_op_commit(s);
     T_EQ(ps_test_chain_len(s, ps_page_id_from(1)), 1); /* no snapshot: the disk node was freed */
@@ -691,7 +691,7 @@ static void test_free_unloaded(void)
     ps_stats(s, &st);
     T_EQ(st.allocated_pages, 2);
     T_EQ(st.cache_misses, st0.cache_misses); /* free does not load */
-    T_OK(ps_op_begin(s, 12));
+    T_OK(ps_op_begin(s, ps_lsn_from(12)));
     const ps_page *p = NULL;
     T_ERR(ps_read(s, ps_page_id_from(1), &p), EINVAL);
     ps_op_commit(s);
@@ -703,7 +703,7 @@ static void test_cache_full_enobufs(void)
     open_store(16);
     struct ps_stats st0;
     ps_stats(s, &st0);
-    T_OK(ps_op_begin(s, 1));
+    T_OK(ps_op_begin(s, ps_lsn_from(1)));
     u32 n = 0;
     int rv = 0;
     for (;;) {
@@ -724,7 +724,7 @@ static void test_cache_full_enobufs(void)
     ps_stats(s, &st);
     T_EQ(st.frames_free, st0.frames_free);
 
-    T_OK(ps_op_begin(s, 1));
+    T_OK(ps_op_begin(s, ps_lsn_from(1)));
     ps_page_id id = PS_PAGE_ID_NONE;
     ps_page *p = NULL;
     T_OK(ps_alloc(s, &id, &p));
@@ -736,7 +736,7 @@ static void test_cache_full_enobufs(void)
 static void test_stats_basic(void)
 {
     open_store(64);
-    T_OK(ps_op_begin(s, 1));
+    T_OK(ps_op_begin(s, ps_lsn_from(1)));
     for (u32 i = 0; i < 3; i++) {
         ps_page_id id = PS_PAGE_ID_NONE;
         ps_page *p = NULL;
@@ -750,8 +750,8 @@ static void test_stats_basic(void)
     T_EQ(st.page_size, PS);
     T_EQ(st.num_groups, 1);
     T_EQ(st.allocated_pages, 3);
-    T_EQ(st.committed_lsn, 1);
-    T_EQ(st.durable_lsn, 0);
+    T_EQ(st.committed_lsn.raw, 1);
+    T_EQ(st.durable_lsn.raw, 0);
     T_EQ(st.frames_total, 64);
     T_EQ(st.frames_free, 64 - 4); /* bitmap + 3 pages; the spare was returned */
     T_EQ(st.frames_dirty, 4);
@@ -769,7 +769,7 @@ static void test_clean_page_evictable(void)
 {
     setup_pagein_store();
     T_OK(mb_open(mb, 64, 0, &s));
-    T_OK(ps_op_begin(s, 10));
+    T_OK(ps_op_begin(s, ps_lsn_from(10)));
     const ps_page *p = NULL;
     T_OK(ps_read(s, ps_page_id_from(1), &p));
     struct ps_stats st;
@@ -778,7 +778,7 @@ static void test_clean_page_evictable(void)
     ps_op_commit(s);
     ps_stats(s, &st);
     T_EQ(st.frames_evictable, 1); /* clean, on disk, unpinned; bitmap pages never are */
-    T_OK(ps_op_begin(s, 11));
+    T_OK(ps_op_begin(s, ps_lsn_from(11)));
     ps_page *wp = NULL;
     T_OK(ps_write(s, ps_page_id_from(1), &wp));
     ps_stats(s, &st);
@@ -795,7 +795,7 @@ static void test_clean_page_evictable(void)
 static void setup_full_group0(u32 nuser)
 {
     mb = mb_create();
-    ps_backend_info info = {PS, 1, 1, 9};
+    ps_backend_info info = {PS, 1, 1, ps_lsn_from(9)};
     mb_set_info(mb, info);
     u8 *buf = calloc(1, PS);
     T_CHECK(buf != NULL);
@@ -803,12 +803,12 @@ static void setup_full_group0(u32 nuser)
     p->magic = PS_BITMAP_MAGIC;
     p->id = ps_page_id_from(0);
     p->flags = PS_PAGE_FLAG_BITMAP;
-    p->lsn = 9;
+    p->lsn = ps_lsn_from(9);
     memset(buf + HDR, 0xFF, PS - HDR);
     mb_seal_page(buf, PS);
     mb_put(mb, ps_page_id_from(0), buf);
     for (u32 i = 1; i <= nuser; i++) {
-        make_page(buf, ps_page_id_from(i), 5, "x");
+        make_page(buf, ps_page_id_from(i), ps_lsn_from(5), "x");
         mb_put(mb, ps_page_id_from(i), buf);
     }
     free(buf);
@@ -825,8 +825,8 @@ static const u8 *group_bits(u32 g, u64 *lsn)
     T_EQ(p->id.raw, id.raw);
     T_EQ(p->flags, PS_PAGE_FLAG_BITMAP);
     T_EQ(p->magic, PS_BITMAP_MAGIC);
-    T_EQ(p->lsn, e->head->lsn);
-    *lsn = p->lsn;
+    T_EQ(p->lsn.raw, e->head->lsn.raw);
+    *lsn = p->lsn.raw;
     ps_unlatch(s->pt, id);
     return (const u8 *) p + HDR;
 }
@@ -840,7 +840,7 @@ static void test_new_group_commit(void)
     ps_stats(s, &st0);
     T_EQ(st0.allocated_pages, G - 1);
 
-    T_OK(ps_op_begin(s, 10));
+    T_OK(ps_op_begin(s, ps_lsn_from(10)));
     ps_page_id id = PS_PAGE_ID_NONE;
     ps_page *p = NULL;
     T_OK(ps_alloc(s, &id, &p));
@@ -870,7 +870,7 @@ static void test_new_group_commit(void)
     T_EQ(lsn, 9);
 
     /* The new group is an existing one now: spare taken and returned. */
-    T_OK(ps_op_begin(s, 11));
+    T_OK(ps_op_begin(s, ps_lsn_from(11)));
     T_OK(ps_alloc(s, &id, &p));
     T_EQ(id.raw, G + 2);
     T_OK(ps_free(s, ps_page_id_from(G + 1)));
@@ -884,7 +884,7 @@ static void test_new_group_commit(void)
     T_EQ(lsn, 11);
     T_EQ(bits[0], 0x05);
 
-    T_OK(ps_op_begin(s, 12));
+    T_OK(ps_op_begin(s, ps_lsn_from(12)));
     T_OK(ps_alloc(s, &id, &p));
     T_EQ(id.raw, G + 1);
     ps_op_abort(s);
@@ -901,7 +901,7 @@ static void test_new_group_abort(void)
     struct ps_stats st0;
     ps_stats(s, &st0);
 
-    T_OK(ps_op_begin(s, 10));
+    T_OK(ps_op_begin(s, ps_lsn_from(10)));
     ps_page_id id = PS_PAGE_ID_NONE;
     ps_page *p = NULL;
     T_OK(ps_alloc(s, &id, &p));
@@ -923,7 +923,7 @@ static void test_new_group_abort(void)
     T_CHECK(!ps_test_has_entry(s, ps_page_id_from(G + 2)));
     T_CHECK(!ps_test_has_entry(s, ps_page_id_from(2 * G)));
 
-    T_OK(ps_op_begin(s, 10));
+    T_OK(ps_op_begin(s, ps_lsn_from(10)));
     T_OK(ps_alloc(s, &id, &p));
     T_EQ(id.raw, G + 1);
     ps_op_commit(s);
@@ -946,7 +946,7 @@ static void test_new_group_frame_steal(void)
     ps_page *p = NULL;
     struct ps_stats st;
 
-    T_OK(ps_op_begin(s, 10));
+    T_OK(ps_op_begin(s, ps_lsn_from(10)));
     for (u32 i = 1; i <= 10; i++) {
         T_OK(ps_read(s, ps_page_id_from(i), &rp));
     }
@@ -968,7 +968,7 @@ static void test_new_group_frame_steal(void)
     T_CHECK(!ps_test_has_entry(s, ps_page_id_from(G + 1)));
     T_CHECK(!ps_test_has_entry(s, ps_page_id_from(2 * G)));
 
-    T_OK(ps_op_begin(s, 11));
+    T_OK(ps_op_begin(s, ps_lsn_from(11)));
     for (u32 i = 1; i <= 10; i++) {
         T_OK(ps_read(s, ps_page_id_from(i), &rp));
     }
@@ -995,7 +995,7 @@ static void test_cancelled_only_bitmap_clean(void)
 {
     setup_pagein_store();
     T_OK(mb_open(mb, 64, 0, &s));
-    T_OK(ps_op_begin(s, 10));
+    T_OK(ps_op_begin(s, ps_lsn_from(10)));
     ps_page_id id = PS_PAGE_ID_NONE;
     ps_page *p = NULL;
     T_OK(ps_alloc(s, &id, &p));
@@ -1009,7 +1009,7 @@ static void test_cancelled_only_bitmap_clean(void)
     u64 lsn = 0;
     T_EQ(group_bits(0, &lsn)[0], 0x0F);
     T_EQ(lsn, 9);
-    T_EQ(ps_committed_lsn(s), 10);
+    T_EQ(ps_committed_lsn(s).raw, 10);
     close_store();
 }
 
@@ -1043,11 +1043,11 @@ static void test_non_owner_einval(void)
     ps_backend be;
     mb_backend(mb, &be);
     T_OK(ps_open_backend(&be, &cfg, PS_CREATE, &s));
-    alloc_with(1, "A");
+    alloc_with(ps_lsn_from(1), "A");
     struct ps_stats st0;
     ps_stats(s, &st0);
 
-    T_OK(ps_op_begin(s, 2));
+    T_OK(ps_op_begin(s, ps_lsn_from(2)));
     intruder_arg a;
     pthread_t th;
     T_OK(pthread_create(&th, NULL, intruder, &a));

@@ -26,7 +26,7 @@
 
 void ps_reg_add(ps_store *s, ps_snapref *r)
 {
-    PS_ASSERT(s->reg_tail == NULL || s->reg_tail->lsn <= r->lsn);
+    PS_ASSERT(s->reg_tail == NULL || ps_lsn_le(s->reg_tail->lsn, r->lsn));
     r->prev = s->reg_tail;
     r->next = NULL;
     if (s->reg_tail != NULL) {
@@ -55,14 +55,14 @@ void ps_reg_remove(ps_store *s, ps_snapref *r)
     r->next = NULL;
 }
 
-u64 ps_reg_min(const ps_store *s)
+ps_lsn ps_reg_min(const ps_store *s)
 {
-    return s->reg_head != NULL ? s->reg_head->lsn : UINT64_MAX;
+    return s->reg_head != NULL ? s->reg_head->lsn : PS_LSN_MAX;
 }
 
-bool ps_reg_any_at_or_above(const ps_store *s, u64 c)
+bool ps_reg_any_at_or_above(const ps_store *s, ps_lsn c)
 {
-    return s->reg_tail != NULL && s->reg_tail->lsn >= c;
+    return s->reg_tail != NULL && ps_lsn_ge(s->reg_tail->lsn, c);
 }
 
 /* ---- failed state and log hooks ------------------------------------------- */
@@ -208,7 +208,7 @@ static void merge_back(ps_store *s)
  * began means ckpt_begin succeeded. Abort the backend only for a retryable
  * error; a fatal error leaves the backend failed.
  */
-static int ckpt_failed(ps_store *s, u64 L, int err, bool fatal, bool began)
+static int ckpt_failed(ps_store *s, ps_lsn L, int err, bool fatal, bool began)
 {
     if (began && !fatal) {
         s->be.ckpt_abort(s->be.ctx);
@@ -234,7 +234,7 @@ static int ckpt_failed(ps_store *s, u64 L, int err, bool fatal, bool began)
         fatal || s->ckpt_bg ? PS_LOG_ERROR : PS_LOG_WARN,
         "%scheckpoint at LSN %llu failed: %s (error %d)%s",
         s->ckpt_bg ? "background " : "",
-        (unsigned long long) L,
+        (unsigned long long) L.raw,
         ps_strerror(err, eb, sizeof(eb)),
         err,
         fatal          ? "; the store has failed" :
@@ -284,7 +284,7 @@ static int collect(ps_store *s, u32 c, u32 *count)
 }
 
 /* Keep free markers for later cleanup, but count only data writes. */
-static u32 find_visible(ps_store *s, u32 n, u64 L)
+static u32 find_visible(ps_store *s, u32 n, ps_lsn L)
 {
     u32 count = 0;
     for (u32 i = 0; i < n; i++) {
@@ -359,9 +359,9 @@ int ps_checkpoint_run(ps_store *s)
         pthread_mutex_unlock(&s->reg_mu);
         return EIO;
     }
-    const u64 L = atomic_load_explicit(&s->committed_lsn, memory_order_relaxed);
+    const ps_lsn L = ps_lsn_from(atomic_load_explicit(&s->committed_lsn, memory_order_relaxed));
     const u32 c = s->next_idx;
-    if (L == atomic_load_explicit(&s->durable_lsn, memory_order_relaxed) &&
+    if (L.raw == atomic_load_explicit(&s->durable_lsn, memory_order_relaxed) &&
         s->dirty_head[c] == NULL) {
         pthread_mutex_unlock(&s->reg_mu);
         return 0;
@@ -412,7 +412,7 @@ int ps_checkpoint_run(ps_store *s)
     mark_written(s, n, (u8) (1u << c));
 
     pthread_mutex_lock(&s->reg_mu);
-    atomic_store_explicit(&s->durable_lsn, L, memory_order_release);
+    atomic_store_explicit(&s->durable_lsn, L.raw, memory_order_release);
     s->dirty_head[c] = NULL;
     free_bitmap_copies(s);
     ps_reg_remove(s, &s->ckpt_ref);
@@ -420,7 +420,7 @@ int ps_checkpoint_run(ps_store *s)
     ps_retire_process(s);
     pthread_mutex_unlock(&s->reg_mu);
     atomic_fetch_add_explicit(&s->checkpoints_run, 1, memory_order_relaxed);
-    ps_log(s, PS_LOG_DEBUG, "checkpoint at LSN %llu: %u pages", (unsigned long long) L, count);
+    ps_log(s, PS_LOG_DEBUG, "checkpoint at LSN %llu: %u pages", (unsigned long long) L.raw, count);
 
     if (s->hooks.checkpoint_done != NULL) {
         s->hooks.checkpoint_done(s->hooks.ctx, L);

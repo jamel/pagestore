@@ -34,22 +34,22 @@ int ps_recover(ps_store *store, ps_wal *wal, ps_apply_fn apply, ps_apply_ctx *ct
     if (ps_op_in_progress(store)) {
         return recover_misuse(store, "an operation is in progress");
     }
-    const u64 d = ps_durable_lsn(store);
-    if (ps_committed_lsn(store) != d) {
+    const ps_lsn d = ps_durable_lsn(store);
+    if (!ps_lsn_eq(ps_committed_lsn(store), d)) {
         return recover_misuse(store, "operations were committed since the store was opened");
     }
-    /* No LSN can follow UINT64_MAX. Avoid wrapping the replay start. */
-    if (d == UINT64_MAX) {
+    /* No LSN can follow PS_LSN_MAX. Avoid wrapping the replay start. */
+    if (ps_lsn_eq(d, PS_LSN_MAX)) {
         return 0;
     }
     ps_wal_iter *it = NULL;
-    int rv = ps_wal_iter_open(wal, d + 1, &it);
+    int rv = ps_wal_iter_open(wal, ps_lsn_next(d), &it);
     if (rv != 0) {
         return rv;
     }
     u64 n = 0;
-    u64 first = 0;
-    u64 lsn = 0;
+    ps_lsn first = PS_LSN_NONE;
+    ps_lsn lsn = PS_LSN_NONE;
     for (;;) {
         const void *rec = NULL;
         usize len = 0;
@@ -64,7 +64,7 @@ int ps_recover(ps_store *store, ps_wal *wal, ps_apply_fn apply, ps_apply_ctx *ct
                 store,
                 PS_LOG_ERROR,
                 "ps_recover: reading the WAL after LSN %llu failed: %s (error %d)",
-                (unsigned long long) (n > 0 ? lsn : d),
+                (unsigned long long) (n > 0 ? lsn : d).raw,
                 ps_strerror(rv, buf, sizeof(buf)),
                 rv);
             break;
@@ -76,7 +76,7 @@ int ps_recover(ps_store *store, ps_wal *wal, ps_apply_fn apply, ps_apply_ctx *ct
                 store,
                 PS_LOG_ERROR,
                 "ps_recover: apply left the operation of record %llu open; aborted it",
-                (unsigned long long) lsn);
+                (unsigned long long) lsn.raw);
             if (rv == 0) {
                 rv = EINVAL;
             }
@@ -88,20 +88,20 @@ int ps_recover(ps_store *store, ps_wal *wal, ps_apply_fn apply, ps_apply_ctx *ct
                 store,
                 PS_LOG_ERROR,
                 "ps_recover: applying record %llu failed: %s (error %d)",
-                (unsigned long long) lsn,
+                (unsigned long long) lsn.raw,
                 ps_strerror(rv, buf, sizeof(buf)),
                 rv);
             break;
         }
-        const u64 c = ps_committed_lsn(store);
-        if (c != lsn) {
+        const ps_lsn c = ps_committed_lsn(store);
+        if (!ps_lsn_eq(c, lsn)) {
             ps_log(
                 store,
                 PS_LOG_ERROR,
                 "ps_recover: after applying record %llu the committed LSN is %llu "
                 "(apply must commit one operation at the record's LSN)",
-                (unsigned long long) lsn,
-                (unsigned long long) c);
+                (unsigned long long) lsn.raw,
+                (unsigned long long) c.raw);
             rv = EINVAL;
             break;
         }
@@ -118,15 +118,15 @@ int ps_recover(ps_store *store, ps_wal *wal, ps_apply_fn apply, ps_apply_ctx *ct
                 PS_LOG_INFO,
                 "recovered %llu WAL records (LSNs %llu..%llu) above the durable LSN %llu",
                 (unsigned long long) n,
-                (unsigned long long) first,
-                (unsigned long long) lsn,
-                (unsigned long long) d);
+                (unsigned long long) first.raw,
+                (unsigned long long) lsn.raw,
+                (unsigned long long) d.raw);
         } else {
             ps_log(
                 store,
                 PS_LOG_INFO,
                 "no WAL records above the durable LSN %llu",
-                (unsigned long long) d);
+                (unsigned long long) d.raw);
         }
     }
     return rv;

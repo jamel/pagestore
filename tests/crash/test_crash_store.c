@@ -76,7 +76,7 @@ static void fill(ps_page *p, ps_page_id id, u64 lsn)
 static void check_content(const ps_page *p, ps_page_id id, u64 lsn)
 {
     T_EQ(p->id.raw, id.raw);
-    T_EQ(p->lsn, lsn);
+    T_EQ(p->lsn.raw, lsn);
     const u8 *b = (const u8 *) p;
     for (u32 j = HDR; j < PS; j++) {
         if (b[j] != content_byte(id, lsn, j)) {
@@ -122,7 +122,7 @@ static u32 count_allocated(const u64 *lw)
 /* Publish the model changes only after the store commits. */
 static bool run_op(ps_store *s, u64 lsn, u64 *lw, rng *r)
 {
-    if (ps_op_begin(s, lsn) != 0) {
+    if (ps_op_begin(s, ps_lsn_from(lsn)) != 0) {
         return false;
     }
     u64 next[MAX_PAGES + 1];
@@ -239,9 +239,9 @@ static void verify(const image *im)
     const ps_config cfg = crash_config();
     ps_store *s = NULL;
     T_OK(ps_open(DIR, &cfg, 0, &s));
-    const u64 L = ps_durable_lsn(s);
+    const u64 L = ps_durable_lsn(s).raw;
     T_EQ(L, im->lsn);
-    T_EQ(ps_committed_lsn(s), L);
+    T_EQ(ps_committed_lsn(s).raw, L);
     struct ps_stats st;
     ps_stats(s, &st);
     T_EQ(st.allocated_pages, count_allocated(im->lsn_written));
@@ -261,7 +261,7 @@ static void verify(const image *im)
     ps_snapshot_close(snap);
 
     /* Abort the allocation probe so the follow-up starts from the recovered image. */
-    T_OK(ps_op_begin(s, L + 1));
+    T_OK(ps_op_begin(s, ps_lsn_from(L + 1)));
     u32 want = 1;
     for (u32 n = 0; n < NEXT_ALLOCS; n++) {
         while (want <= MAX_PAGES && im->lsn_written[want] != 0) {
@@ -277,14 +277,14 @@ static void verify(const image *im)
 
     ps_page_id nid = PS_PAGE_ID_NONE;
     ps_page *p = NULL;
-    T_OK(ps_op_begin(s, L + 1));
+    T_OK(ps_op_begin(s, ps_lsn_from(L + 1)));
     T_OK(ps_alloc(s, &nid, &p));
     fill(p, nid, L + 1);
     ps_op_commit(s);
     T_OK(ps_checkpoint(s));
     ps_close(s);
     T_OK(ps_open(DIR, &cfg, 0, &s));
-    T_EQ(ps_durable_lsn(s), L + 1);
+    T_EQ(ps_durable_lsn(s).raw, L + 1);
     T_OK(ps_snapshot_open(s, &snap));
     const ps_page *rp = NULL;
     T_OK(ps_snapshot_read(snap, nid, &rp));
@@ -312,7 +312,7 @@ static u64 crash_ckpt_once(u64 k, fault_mode mode, u64 seed)
     const ps_config cfg = crash_config();
     ps_store *s = NULL;
     T_OK(ps_open(DIR, &cfg, 0, &s));
-    const u64 L = ps_durable_lsn(s);
+    const u64 L = ps_durable_lsn(s).raw;
     ps_close(s);
     verify(expected_at(&rn, L));
     teardown();
@@ -385,8 +385,8 @@ static bool crash_format_once(u64 k, fault_mode mode, u64 seed)
         T_OK(rv2);
     }
     if (rv2 == 0) {
-        T_EQ(ps_committed_lsn(s), 0);
-        T_EQ(ps_durable_lsn(s), 0);
+        T_EQ(ps_committed_lsn(s).raw, 0);
+        T_EQ(ps_durable_lsn(s).raw, 0);
         ps_close(s);
     } else {
         T_ERR(rv2, ENOENT);
@@ -394,8 +394,8 @@ static bool crash_format_once(u64 k, fault_mode mode, u64 seed)
     s = NULL;
 
     T_OK(ps_open(DIR, &cfg, PS_CREATE, &s));
-    T_EQ(ps_committed_lsn(s), 0);
-    T_OK(ps_op_begin(s, 1));
+    T_EQ(ps_committed_lsn(s).raw, 0);
+    T_OK(ps_op_begin(s, ps_lsn_from(1)));
     ps_page_id id = PS_PAGE_ID_NONE;
     ps_page *p = NULL;
     T_OK(ps_alloc(s, &id, &p));
@@ -405,7 +405,7 @@ static bool crash_format_once(u64 k, fault_mode mode, u64 seed)
     T_OK(ps_checkpoint(s));
     ps_close(s);
     T_OK(ps_open(DIR, &cfg, 0, &s));
-    T_EQ(ps_durable_lsn(s), 1);
+    T_EQ(ps_durable_lsn(s).raw, 1);
     ps_snapshot *snap = NULL;
     T_OK(ps_snapshot_open(s, &snap));
     const ps_page *rp = NULL;

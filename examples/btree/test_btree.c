@@ -27,7 +27,7 @@ typedef struct fixture {
     ps_store *s;
     bt_tree t;
     ps_page_id meta;
-    u64 lsn; /* the last LSN handed to ps_op_begin */
+    ps_lsn lsn; /* the last LSN handed to ps_op_begin */
 } fixture;
 
 static void log_line(ps_log_ctx *ctx, int level, const char *msg)
@@ -40,7 +40,8 @@ static void log_line(ps_log_ctx *ctx, int level, const char *msg)
 
 static void fx_begin(fixture *f)
 {
-    T_OK(ps_op_begin(f->s, ++f->lsn));
+    f->lsn = ps_lsn_next(f->lsn);
+    T_OK(ps_op_begin(f->s, f->lsn));
 }
 
 /* Opens the store in f->dir, creating the tree if the store is new. */
@@ -53,7 +54,7 @@ static void fx_open(fixture *f, u32 page_size, u32 frames)
     cfg.log = log_line;
     T_OK(ps_open(f->dir, &cfg, PS_CREATE, &f->s));
     f->lsn = ps_committed_lsn(f->s);
-    if (f->lsn == 0) {
+    if (ps_lsn_is_none(f->lsn)) {
         fx_begin(f);
         T_OK(bt_create(f->s, &f->meta));
         ps_op_commit(f->s);
@@ -782,7 +783,7 @@ static void *reader_main(void *arg)
             if (rv != 0) {
                 t_fail(__FILE__, __LINE__, "bt_check: %s (error %d)", msg, rv);
             }
-            T_EQ(st.keys, keys_at(rs, ps_snapshot_lsn(snap)));
+            T_EQ(st.keys, keys_at(rs, ps_snapshot_lsn(snap).raw));
             rs->checks++;
         }
         ps_snapshot_close(snap);
@@ -793,7 +794,7 @@ static void *reader_main(void *arg)
 static void test_readers(void)
 {
     fixture f = fx_new(4096, 2048);
-    readers_state rs = {.f = &f, .base = f.lsn, .n = 3000};
+    readers_state rs = {.f = &f, .base = f.lsn.raw, .n = 3000};
     atomic_init(&rs.stop, false);
     pthread_t th;
     T_CHECK(pthread_create(&th, NULL, reader_main, &rs) == 0);

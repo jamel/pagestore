@@ -52,7 +52,7 @@ struct mem_backend {
     u32 npages;
 
     bool in_ckpt;
-    u64 ckpt_lsn;
+    ps_lsn ckpt_lsn;
     u32 ckpt_ng;
     u32 ckpt_count;
     mb_staged *staged;
@@ -210,7 +210,7 @@ static int be_open(ps_backend_ctx *ctx, bool create, u32 page_size, ps_backend_i
             mb->info.page_size = page_size == 0 ? 4096 : page_size;
             mb->info.num_groups = 1;
             mb->info.seq = 0;
-            mb->info.durable_lsn = 0;
+            mb->info.durable_lsn = PS_LSN_NONE;
             mb->has_header = true;
         }
     }
@@ -253,7 +253,7 @@ static int be_read_page(ps_backend_ctx *ctx, ps_page_id id, void *buf)
     return rv;
 }
 
-static int be_ckpt_begin(ps_backend_ctx *ctx, u64 lsn, u32 num_groups, u32 count)
+static int be_ckpt_begin(ps_backend_ctx *ctx, ps_lsn lsn, u32 num_groups, u32 count)
 {
     mem_backend *mb = ctx->mb;
     pthread_mutex_lock(&mb->mu);

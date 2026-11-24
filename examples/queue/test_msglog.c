@@ -26,7 +26,7 @@ typedef struct fixture {
     char *dir;
     ps_store *s;
     u32 frames;
-    u64 lsn; /* the last LSN handed to ps_op_begin */
+    ps_lsn lsn; /* the last LSN handed to ps_op_begin */
 } fixture;
 
 static void log_line(ps_log_ctx *ctx, int level, const char *msg)
@@ -57,7 +57,8 @@ static fixture fx_new(u32 frames)
 
 static void fx_begin(fixture *f)
 {
-    T_OK(ps_op_begin(f->s, ++f->lsn));
+    f->lsn = ps_lsn_next(f->lsn);
+    T_OK(ps_op_begin(f->s, f->lsn));
 }
 
 /* Makes everything durable, then closes and reopens the store. */

@@ -264,10 +264,10 @@ void ps_vnode_delete(ps_ptable *pt, ps_vnode *v)
     pthread_mutex_unlock(&pt->node_mu);
 }
 
-ps_vnode *ps_chain_visible(const ps_entry *e, u64 lsn)
+ps_vnode *ps_chain_visible(const ps_entry *e, ps_lsn lsn)
 {
     for (ps_vnode *v = e->head; v != NULL; v = v->older) {
-        if (v->lsn <= lsn) {
+        if (ps_lsn_le(v->lsn, lsn)) {
             return v;
         }
     }

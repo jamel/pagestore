@@ -121,7 +121,7 @@ static void test_vnode_alloc(void)
 
     ps_vnode *v = NULL;
     T_OK(ps_vnode_new(pt, &v));
-    T_EQ(v->lsn, 0);
+    T_EQ(v->lsn.raw, 0);
     T_CHECK(v->older == NULL);
     T_CHECK(v->entry == NULL);
     T_EQ(v->frame, PS_NO_FRAME);
@@ -129,26 +129,26 @@ static void test_vnode_alloc(void)
     T_EQ(v->kind, PS_V_DATA);
     T_EQ(v->flags, 0);
     T_CHECK(v->retire_next == NULL);
-    T_EQ(v->retire_r, 0);
+    T_EQ(v->retire_r.raw, 0);
     const u64 one_slab = ps_ptable_bytes(pt) - base;
     T_CHECK(one_slab >= 256 * sizeof(ps_vnode));
 
-    v->lsn = 77;
+    v->lsn = ps_lsn_from(77);
     v->frame = 3;
     v->pins = 2;
     v->kind = PS_V_FREE;
     v->flags = PS_VF_ON_DISK | PS_VF_RETIRED;
-    v->retire_r = 99;
+    v->retire_r = ps_lsn_from(99);
     ps_vnode_delete(pt, v);
     ps_vnode *w = NULL;
     T_OK(ps_vnode_new(pt, &w));
     T_CHECK(w == v);
-    T_EQ(w->lsn, 0);
+    T_EQ(w->lsn.raw, 0);
     T_EQ(w->frame, PS_NO_FRAME);
     T_EQ(w->pins, 0);
     T_EQ(w->kind, PS_V_DATA);
     T_EQ(w->flags, 0);
-    T_EQ(w->retire_r, 0);
+    T_EQ(w->retire_r.raw, 0);
     ps_vnode_delete(pt, w);
 
     enum {
@@ -157,10 +157,10 @@ static void test_vnode_alloc(void)
     ps_vnode *nodes[N];
     for (u32 i = 0; i < N; i++) {
         T_OK(ps_vnode_new(pt, &nodes[i]));
-        nodes[i]->lsn = i + 1;
+        nodes[i]->lsn = ps_lsn_from(i + 1);
     }
     for (u32 i = 0; i < N; i++) {
-        T_EQ(nodes[i]->lsn, i + 1);
+        T_EQ(nodes[i]->lsn.raw, i + 1);
     }
     T_EQ(ps_ptable_bytes(pt) - base, 3 * one_slab);
     for (u32 i = 0; i < N; i++) {
@@ -183,34 +183,34 @@ static void test_chain_visible(void)
 
     ps_latch(pt, id);
     T_OK(ps_entry_get(pt, id, &e));
-    T_CHECK(ps_chain_visible(e, 1000) == NULL);
+    T_CHECK(ps_chain_visible(e, ps_lsn_from(1000)) == NULL);
 
     const u64 lsns[] = {40, 87, 120, 130};
     ps_vnode *v[4];
     for (u32 i = 0; i < 4; i++) {
         T_OK(ps_vnode_new(pt, &v[i]));
-        v[i]->lsn = lsns[i];
+        v[i]->lsn = ps_lsn_from(lsns[i]);
         v[i]->entry = e;
         v[i]->older = e->head;
         e->head = v[i];
     }
-    T_CHECK(ps_chain_visible(e, 100) == v[1]);
-    T_CHECK(ps_chain_visible(e, 87) == v[1]);
-    T_CHECK(ps_chain_visible(e, 86) == v[0]);
-    T_CHECK(ps_chain_visible(e, 40) == v[0]);
-    T_CHECK(ps_chain_visible(e, 39) == NULL);
-    T_CHECK(ps_chain_visible(e, 0) == NULL);
-    T_CHECK(ps_chain_visible(e, 125) == v[2]);
-    T_CHECK(ps_chain_visible(e, 1000) == v[3]);
+    T_CHECK(ps_chain_visible(e, ps_lsn_from(100)) == v[1]);
+    T_CHECK(ps_chain_visible(e, ps_lsn_from(87)) == v[1]);
+    T_CHECK(ps_chain_visible(e, ps_lsn_from(86)) == v[0]);
+    T_CHECK(ps_chain_visible(e, ps_lsn_from(40)) == v[0]);
+    T_CHECK(ps_chain_visible(e, ps_lsn_from(39)) == NULL);
+    T_CHECK(ps_chain_visible(e, PS_LSN_NONE) == NULL);
+    T_CHECK(ps_chain_visible(e, ps_lsn_from(125)) == v[2]);
+    T_CHECK(ps_chain_visible(e, ps_lsn_from(1000)) == v[3]);
 
-    /* LSN 0 represents a disk version whose LSN has yet to be loaded. */
+    /* PS_LSN_NONE represents a disk version whose LSN has yet to be loaded. */
     ps_vnode *disk = NULL;
     T_OK(ps_vnode_new(pt, &disk));
     disk->flags = PS_VF_ON_DISK;
     disk->entry = e;
     v[0]->older = disk;
-    T_CHECK(ps_chain_visible(e, 39) == disk);
-    T_CHECK(ps_chain_visible(e, 0) == disk);
+    T_CHECK(ps_chain_visible(e, ps_lsn_from(39)) == disk);
+    T_CHECK(ps_chain_visible(e, PS_LSN_NONE) == disk);
     ps_unlatch(pt, id);
 
     ps_ptable_destroy(pt);
@@ -343,7 +343,7 @@ static void *conc_worker(void *arg)
             ps_vnode *v = NULL;
             T_OK(ps_vnode_new(a->pt, &v));
             v->entry = e;
-            v->lsn = i;
+            v->lsn = ps_lsn_from(i);
             e->head = v;
         } else {
             ps_vnode *v = e->head;

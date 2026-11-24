@@ -23,7 +23,7 @@
  * because later opens need it.
  *
  *     ps_page_id meta;
- *     int rv = ps_op_begin(s, 1);
+ *     int rv = ps_op_begin(s, ps_lsn_from(1));
  *     if (rv == 0) {
  *         rv = bt_create(s, &meta);
  *         if (rv == 0) {
@@ -35,7 +35,7 @@
  *
  * Insert a value, or replace the one already stored under the key.
  *
- *     int put(bt_tree *t, u64 lsn, const char *k, const char *v)
+ *     int put(bt_tree *t, ps_lsn lsn, const char *k, const char *v)
  *     {
  *         int rv = ps_op_begin(t->store, lsn);
  *         if (rv != 0) {

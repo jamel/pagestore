@@ -393,9 +393,10 @@ struct ps_apply_ctx {
 };
 
 /* Check the replayed record against the CRC saved at append time. */
-static int apply_rec(ps_apply_ctx *a, ps_store *s, u64 lsn, const void *rec, usize len)
+static int apply_rec(ps_apply_ctx *a, ps_store *s, ps_lsn at, const void *rec, usize len)
 {
     wcase *c = a->c;
+    const u64 lsn = at.raw;
     CASE_CHECK(c, lsn > a->last);
     a->last = lsn;
     const bool known = lsn < c->nexp && c->exp[lsn] != 0;
@@ -416,7 +417,7 @@ static int apply_rec(ps_apply_ctx *a, ps_store *s, u64 lsn, const void *rec, usi
     for (u32 i = 0; i < pad; i++) {
         CASE_CHECK(c, b[REC_HEAD + enc + i] == w_pattern(lsn ^ 0xA5A5u, i));
     }
-    return w_apply_record(a, s, lsn, b + REC_HEAD, enc);
+    return w_apply_record(a, s, at, b + REC_HEAD, enc);
 }
 
 static usize encode_rec(wcase *c, const w_op *op, u8 *rec)
@@ -460,7 +461,7 @@ static int startup(wcase *c, u32 flags)
         shutdown_both(c);
         return rv;
     }
-    ps_apply_ctx a = {.c = c, .last = ps_durable_lsn(c->s)};
+    ps_apply_ctx a = {.c = c, .last = ps_durable_lsn(c->s).raw};
     rv = ps_recover(c->s, c->w, apply_rec, &a);
     if (rv != 0) {
         shutdown_both(c);
@@ -532,8 +533,8 @@ static bool workload(wcase *c, u32 nops)
 {
     u8 *rec = malloc(REC_MAX);
     T_CHECK(rec != NULL);
-    CASE_CHECK(c, ps_committed_lsn(c->s) == model_last_lsn(c->m));
-    u64 lsn = ps_committed_lsn(c->s);
+    CASE_CHECK(c, ps_committed_lsn(c->s).raw == model_last_lsn(c->m));
+    u64 lsn = ps_committed_lsn(c->s).raw;
     u64 retry = 0;
     bool done = true;
     for (u32 i = 0; i < nops; i++) {
@@ -561,7 +562,7 @@ static bool workload(wcase *c, u32 nops)
             c->enospc_injected++;
             fault_vfs_enospc_after(c->fv, 0);
         }
-        rv = ps_wal_append(c->w, next, rec, len);
+        rv = ps_wal_append(c->w, ps_lsn_from(next), rec, len);
         if (inject) {
             fault_vfs_enospc_after(c->fv, UINT64_MAX);
         }
@@ -592,7 +593,7 @@ static bool workload(wcase *c, u32 nops)
         exp_set(c, next, rec, len);
         w_apply_model(c->m, &op);
         if (rng_below(&c->r, 100) < c->flush_pct) {
-            rv = ps_wal_flush(c->w, next);
+            rv = ps_wal_flush(c->w, ps_lsn_from(next));
             if (rv != 0) {
                 CASE_CHECK(c, rv == EIO);
                 expect_stop(c, rv, "ps_wal_flush");
@@ -665,17 +666,18 @@ static u64 scan_last_lsn(wcase *c)
     CASE_CHECK(c, got >= PS_WAL_SEG_HEADER_SIZE);
     CASE_OK(c, ps_wal_seg_header_decode(buf, &h));
     CASE_CHECK(c, h.seq == lc.newest);
-    u64 lsn = h.prev_lsn;
+    u64 lsn = h.prev_lsn.raw;
     usize off = PS_WAL_SEG_HEADER_SIZE;
     while (off < got) {
-        u64 l = 0;
+        ps_lsn l = PS_LSN_NONE;
         const u8 *payload = NULL;
         u32 len = 0;
         usize size = 0;
-        if (ps_wal_rec_decode(buf + off, got - off, lsn, &l, &payload, &len, &size) != 0) {
+        if (ps_wal_rec_decode(buf + off, got - off, ps_lsn_from(lsn), &l, &payload, &len, &size) !=
+            0) {
             break;
         }
-        lsn = l;
+        lsn = l.raw;
         off += size;
     }
     free(buf);
@@ -728,10 +730,10 @@ static u64 check(wcase *c, fault_mode mode, rcrash rc, u64 q, bool *rc_crashed)
         *rc_crashed = crashed;
     }
     CASE_OK(c, startup(c, 0));
-    const u64 X = ps_committed_lsn(c->s);
+    const u64 X = ps_committed_lsn(c->s).raw;
     CASE_CHECK(c, X >= c->max_flushed);
     CASE_CHECK(c, X <= model_last_lsn(c->m));
-    CASE_CHECK(c, X == ps_durable_lsn(c->s) || model_has_lsn(c->m, X));
+    CASE_CHECK(c, X == ps_durable_lsn(c->s).raw || model_has_lsn(c->m, X));
     CASE_CHECK(c, model_has_lsn(c->m, X));
     CASE_CHECK(c, X == L);
     struct ps_stats st;
@@ -747,7 +749,7 @@ static u64 check(wcase *c, fault_mode mode, rcrash rc, u64 q, bool *rc_crashed)
 
     ps_page_id want[NEXT_ALLOCS];
     model_next_ids(c->m, NEXT_ALLOCS, want);
-    CASE_OK(c, ps_op_begin(c->s, X + 1));
+    CASE_OK(c, ps_op_begin(c->s, ps_lsn_from(X + 1)));
     for (u32 i = 0; i < NEXT_ALLOCS; i++) {
         ps_page_id id = PS_PAGE_ID_NONE;
         ps_page *p = NULL;
@@ -769,8 +771,8 @@ static void finish(wcase *c)
     fault_vfs_reboot(c->fv, FAULT_RANDOM_UNSYNCED);
     CASE_CHECK(c, scan_last_lsn(c) == last);
     CASE_OK(c, startup(c, 0));
-    CASE_CHECK(c, ps_committed_lsn(c->s) == last);
-    CASE_CHECK(c, ps_durable_lsn(c->s) == last);
+    CASE_CHECK(c, ps_committed_lsn(c->s).raw == last);
+    CASE_CHECK(c, ps_durable_lsn(c->s).raw == last);
     w_check_store(c->s, c->m);
 }
 

@@ -79,7 +79,7 @@ static void check_info(const ps_backend_info *info, u32 page_size, u32 ng, u64 s
     T_EQ(info->page_size, page_size);
     T_EQ(info->num_groups, ng);
     T_EQ(info->seq, seq);
-    T_EQ(info->durable_lsn, lsn);
+    T_EQ(info->durable_lsn.raw, lsn);
 }
 
 /* Check every byte so a partly written page cannot pass the fill check. */
@@ -109,7 +109,7 @@ static u8 page_byte(ps_backend *be, ps_page_id id)
  */
 static int checkpoint_ng(
     ps_backend *be,
-    u64 lsn,
+    ps_lsn lsn,
     u32 ng,
     const u32 *ids,
     const u8 *fills,
@@ -135,12 +135,18 @@ static int checkpoint_ng(
     return rv;
 }
 
-static int checkpoint(ps_backend *be, u64 lsn, const u32 *ids, const u8 *fills, u32 n, bool *fatal)
+static int checkpoint(
+    ps_backend *be,
+    ps_lsn lsn,
+    const u32 *ids,
+    const u8 *fills,
+    u32 n,
+    bool *fatal)
 {
     return checkpoint_ng(be, lsn, 1, ids, fills, n, fatal);
 }
 
-static void checkpoint_ok(ps_backend *be, u64 lsn, const u32 *ids, const u8 *fills, u32 n)
+static void checkpoint_ok(ps_backend *be, ps_lsn lsn, const u32 *ids, const u8 *fills, u32 n)
 {
     bool fatal = true;
     T_OK(checkpoint(be, lsn, ids, fills, n, &fatal));
@@ -154,12 +160,12 @@ static const u8 b_fills[] = {0xB2, 0xB3, 0xB4, 0xB5};
 
 static void ckpt_a(ps_backend *be)
 {
-    checkpoint_ok(be, 1, a_ids, a_fills, 3);
+    checkpoint_ok(be, ps_lsn_from(1), a_ids, a_fills, 3);
 }
 
 static int ckpt_b(ps_backend *be, bool *fatal)
 {
-    return checkpoint(be, 2, b_ids, b_fills, 4, fatal);
+    return checkpoint(be, ps_lsn_from(2), b_ids, b_fills, 4, fatal);
 }
 
 /* Compare the entire image so a mix of the two checkpoints fails. */
@@ -171,11 +177,11 @@ static void check_image_a_or_b(ps_backend *be, const ps_backend_info *info)
     }
     static const u8 img_a[5] = {0xA1, 0xA2, 0xA3, 0, 0};
     static const u8 img_b[5] = {0xA1, 0xB2, 0xB3, 0xB4, 0xB5};
-    if (info->durable_lsn == 1) {
+    if (info->durable_lsn.raw == 1) {
         T_EQ(info->seq, 1);
         T_MEMEQ(got, img_a, 5);
     } else {
-        T_EQ(info->durable_lsn, 2);
+        T_EQ(info->durable_lsn.raw, 2);
         T_EQ(info->seq, 2);
         T_MEMEQ(got, img_b, 5);
     }
@@ -184,7 +190,7 @@ static void check_image_a_or_b(ps_backend *be, const ps_backend_info *info)
 }
 
 /* Install a complete durable journal without applying it to the data file. */
-static void write_journal(u64 seq, u64 lsn, const u32 *ids, const u8 *fills, u32 n)
+static void write_journal(u64 seq, ps_lsn lsn, const u32 *ids, const u8 *fills, u32 n)
 {
     const ps_journal_header jh =
         {.page_size = PS, .num_groups = 1, .count = n, .seq = seq, .lsn = lsn};
@@ -325,7 +331,7 @@ static void test_checkpoint_roundtrip(void)
     ps_backend_info info;
     T_OK(be_open(&be, true, &info));
     const u32 ids[] = {1, 7};
-    T_OK(be.ckpt_begin(be.ctx, 5, 1, 2));
+    T_OK(be.ckpt_begin(be.ctx, ps_lsn_from(5), 1, 2));
     static u8 page[PS];
     memset(page, 0x11, sizeof(page));
     T_OK(be.ckpt_write(be.ctx, ps_page_id_from(1), page));
@@ -349,9 +355,9 @@ static void test_checkpoint_roundtrip(void)
     T_EQ(page_byte(&be, ps_page_id_from(1)), 0x11);
 
     const u8 fills2[] = {0x12};
-    T_OK(checkpoint_ng(&be, 9, 2, ids, fills2, 1, &fatal));
+    T_OK(checkpoint_ng(&be, ps_lsn_from(9), 2, ids, fills2, 1, &fatal));
     T_CHECK(!fatal);
-    T_OK(checkpoint_ng(&be, 10, 2, NULL, NULL, 0, &fatal));
+    T_OK(checkpoint_ng(&be, ps_lsn_from(10), 2, NULL, NULL, 0, &fatal));
     T_CHECK(!fatal);
     be_close(&be);
     T_OK(be_open(&be, false, &info));
@@ -371,7 +377,7 @@ static void test_abort_then_checkpoint(void)
     ckpt_a(&be);
     static u8 page[PS];
     memset(page, 0xEE, sizeof(page));
-    T_OK(be.ckpt_begin(be.ctx, 2, 1, 2));
+    T_OK(be.ckpt_begin(be.ctx, ps_lsn_from(2), 1, 2));
     T_OK(be.ckpt_write(be.ctx, ps_page_id_from(1), page));
     be.ckpt_abort(be.ctx);
     T_EQ(file_size(DIR "/journal"), 0);
@@ -395,13 +401,13 @@ static void test_max_page_id_offset(void)
     T_OK(be_open(&be, true, &info));
     const u32 ids[] = {0xFFFFFFFEu, 1};
     const u8 fills[] = {0x5E, 0x01};
-    checkpoint_ok(&be, 1, ids, fills, 2);
+    checkpoint_ok(&be, ps_lsn_from(1), ids, fills, 2);
     T_EQ(page_byte(&be, ps_page_id_from(0xFFFFFFFEu)), 0x5E);
     T_EQ(page_byte(&be, ps_page_id_from(1)), 0x01);
     T_EQ(page_byte(&be, ps_page_id_from(0)), 0);
     T_EQ(file_size(DIR "/data"), (u64) 0xFFFFFFFFu * 4096 + 4096);
     be_close(&be);
-    write_journal(2, 2, ids, (const u8[]) {0x6E, 0x02}, 2);
+    write_journal(2, ps_lsn_from(2), ids, (const u8[]) {0x6E, 0x02}, 2);
     T_OK(be_open(&be, false, &info));
     check_info(&info, PS, 1, 2, 2);
     T_EQ(page_byte(&be, ps_page_id_from(0xFFFFFFFEu)), 0x6E);
@@ -466,7 +472,7 @@ static void test_fsync_failure_fatal(void)
     bool fatal = false;
     T_ERR(ckpt_b(&be, &fatal), EIO);
     T_CHECK(fatal);
-    T_ERR(be.ckpt_begin(be.ctx, 3, 1, 0), EIO);
+    T_ERR(be.ckpt_begin(be.ctx, ps_lsn_from(3), 1, 0), EIO);
     be_close(&be);
     teardown();
 
@@ -510,7 +516,7 @@ static void test_recovery_table(void)
 
     for (u64 jseq = 1; jseq <= 2; jseq++) {
         setup_image_a(1);
-        write_journal(jseq, 7, ids, fills, 2);
+        write_journal(jseq, ps_lsn_from(7), ids, fills, 2);
         T_OK(be_open(&be, false, &info));
         check_info(&info, PS, 1, jseq, 7);
         T_EQ(page_byte(&be, ps_page_id_from(1)), 0xA1);
@@ -541,7 +547,7 @@ static void test_recovery_table(void)
     teardown();
 
     setup_image_a(1);
-    write_journal(0, 7, ids, fills, 2);
+    write_journal(0, ps_lsn_from(7), ids, fills, 2);
     T_OK(be_open(&be, false, &info));
     check_info(&info, PS, 1, 1, 1);
     T_EQ(page_byte(&be, ps_page_id_from(2)), 0xA2);
@@ -557,7 +563,7 @@ static void test_recovery_table(void)
 
     for (u32 variant = 0; variant < 3; variant++) {
         setup_image_a(1);
-        write_journal(5, 7, ids, fills, 2);
+        write_journal(5, ps_lsn_from(7), ids, fills, 2);
         if (variant == 0) {
             truncate_file(DIR "/journal", file_size(DIR "/journal") - 1);
         } else if (variant == 1) {
@@ -575,7 +581,7 @@ static void test_recovery_table(void)
 
     /* A sound journal can reconstruct the data header as well as the pages. */
     setup_image_a(1);
-    write_journal(2, 7, ids, fills, 2);
+    write_journal(2, ps_lsn_from(7), ids, fills, 2);
     T_OK(fault_vfs_corrupt(fv, DIR "/data", 3, 0x40));
     T_OK(be_open(&be, false, &info));
     check_info(&info, PS, 1, 2, 7);
@@ -588,7 +594,7 @@ static void test_recovery_table(void)
     teardown();
 
     setup_image_a(1);
-    write_journal(2, 7, ids, fills, 2);
+    write_journal(2, ps_lsn_from(7), ids, fills, 2);
     truncate_file(DIR "/journal", file_size(DIR "/journal") - 8);
     T_OK(fault_vfs_corrupt(fv, DIR "/data", 3, 0x40));
     T_ERR(be_open(&be, false, &info), EBADMSG);
@@ -662,10 +668,10 @@ static bool crash_ckpt_run(u64 k, fault_mode mode, u64 seed)
     check_image_a_or_b(&be, &info);
     const u32 ids[] = {1};
     const u8 fills[] = {0xD1};
-    checkpoint_ok(&be, 3, ids, fills, 1);
+    checkpoint_ok(&be, ps_lsn_from(3), ids, fills, 1);
     be_close(&be);
     T_OK(be_open(&be, false, &info));
-    T_EQ(info.durable_lsn, 3);
+    T_EQ(info.durable_lsn.raw, 3);
     T_EQ(page_byte(&be, ps_page_id_from(1)), 0xD1);
     be_close(&be);
     teardown();
@@ -700,7 +706,7 @@ static void setup_pending_journal(pending_journal kind, u64 seed)
         /* As if an older version wrote the journal without syncing its directory entry. */
         T_OK(v->unlink(v->ctx, DIR "/journal"));
         T_OK(v->fsync_dir(v->ctx, DIR));
-        write_journal(2, 2, b_ids, b_fills, 4);
+        write_journal(2, ps_lsn_from(2), b_ids, b_fills, 4);
         return;
     }
     ps_backend be;
@@ -844,7 +850,7 @@ static void test_read_concurrent_with_checkpoint(void)
     const u32 ids[] = {2, 3};
     for (u32 i = 0; i < 50; i++) {
         const u8 fills[] = {(u8) i, (u8) (i + 1)};
-        checkpoint_ok(&be, 2 + i, ids, fills, 2);
+        checkpoint_ok(&be, ps_lsn_from(2 + i), ids, fills, 2);
     }
     atomic_store(&a.stop, true);
     T_EQ(pthread_join(th, NULL), 0);

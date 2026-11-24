@@ -50,34 +50,34 @@ int ps_wal_open(ps_store *store, const char *waldir, const ps_wal_config *cfg, p
  * segment, leave the record unwritten and can be retried. After a fatal
  * error, append and flush return EIO until reopen.
  */
-int ps_wal_append(ps_wal *w, u64 lsn, const void *buf, usize len);
+int ps_wal_append(ps_wal *w, ps_lsn lsn, const void *buf, usize len);
 
 /*
  * Makes records through lsn durable, up to the last appended LSN. Any
  * thread. A write or sync failure is fatal: flushes and appends return EIO,
  * and store checkpoints that need the WAL fail.
  */
-int ps_wal_flush(ps_wal *w, u64 lsn);
+int ps_wal_flush(ps_wal *w, ps_lsn lsn);
 
 /*
  * Drops segments that end at or below lsn, but keeps the newest. Any thread.
  * While iterators are open, deletion waits for a later call. An unlink error
  * is returned without failing the WAL.
  */
-int ps_wal_truncate(ps_wal *w, u64 lsn);
+int ps_wal_truncate(ps_wal *w, ps_lsn lsn);
 
 /*
  * Starts at the first retained record with LSN >= from_lsn. One thread per
  * iterator. Iterators work only before the first append. After it, open and
  * next return EINVAL.
  */
-int ps_wal_iter_open(ps_wal *w, u64 from_lsn, ps_wal_iter **out);
+int ps_wal_iter_open(ps_wal *w, ps_lsn from_lsn, ps_wal_iter **out);
 
 /*
  * *buf stays valid until the next call or close. ENOENT at end of log.
  * EBADMSG if a segment changed since open.
  */
-int ps_wal_iter_next(ps_wal_iter *it, u64 *lsn, const void **buf, usize *len);
+int ps_wal_iter_next(ps_wal_iter *it, ps_lsn *lsn, const void **buf, usize *len);
 
 /* Passing NULL is safe. */
 void ps_wal_iter_close(ps_wal_iter *it);
@@ -94,7 +94,7 @@ typedef struct ps_apply_ctx ps_apply_ctx;
  * Commit exactly one operation at lsn before returning 0. Abort on error
  * and return a nonzero error code. rec is valid only during the call.
  */
-typedef int (*ps_apply_fn)(ps_apply_ctx *ctx, ps_store *store, u64 lsn, const void *rec, usize len);
+typedef int (*ps_apply_fn)(ps_apply_ctx *ctx, ps_store *s, ps_lsn lsn, const void *rec, usize len);
 
 /*
  * Passes each record above the durable LSN to apply, in order. Call once

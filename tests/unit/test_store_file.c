@@ -79,7 +79,7 @@ static void test_create_reopen(void)
     ps_page_id a = PS_PAGE_ID_NONE;
     ps_page_id b = PS_PAGE_ID_NONE;
     ps_page *p = NULL;
-    T_OK(ps_op_begin(s, 10));
+    T_OK(ps_op_begin(s, ps_lsn_from(10)));
     T_OK(ps_alloc(s, &a, &p));
     put_text(p, "alpha");
     T_OK(ps_alloc(s, &b, &p));
@@ -87,21 +87,21 @@ static void test_create_reopen(void)
     ps_op_commit(s);
     T_EQ(a.raw, 1);
     T_EQ(b.raw, 2);
-    T_OK(ps_op_begin(s, 11));
+    T_OK(ps_op_begin(s, ps_lsn_from(11)));
     T_OK(ps_write(s, a, &p));
     put_text(p, "alpha2");
     ps_op_commit(s);
     T_OK(ps_checkpoint(s));
-    T_EQ(ps_durable_lsn(s), 11);
+    T_EQ(ps_durable_lsn(s).raw, 11);
     /* This store has no WAL, so reopen sees just the last checkpoint. */
-    T_OK(ps_op_begin(s, 12));
+    T_OK(ps_op_begin(s, ps_lsn_from(12)));
     T_OK(ps_free(s, b));
     ps_op_commit(s);
     ps_close(s);
 
     T_OK(ps_open(dir, &cfg, 0, &s));
-    T_EQ(ps_durable_lsn(s), 11);
-    T_EQ(ps_committed_lsn(s), 11);
+    T_EQ(ps_durable_lsn(s).raw, 11);
+    T_EQ(ps_committed_lsn(s).raw, 11);
     check_text(s, a, "alpha2");
     check_text(s, b, "beta");
     struct ps_stats st;
@@ -110,7 +110,7 @@ static void test_create_reopen(void)
     ps_close(s);
 
     T_OK(ps_open(dir, &cfg, PS_CREATE, &s));
-    T_EQ(ps_durable_lsn(s), 11);
+    T_EQ(ps_durable_lsn(s).raw, 11);
     check_text(s, a, "alpha2");
     ps_close(s);
     teardown();
@@ -133,7 +133,7 @@ static void test_second_open_ebusy(void)
     T_ERR(ps_open(alias, &cfg, 0, &s2), EBUSY);
     ps_page_id id = PS_PAGE_ID_NONE;
     ps_page *p = NULL;
-    T_OK(ps_op_begin(s1, 1));
+    T_OK(ps_op_begin(s1, ps_lsn_from(1)));
     T_OK(ps_alloc(s1, &id, &p));
     put_text(p, "one");
     ps_op_commit(s1);

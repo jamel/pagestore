@@ -6,9 +6,9 @@
  *
  *     u8 rec[12];
  *     ps_put_le32(rec, kind);
- *     ps_put_le64(rec + 4, lsn);
+ *     ps_put_le64(rec + 4, lsn.raw);
  *     ...
- *     const u64 lsn = ps_get_le64(rec + 4);
+ *     const ps_lsn lsn = ps_lsn_from(ps_get_le64(rec + 4));
  */
 
 #include "pagestore/types.h" // IWYU pragma: export

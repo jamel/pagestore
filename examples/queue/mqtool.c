@@ -462,8 +462,8 @@ static int cmd_stats(tool *t, int argc, char **argv)
         "store pages     %llu, %u bytes each\n",
         (unsigned long long) ss.allocated_pages,
         ss.page_size);
-    printf("committed LSN   %llu\n", (unsigned long long) ss.committed_lsn);
-    printf("durable LSN     %llu\n", (unsigned long long) ss.durable_lsn);
+    printf("committed LSN   %llu\n", (unsigned long long) ss.committed_lsn.raw);
+    printf("durable LSN     %llu\n", (unsigned long long) ss.durable_lsn.raw);
     return EXIT_SUCCESS;
 }
 

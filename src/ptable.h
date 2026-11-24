@@ -30,7 +30,7 @@
 #define PS_NO_FRAME UINT32_MAX
 
 typedef struct ps_vnode {
-    u64 lsn; /* producing op's LSN, or 0 until ps_free's disk node is loaded */
+    ps_lsn lsn; /* producing operation's LSN; PS_LSN_NONE for ps_free's unloaded disk node */
     struct ps_vnode *older; /* chain, newest first (latch); free-list link while unallocated */
     struct ps_entry *entry;
     u32 frame; /* PS_NO_FRAME when frameless */
@@ -38,7 +38,7 @@ typedef struct ps_vnode {
     u8 kind;
     u8 flags;
     struct ps_vnode *retire_next; /* retire queue or bitmap-copy list (reg_mu) */
-    u64 retire_r; /* replacing LSN while on the retire queue (reg_mu) */
+    ps_lsn retire_r; /* replacing LSN while on the retire queue (reg_mu) */
 } ps_vnode;
 
 typedef struct ps_entry {
@@ -81,7 +81,7 @@ int ps_vnode_new(ps_ptable *pt, ps_vnode **out);
 void ps_vnode_delete(ps_ptable *pt, ps_vnode *v);
 
 /* Hold the page latch. Returns the newest node at or below lsn, which may mark a free page. */
-ps_vnode *ps_chain_visible(const ps_entry *e, u64 lsn);
+ps_vnode *ps_chain_visible(const ps_entry *e, ps_lsn lsn);
 
 /* Counts buckets, live entries and slabs. Safe to sample from any thread. */
 u64 ps_ptable_bytes(const ps_ptable *pt);

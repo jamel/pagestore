@@ -73,20 +73,20 @@ static void open_store(run *t, u32 flags)
 static void checkpoint(run *t)
 {
     T_OK(ps_checkpoint(t->s));
-    T_EQ(ps_durable_lsn(t->s), ps_committed_lsn(t->s));
-    model_durable(t->m, ps_durable_lsn(t->s));
+    T_EQ(ps_durable_lsn(t->s).raw, ps_committed_lsn(t->s).raw);
+    model_durable(t->m, ps_durable_lsn(t->s).raw);
 }
 
 static u64 next_lsn(run *t)
 {
-    T_EQ(ps_committed_lsn(t->s), model_last_lsn(t->m));
-    return ps_committed_lsn(t->s) + 1 + rng_below(&t->r, 3);
+    T_EQ(ps_committed_lsn(t->s).raw, model_last_lsn(t->m));
+    return ps_committed_lsn(t->s).raw + 1 + rng_below(&t->r, 3);
 }
 
 static void check_page(const model *m, const ps_page *p, ps_page_id id, const model_page *mp)
 {
     T_EQ(p->id.raw, id.raw);
-    T_EQ(p->lsn, mp->lsn);
+    T_EQ(p->lsn.raw, mp->lsn);
     T_EQ(p->flags, 0);
     T_EQ(p->checksum, 0);
     T_EQ(p->magic, 0);
@@ -122,7 +122,7 @@ static void probe_ids(run *t)
     model_next_ids(t->m, 3, want);
     for (u32 tries = 0;; tries++) {
         T_CHECK(tries < 3);
-        T_OK(ps_op_begin(t->s, ps_committed_lsn(t->s) + 1));
+        T_OK(ps_op_begin(t->s, ps_lsn_next(ps_committed_lsn(t->s))));
         int rv = 0;
         for (u32 k = 0; k < 3 && rv == 0; k++) {
             ps_page_id id = PS_PAGE_ID_NONE;
@@ -206,8 +206,9 @@ static int misuse_read(run *t, snap_rec *sr, ps_page_id id)
         return 0;
     }
     /* A checkpoint during the read may have changed the data file. */
-    const bool ok = rv == 0 ? model_misuse_ok(t->m, sr->lsn, id, 0, p->lsn, (const u8 *) p + HDR) :
-                              model_misuse_ok(t->m, sr->lsn, id, rv, 0, NULL);
+    const bool ok = rv == 0 ?
+        model_misuse_ok(t->m, sr->lsn, id, 0, p->lsn.raw, (const u8 *) p + HDR) :
+        model_misuse_ok(t->m, sr->lsn, id, rv, 0, NULL);
     if (!ok) {
         t_fail(
             __FILE__,
@@ -216,7 +217,7 @@ static int misuse_read(run *t, snap_rec *sr, ps_page_id id)
             id.raw,
             (unsigned long long) sr->lsn,
             rv,
-            rv == 0 ? (unsigned long long) p->lsn : 0ull);
+            rv == 0 ? (unsigned long long) p->lsn.raw : 0ull);
     }
     if (rv == EINVAL) {
         t->t->misuse_einval++;
@@ -331,7 +332,7 @@ static void step_op(run *t)
     begin_op(t, &op);
     ps_op_commit(t->s);
     w_apply_model(t->m, &op);
-    T_EQ(ps_committed_lsn(t->s), op.lsn);
+    T_EQ(ps_committed_lsn(t->s).raw, op.lsn);
     t->t->ops++;
 }
 
@@ -354,7 +355,7 @@ static void misuse_in_op(run *t, const w_op *op)
     } else if (x == 2 && !ps_page_id_is_none(freed)) {
         id = freed;
     } else if (x == 3) {
-        T_ERR(ps_op_begin(t->s, op->lsn + 1), EINVAL);
+        T_ERR(ps_op_begin(t->s, ps_lsn_from(op->lsn + 1)), EINVAL);
         return;
     } else {
         for (u32 tries = 0; tries < 32 && ps_page_id_is_none(id); tries++) {
@@ -383,7 +384,7 @@ static void misuse_in_op(run *t, const w_op *op)
 /* An operation that is aborted: the writer's view inside it, then a misuse probe. */
 static void step_abort(run *t)
 {
-    const u64 before = ps_committed_lsn(t->s);
+    const u64 before = ps_committed_lsn(t->s).raw;
     w_op op;
     w_gen(&t->r, t->m, next_lsn(t), 1 + (u32) rng_below(&t->r, W_MAX_ACTIONS), &op);
     begin_op(t, &op);
@@ -397,12 +398,12 @@ static void step_abort(run *t)
         const ps_page *p = NULL;
         T_OK(ps_read(t->s, a->id, &p));
         check_page(t->m, p, a->id, &mp);
-        T_EQ(p->lsn, op.lsn);
+        T_EQ(p->lsn.raw, op.lsn);
     }
     misuse_in_op(t, &op);
     ps_op_abort(t->s);
     model_op_abort(t->m);
-    T_EQ(ps_committed_lsn(t->s), before);
+    T_EQ(ps_committed_lsn(t->s).raw, before);
     t->t->aborted++;
 }
 
@@ -415,8 +416,8 @@ static void step_snap_open(run *t)
     snap_rec sr;
     memset(&sr, 0, sizeof(sr));
     T_OK(ps_snapshot_open(t->s, &sr.sn));
-    sr.lsn = ps_snapshot_lsn(sr.sn);
-    T_EQ(sr.lsn, ps_committed_lsn(t->s));
+    sr.lsn = ps_snapshot_lsn(sr.sn).raw;
+    T_EQ(sr.lsn, ps_committed_lsn(t->s).raw);
 
     const u32 n = model_allocated_at(t->m, sr.lsn, NULL, 0);
     ps_page_id *ids = malloc(((usize) n + 1) * sizeof(*ids));
@@ -449,13 +450,13 @@ static void reopen(run *t, bool ckpt_first)
     }
     ps_close(t->s);
     open_store(t, 0);
-    const u64 d = ps_durable_lsn(t->s);
-    T_EQ(ps_committed_lsn(t->s), d);
+    const u64 d = ps_durable_lsn(t->s).raw;
+    T_EQ(ps_committed_lsn(t->s).raw, d);
     T_CHECK(model_has_lsn(t->m, d));
     model_truncate(t->m, d);
     T_EQ(model_last_lsn(t->m), d);
     w_check_store(t->s, t->m);
-    model_durable(t->m, ps_durable_lsn(t->s));
+    model_durable(t->m, ps_durable_lsn(t->s).raw);
     t->t->reopens++;
 }
 
@@ -468,14 +469,14 @@ static void step_fail(run *t)
     w_op op;
     w_gen(&t->r, t->m, next_lsn(t), 1 + (u32) rng_below(&t->r, W_MAX_ACTIONS), &op);
     begin_op(t, &op);
-    if (ps_committed_lsn(t->s) == ps_durable_lsn(t->s)) {
+    if (ps_committed_lsn(t->s).raw == ps_durable_lsn(t->s).raw) {
         /* A checkpoint with no work would leave the fault armed. */
         ps_op_commit(t->s);
         w_apply_model(t->m, &op);
         t->t->ops++;
         return;
     }
-    const u64 durable = ps_durable_lsn(t->s);
+    const u64 durable = ps_durable_lsn(t->s).raw;
     mb_fail(t->mb, MB_COMMIT_FATAL, EIO, 1);
     T_ERR(ps_checkpoint(t->s), EIO);
     t->failed = true;
@@ -486,16 +487,16 @@ static void step_fail(run *t)
     ps_page *p = NULL;
     T_ERR(ps_alloc(t->s, &id, &p), EIO);
     ps_op_commit(t->s);
-    T_EQ(ps_committed_lsn(t->s), op.lsn);
-    T_EQ(ps_durable_lsn(t->s), durable);
-    T_ERR(ps_op_begin(t->s, op.lsn + 1), EIO);
+    T_EQ(ps_committed_lsn(t->s).raw, op.lsn);
+    T_EQ(ps_durable_lsn(t->s).raw, durable);
+    T_ERR(ps_op_begin(t->s, ps_lsn_from(op.lsn + 1)), EIO);
     ps_snapshot *sn = NULL;
     T_ERR(ps_snapshot_open(t->s, &sn), EIO);
     T_ERR(ps_checkpoint(t->s), EIO);
     close_snaps(t, true);
     ps_close(t->s);
     open_store(t, 0);
-    T_EQ(ps_committed_lsn(t->s), durable);
+    T_EQ(ps_committed_lsn(t->s).raw, durable);
     T_CHECK(model_has_lsn(t->m, durable));
     model_truncate(t->m, durable);
     w_check_store(t->s, t->m);
@@ -515,7 +516,7 @@ static void run_seed(u64 seed, u32 frames, tally *ty)
     t.mb = mb_create();
     t.m = model_create(PS);
     open_store(&t, PS_CREATE);
-    model_durable(t.m, ps_durable_lsn(t.s));
+    model_durable(t.m, ps_durable_lsn(t.s).raw);
     for (u32 step = 0; step < STEPS; step++) {
         const u32 x = (u32) rng_below(&t.r, 100);
         bool changed = true;
@@ -594,8 +595,8 @@ static void test_model_alloc_matches_policy(void)
         ps_store *s = NULL;
         T_OK(mb_open(mb, FRAMES, PS_CREATE, &s));
         for (u32 step = 0; step < 150; step++) {
-            const u64 lsn = ps_committed_lsn(s) + 1;
-            T_OK(ps_op_begin(s, lsn));
+            const u64 lsn = ps_committed_lsn(s).raw + 1;
+            T_OK(ps_op_begin(s, ps_lsn_from(lsn)));
             model_op_begin(m, lsn);
             const u32 nlive = model_allocated_at(m, model_last_lsn(m), NULL, 0);
             ps_page_id *live = malloc(((usize) nlive + 1) * sizeof(*live));
@@ -645,7 +646,7 @@ static void test_model_alloc_matches_policy(void)
             T_EQ(st.num_groups, model_num_groups(m));
             if (step % 10 == 9) {
                 T_OK(ps_checkpoint(s));
-                model_durable(m, ps_durable_lsn(s));
+                model_durable(m, ps_durable_lsn(s).raw);
             }
             if (step % 50 == 49) {
                 ps_close(s);
@@ -911,14 +912,14 @@ static void test_writer_misuse_after_snapshot_load(void)
     mem_backend *mb = mb_create();
     ps_store *s = NULL;
     T_OK(mb_open(mb, FRAMES, PS_CREATE, &s));
-    T_OK(ps_op_begin(s, 1));
+    T_OK(ps_op_begin(s, ps_lsn_from(1)));
     ps_page_id id = PS_PAGE_ID_NONE;
     ps_page *p = NULL;
     T_OK(ps_alloc(s, &id, &p));
     T_EQ(id.raw, 1);
     ps_op_commit(s);
     T_OK(ps_checkpoint(s));
-    T_OK(ps_op_begin(s, 2));
+    T_OK(ps_op_begin(s, ps_lsn_from(2)));
     T_OK(ps_free(s, ps_page_id_from(1)));
     ps_op_commit(s);
     T_OK(ps_checkpoint(s));
@@ -928,12 +929,12 @@ static void test_writer_misuse_after_snapshot_load(void)
     T_OK(ps_snapshot_open(s, &sn));
     const ps_page *rp = NULL;
     T_OK(ps_snapshot_read(sn, ps_page_id_from(1), &rp));
-    T_EQ(rp->lsn, 1);
+    T_EQ(rp->lsn.raw, 1);
     ps_snapshot_close(sn);
     T_CHECK(ps_test_has_entry(s, ps_page_id_from(1)));
 
     for (u32 call = 0; call < 3; call++) {
-        T_OK(ps_op_begin(s, 3 + call));
+        T_OK(ps_op_begin(s, ps_lsn_from(3 + call)));
         if (call == 0) {
             T_ERR(ps_read(s, ps_page_id_from(1), &rp), EINVAL);
         } else if (call == 1) {
@@ -943,10 +944,10 @@ static void test_writer_misuse_after_snapshot_load(void)
         }
         ps_op_abort(s);
     }
-    T_OK(ps_op_begin(s, 3));
+    T_OK(ps_op_begin(s, ps_lsn_from(3)));
     T_OK(ps_alloc(s, &id, &p));
     T_EQ(id.raw, 1);
-    T_EQ(p->lsn, 3);
+    T_EQ(p->lsn.raw, 3);
     ps_op_commit(s);
     ps_close(s);
     mb_destroy(mb);
@@ -987,7 +988,7 @@ static void test_snapshot_misuse_older_copy(void)
     T_OK(ps_snapshot_open(s, &a));
     const ps_page *p = NULL;
     T_OK(ps_snapshot_read(a, ps_page_id_from(1), &p));
-    T_CHECK(model_misuse_ok(m, 2, ps_page_id_from(1), 0, p->lsn, (const u8 *) p + HDR));
+    T_CHECK(model_misuse_ok(m, 2, ps_page_id_from(1), 0, p->lsn.raw, (const u8 *) p + HDR));
     ps_snapshot_unpin(a, ps_page_id_from(1));
 
     memset(&op, 0, sizeof(op));
@@ -999,11 +1000,11 @@ static void test_snapshot_misuse_older_copy(void)
     w_apply_model(m, &op);
     T_OK(ps_checkpoint(s));
     model_durable(m, 3);
-    T_EQ(((const ps_page *) mb_page(mb, ps_page_id_from(1)))->lsn, 3);
+    T_EQ(((const ps_page *) mb_page(mb, ps_page_id_from(1)))->lsn.raw, 3);
 
     T_OK(ps_snapshot_read(a, ps_page_id_from(1), &p));
-    T_EQ(p->lsn, 1);
-    T_CHECK(model_misuse_ok(m, 2, ps_page_id_from(1), 0, p->lsn, (const u8 *) p + HDR));
+    T_EQ(p->lsn.raw, 1);
+    T_CHECK(model_misuse_ok(m, 2, ps_page_id_from(1), 0, p->lsn.raw, (const u8 *) p + HDR));
     ps_snapshot_close(a);
     w_check_store(s, m);
     ps_close(s);

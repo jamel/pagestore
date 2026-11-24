@@ -61,7 +61,7 @@ static ps_pressure pressure(void)
 
 static void begin(void)
 {
-    T_OK(ps_op_begin(s, next_lsn++));
+    T_OK(ps_op_begin(s, ps_lsn_from(next_lsn++)));
 }
 
 /* Page contents: id and tag after the header, then a byte pattern from both. */
@@ -429,7 +429,7 @@ static void test_reload_after_evict(void)
     const ps_page *p = snap_get(sn, ps_page_id_from(30));
     T_CHECK(stamped(p, ps_page_id_from(30), 1));
     T_EQ(p->checksum, 0);
-    T_EQ(p->lsn, ((const ps_page *) mb_page(mb, ps_page_id_from(30)))->lsn);
+    T_EQ(p->lsn.raw, ((const ps_page *) mb_page(mb, ps_page_id_from(30)))->lsn.raw);
     T_MEMEQ((const u8 *) p + HDR, mb_page(mb, ps_page_id_from(30)) + HDR, PS - HDR);
     T_EQ(stats().cache_misses, st0.cache_misses + 1);
     ps_snapshot_unpin(sn, ps_page_id_from(30));
@@ -737,7 +737,7 @@ static void test_open_cache_too_small(void)
 
     /* An existing store with 12 groups: 4 + 12 + 4 > 16, refused before its bitmaps are read. */
     mb = mb_create();
-    ps_backend_info info = {PS, 12, 1, 9};
+    ps_backend_info info = {PS, 12, 1, ps_lsn_from(9)};
     mb_set_info(mb, info);
     cfg.max_pinned_pct = 25;
     mb_backend(mb, &be);
@@ -752,7 +752,7 @@ static void test_open_cache_too_small(void)
 static void inject_full_groups(u32 ngroups)
 {
     mb = mb_create();
-    ps_backend_info info = {PS, ngroups, 1, 9};
+    ps_backend_info info = {PS, ngroups, 1, ps_lsn_from(9)};
     mb_set_info(mb, info);
     u8 *buf = calloc(1, PS);
     T_CHECK(buf != NULL);
@@ -762,7 +762,7 @@ static void inject_full_groups(u32 ngroups)
         p->magic = PS_BITMAP_MAGIC;
         p->id = ps_page_id_from(g * ps_group_size(PS));
         p->flags = PS_PAGE_FLAG_BITMAP;
-        p->lsn = 9;
+        p->lsn = ps_lsn_from(9);
         memset(buf + HDR, 0xFF, PS - HDR);
         mb_seal_page(buf, PS);
         mb_put(mb, p->id, buf);
@@ -830,7 +830,7 @@ static void *conc_reader_main(void *arg)
     while (!atomic_load(&conc_stop)) {
         ps_snapshot *sn = NULL;
         T_OK(ps_snapshot_open(s, &sn));
-        const u64 S = ps_snapshot_lsn(sn);
+        const ps_lsn S = ps_snapshot_lsn(sn);
         for (u32 k = 0; k < 3; k++) {
             const ps_page_id id = ps_page_id_from(1 + (u32) rng_below(&g, CONC_PAGES));
             const ps_page *p = NULL;
@@ -844,8 +844,8 @@ static void *conc_reader_main(void *arg)
                 continue;
             }
             T_OK(rv);
-            T_CHECK(p->lsn <= S);
-            T_CHECK(stamped(p, id, p->lsn <= conc_base_lsn ? 1 : (u32) p->lsn));
+            T_CHECK(ps_lsn_le(p->lsn, S));
+            T_CHECK(stamped(p, id, p->lsn.raw <= conc_base_lsn ? 1 : (u32) p->lsn.raw));
             r->reads++;
         }
         ps_snapshot_close(sn);
@@ -870,7 +870,7 @@ static void test_concurrent_eviction(void)
     for (u32 n = 0; n < CONC_OPS * t_scale(); n++) {
         for (;;) {
             const u64 lsn = next_lsn++;
-            T_OK(ps_op_begin(s, lsn));
+            T_OK(ps_op_begin(s, ps_lsn_from(lsn)));
             int rv = 0;
             for (u32 k = 0; k < 3 && rv == 0; k++) {
                 const ps_page_id id = ps_page_id_from(1 + (u32) rng_below(&g, CONC_PAGES));

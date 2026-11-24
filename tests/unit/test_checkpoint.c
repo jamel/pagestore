@@ -65,7 +65,7 @@ static ps_page_id alloc_text(const char *text)
 }
 
 /* Create a committed page holding text in its own operation at lsn. */
-static ps_page_id alloc_with(u64 lsn, const char *text)
+static ps_page_id alloc_with(ps_lsn lsn, const char *text)
 {
     T_OK(ps_op_begin(s, lsn));
     const ps_page_id id = alloc_text(text);
@@ -137,11 +137,11 @@ static void hooks_destroy(ps_log_hooks_ctx *h)
     pthread_mutex_destroy(&h->mu);
 }
 
-static int rec_flush(ps_log_hooks_ctx *h, u64 lsn)
+static int rec_flush(ps_log_hooks_ctx *h, ps_lsn lsn)
 {
     pthread_mutex_lock(&h->mu);
     h->nflush++;
-    h->flush_lsn = lsn;
+    h->flush_lsn = lsn.raw;
     h->count_at_flush = mb_ckpt_count(mb);
     if (h->norder < sizeof(h->order) - 1) {
         h->order[h->norder++] = 'F';
@@ -156,11 +156,11 @@ static int rec_flush(ps_log_hooks_ctx *h, u64 lsn)
     return rv;
 }
 
-static void rec_done(ps_log_hooks_ctx *h, u64 lsn)
+static void rec_done(ps_log_hooks_ctx *h, ps_lsn lsn)
 {
     pthread_mutex_lock(&h->mu);
     h->ndone++;
-    h->done_lsn = lsn;
+    h->done_lsn = lsn.raw;
     h->count_at_done = mb_ckpt_count(mb);
     if (h->norder < sizeof(h->order) - 1) {
         h->order[h->norder++] = 'D';
@@ -277,15 +277,15 @@ static void test_format_seq1(void)
     open_store(64);
     const ps_backend_info info = mb_info(mb);
     T_EQ(info.seq, 1);
-    T_EQ(info.durable_lsn, 0);
+    T_EQ(info.durable_lsn.raw, 0);
     T_EQ(info.num_groups, 1);
-    T_EQ(ps_durable_lsn(s), 0);
+    T_EQ(ps_durable_lsn(s).raw, 0);
     const ps_page *p = (const ps_page *) mb_page(mb, ps_page_id_from(0));
     T_CHECK(p != NULL);
     T_EQ(p->id.raw, 0);
     T_EQ(p->flags, PS_PAGE_FLAG_BITMAP);
     T_EQ(p->magic, PS_BITMAP_MAGIC);
-    T_EQ(p->lsn, 0);
+    T_EQ(p->lsn.raw, 0);
     const u8 *bits = (const u8 *) p + HDR;
     T_EQ(bits[0], 0x01);
     for (u32 i = 1; i < PS - HDR; i++) {
@@ -300,13 +300,13 @@ static void test_format_seq1(void)
 
     /* An interrupted format (a seq 0 header) is formatted again with PS_CREATE. */
     mb = mb_create();
-    const ps_backend_info seq0 = {PS, 1, 0, 0};
+    const ps_backend_info seq0 = {PS, 1, 0, PS_LSN_NONE};
     mb_set_info(mb, seq0);
     T_ERR(mb_open(mb, 64, 0, &s), ENOENT);
     T_OK(mb_open(mb, 64, PS_CREATE, &s));
     T_EQ(mb_info(mb).seq, 1);
     T_CHECK(mb_written_last(mb, ps_page_id_from(0)));
-    T_OK(ps_op_begin(s, 1));
+    T_OK(ps_op_begin(s, ps_lsn_from(1)));
     T_EQ(alloc_text("x").raw, 1);
     ps_op_commit(s);
     close_store();
@@ -315,18 +315,18 @@ static void test_format_seq1(void)
 static void test_reopen(void)
 {
     open_store(64);
-    T_OK(ps_op_begin(s, 1));
+    T_OK(ps_op_begin(s, ps_lsn_from(1)));
     T_EQ(alloc_text("one").raw, 1);
     T_EQ(alloc_text("two").raw, 2);
     T_EQ(alloc_text("three").raw, 3);
     ps_op_commit(s);
     T_OK(ps_checkpoint(s));
-    T_EQ(ps_durable_lsn(s), 1);
+    T_EQ(ps_durable_lsn(s).raw, 1);
     reopen(64);
-    T_EQ(ps_committed_lsn(s), 1);
-    T_EQ(ps_durable_lsn(s), 1);
+    T_EQ(ps_committed_lsn(s).raw, 1);
+    T_EQ(ps_durable_lsn(s).raw, 1);
     T_EQ(stats().allocated_pages, 3);
-    T_OK(ps_op_begin(s, 2));
+    T_OK(ps_op_begin(s, ps_lsn_from(2)));
     check_text(ps_page_id_from(1), "one");
     check_text(ps_page_id_from(2), "two");
     check_text(ps_page_id_from(3), "three");
@@ -338,16 +338,16 @@ static void test_reopen(void)
 static void test_close_without_checkpoint_loses_ops(void)
 {
     open_store(64);
-    T_EQ(alloc_with(1, "a").raw, 1);
+    T_EQ(alloc_with(ps_lsn_from(1), "a").raw, 1);
     T_OK(ps_checkpoint(s));
-    T_OK(ps_op_begin(s, 2));
+    T_OK(ps_op_begin(s, ps_lsn_from(2)));
     write_text(ps_page_id_from(1), "b");
     ps_op_commit(s);
-    T_EQ(alloc_with(3, "c").raw, 2);
+    T_EQ(alloc_with(ps_lsn_from(3), "c").raw, 2);
     reopen(64);
-    T_EQ(ps_committed_lsn(s), 1);
-    T_EQ(ps_durable_lsn(s), 1);
-    T_OK(ps_op_begin(s, 2));
+    T_EQ(ps_committed_lsn(s).raw, 1);
+    T_EQ(ps_durable_lsn(s).raw, 1);
+    T_OK(ps_op_begin(s, ps_lsn_from(2)));
     check_text(ps_page_id_from(1), "a");
     T_EQ(alloc_text("c").raw, 2);
     ps_op_commit(s);
@@ -360,7 +360,7 @@ static void test_skip_when_clean(void)
     ps_log_hooks_ctx h;
     hooks_init(&h);
     set_hooks(&h);
-    alloc_with(1, "a");
+    alloc_with(ps_lsn_from(1), "a");
     T_OK(ps_checkpoint(s));
     T_EQ(ndone(&h), 1);
     const u64 count = mb_ckpt_count(mb);
@@ -377,16 +377,16 @@ static void test_skip_when_clean(void)
 static void test_lsn_only_advance(void)
 {
     open_store(64);
-    alloc_with(1, "a");
+    alloc_with(ps_lsn_from(1), "a");
     T_OK(ps_checkpoint(s));
-    T_OK(ps_op_begin(s, 5));
+    T_OK(ps_op_begin(s, ps_lsn_from(5)));
     check_text(ps_page_id_from(1), "a");
     ps_op_commit(s);
     T_EQ(stats().frames_dirty, 0);
     const u64 count = mb_ckpt_count(mb);
     T_OK(ps_checkpoint(s));
-    T_EQ(ps_durable_lsn(s), 5);
-    T_EQ(mb_info(mb).durable_lsn, 5);
+    T_EQ(ps_durable_lsn(s).raw, 5);
+    T_EQ(mb_info(mb).durable_lsn.raw, 5);
     T_EQ(mb_ckpt_count(mb), count + 1);
     T_CHECK(!mb_written_last(mb, ps_page_id_from(0)));
     T_CHECK(!mb_written_last(mb, ps_page_id_from(1)));
@@ -396,8 +396,8 @@ static void test_lsn_only_advance(void)
 static void test_freed_page_skipped(void)
 {
     open_store(64);
-    T_EQ(alloc_with(1, "a").raw, 1);
-    T_OK(ps_op_begin(s, 2));
+    T_EQ(alloc_with(ps_lsn_from(1), "a").raw, 1);
+    T_OK(ps_op_begin(s, ps_lsn_from(2)));
     T_OK(ps_free(s, ps_page_id_from(1)));
     ps_op_commit(s);
     T_OK(ps_checkpoint(s));
@@ -417,8 +417,8 @@ static void test_mid_operation_and_bitmap_copy(void)
     ps_log_hooks_ctx h;
     hooks_init(&h);
     set_hooks(&h);
-    T_EQ(alloc_with(1, "a").raw, 1);
-    T_OK(ps_op_begin(s, 2));
+    T_EQ(alloc_with(ps_lsn_from(1), "a").raw, 1);
+    T_OK(ps_op_begin(s, ps_lsn_from(2)));
     T_EQ(alloc_text("b").raw, 2);
 
     bg_ckpt b;
@@ -427,11 +427,11 @@ static void test_mid_operation_and_bitmap_copy(void)
     ps_op_commit(s);
     /* the bitmap was copied for the checkpoint */
     T_EQ(ps_test_chain_len(s, ps_page_id_from(0)), 2);
-    T_EQ(ps_committed_lsn(s), 2);
+    T_EQ(ps_committed_lsn(s).raw, 2);
     mb_block_writes(mb, false);
     T_OK(bg_join(&b));
 
-    T_EQ(ps_durable_lsn(s), 1);
+    T_EQ(ps_durable_lsn(s).raw, 1);
     T_CHECK(durable_bit(ps_page_id_from(0), 1));
     T_CHECK(!durable_bit(ps_page_id_from(0), 2));
     T_CHECK(mb_page(mb, ps_page_id_from(2)) == NULL);
@@ -439,7 +439,7 @@ static void test_mid_operation_and_bitmap_copy(void)
     T_EQ(stats().frames_dirty, 2); /* bitmap 0 and page 2, from operation 2 */
 
     T_OK(ps_checkpoint(s));
-    T_EQ(ps_durable_lsn(s), 2);
+    T_EQ(ps_durable_lsn(s).raw, 2);
     T_CHECK(durable_bit(ps_page_id_from(0), 1));
     T_CHECK(durable_bit(ps_page_id_from(0), 2));
     check_durable_text(ps_page_id_from(2), "b");
@@ -459,8 +459,8 @@ static void test_bitmap_copy_before_write(void)
     ps_log_hooks_ctx h;
     hooks_init(&h);
     set_hooks(&h);
-    T_EQ(alloc_with(1, "a").raw, 1);
-    T_OK(ps_op_begin(s, 2));
+    T_EQ(alloc_with(ps_lsn_from(1), "a").raw, 1);
+    T_OK(ps_op_begin(s, ps_lsn_from(2)));
     T_EQ(alloc_text("b").raw, 2);
 
     bg_ckpt b;
@@ -469,10 +469,10 @@ static void test_bitmap_copy_before_write(void)
     release_flush(&h);
     T_OK(bg_join(&b));
 
-    T_EQ(mb_info(mb).durable_lsn, 1);
+    T_EQ(mb_info(mb).durable_lsn.raw, 1);
     T_CHECK(durable_bit(ps_page_id_from(0), 1));
     T_CHECK(!durable_bit(ps_page_id_from(0), 2)); /* the image at L, not the committed one */
-    T_EQ(((const ps_page *) mb_page(mb, ps_page_id_from(0)))->lsn, 1);
+    T_EQ(((const ps_page *) mb_page(mb, ps_page_id_from(0)))->lsn.raw, 1);
     T_EQ(ps_test_chain_len(s, ps_page_id_from(0)), 1);
     T_OK(ps_checkpoint(s));
     T_CHECK(durable_bit(ps_page_id_from(0), 2));
@@ -487,12 +487,12 @@ static void test_abort_drops_lone_marker(void)
     ps_log_hooks_ctx h;
     hooks_init(&h);
     set_hooks(&h);
-    T_EQ(alloc_with(1, "A").raw, 1);
-    T_OK(ps_op_begin(s, 2));
+    T_EQ(alloc_with(ps_lsn_from(1), "A").raw, 1);
+    T_OK(ps_op_begin(s, ps_lsn_from(2)));
     T_OK(ps_free(s, ps_page_id_from(1)));
     ps_op_commit(s);
 
-    T_OK(ps_op_begin(s, 3));
+    T_OK(ps_op_begin(s, ps_lsn_from(3)));
     T_EQ(alloc_text("C").raw, 1); /* over the marker */
     T_OK(ps_checkpoint(s)); /* L = 2: the marker goes on disk under the operation's node */
     T_CHECK(ps_test_has_entry(s, ps_page_id_from(1)));
@@ -500,16 +500,16 @@ static void test_abort_drops_lone_marker(void)
     T_CHECK(!ps_test_has_entry(s, ps_page_id_from(1)));
     T_EQ(stats().frames_dirty, 0);
 
-    /* The same through ps_free of the id this op allocated. */
-    T_OK(ps_op_begin(s, 3));
+    /* The same through ps_free of the id this operation allocated. */
+    T_OK(ps_op_begin(s, ps_lsn_from(3)));
     T_EQ(alloc_text("C").raw, 1);
     T_OK(ps_free(s, ps_page_id_from(1))); /* cancelled: the chain is the committed history again */
     ps_op_commit(s);
-    T_EQ(alloc_with(4, "D").raw, 1);
-    T_OK(ps_op_begin(s, 5));
+    T_EQ(alloc_with(ps_lsn_from(4), "D").raw, 1);
+    T_OK(ps_op_begin(s, ps_lsn_from(5)));
     T_OK(ps_free(s, ps_page_id_from(1)));
     ps_op_commit(s);
-    T_OK(ps_op_begin(s, 6));
+    T_OK(ps_op_begin(s, ps_lsn_from(6)));
     T_EQ(alloc_text("E").raw, 1);
     T_OK(ps_checkpoint(s)); /* L = 5: marker on disk under the operation's node */
     T_OK(ps_free(s, ps_page_id_from(1)));
@@ -523,7 +523,7 @@ static void test_abort_drops_lone_marker(void)
 static void test_begin_failure(void)
 {
     open_store(64);
-    alloc_with(1, "a");
+    alloc_with(ps_lsn_from(1), "a");
     const u64 aborts = mb_abort_count(mb);
     mb_fail(mb, MB_BEGIN, ENOSPC, 1);
     T_ERR(ps_checkpoint(s), ENOSPC);
@@ -533,7 +533,7 @@ static void test_begin_failure(void)
     T_EQ(st.checkpoints_failed, 1);
     T_EQ(st.frames_dirty, 2);
     T_OK(ps_checkpoint(s));
-    T_EQ(ps_durable_lsn(s), 1);
+    T_EQ(ps_durable_lsn(s).raw, 1);
     check_durable_text(ps_page_id_from(1), "a");
     close_store();
 }
@@ -545,7 +545,7 @@ static void fail_with_pending(mb_point point, int want)
     ps_log_hooks_ctx h;
     hooks_init(&h);
     set_hooks(&h);
-    T_OK(ps_op_begin(s, 1));
+    T_OK(ps_op_begin(s, ps_lsn_from(1)));
     T_EQ(alloc_text("a").raw, 1);
     T_EQ(alloc_text("b").raw, 2);
     ps_op_commit(s);
@@ -555,7 +555,7 @@ static void fail_with_pending(mb_point point, int want)
     mb_fail(mb, point, EIO, 1);
     bg_ckpt b;
     bg_start_held(&b, &h);
-    T_OK(ps_op_begin(s, 2));
+    T_OK(ps_op_begin(s, ps_lsn_from(2)));
     write_text(ps_page_id_from(1), "B"); /* the version at L is retired */
     T_EQ(alloc_text("c").raw, 3); /* bitmap 0 is copied */
     ps_op_commit(s);
@@ -598,12 +598,12 @@ static void test_write_during_checkpoint(void)
     ps_log_hooks_ctx h;
     hooks_init(&h);
     set_hooks(&h);
-    T_EQ(alloc_with(1, "A").raw, 1);
+    T_EQ(alloc_with(ps_lsn_from(1), "A").raw, 1);
     const u32 free0 = stats().frames_free;
 
     bg_ckpt b;
     bg_start_blocked(&b, &h); /* L = 1 */
-    T_OK(ps_op_begin(s, 2));
+    T_OK(ps_op_begin(s, ps_lsn_from(2)));
     write_text(ps_page_id_from(1), "B");
     ps_op_commit(s);
     T_EQ(ps_test_chain_len(s, ps_page_id_from(1)), 2);
@@ -619,7 +619,7 @@ static void test_write_during_checkpoint(void)
     T_OK(ps_checkpoint(s));
     check_durable_text(ps_page_id_from(1), "B");
     T_EQ(stats().frames_dirty, 0);
-    T_OK(ps_op_begin(s, 3));
+    T_OK(ps_op_begin(s, ps_lsn_from(3)));
     check_text(ps_page_id_from(1), "B");
     ps_op_commit(s);
     close_store();
@@ -633,14 +633,14 @@ static void test_realloc_during_checkpoint(void)
     ps_log_hooks_ctx h;
     hooks_init(&h);
     set_hooks(&h);
-    T_EQ(alloc_with(1, "A").raw, 1);
-    T_OK(ps_op_begin(s, 2));
+    T_EQ(alloc_with(ps_lsn_from(1), "A").raw, 1);
+    T_OK(ps_op_begin(s, ps_lsn_from(2)));
     T_OK(ps_free(s, ps_page_id_from(1)));
     ps_op_commit(s);
 
     bg_ckpt b;
     bg_start_blocked(&b, &h); /* L = 2: bitmap 0 written, page 1 skipped */
-    T_OK(ps_op_begin(s, 3));
+    T_OK(ps_op_begin(s, ps_lsn_from(3)));
     T_EQ(alloc_text("C").raw, 1);
     ps_op_commit(s);
     T_EQ(ps_test_chain_len(s, ps_page_id_from(1)), 2); /* the new version over the marker */
@@ -669,7 +669,7 @@ static void test_hooks_order_and_failure(void)
     hooks_init(&h);
     set_hooks(&h);
 
-    alloc_with(1, "a");
+    alloc_with(ps_lsn_from(1), "a");
     const u64 c0 = mb_ckpt_count(mb);
     T_OK(ps_checkpoint(s));
     T_EQ(h.nflush, 1);
@@ -682,23 +682,23 @@ static void test_hooks_order_and_failure(void)
 
     /* Cleared hooks are not called. */
     ps_set_log_hooks(s, NULL);
-    alloc_with(2, "b");
+    alloc_with(ps_lsn_from(2), "b");
     T_OK(ps_checkpoint(s));
     T_EQ(h.nflush, 1);
     T_EQ(h.ndone, 1);
-    T_EQ(ps_durable_lsn(s), 2);
+    T_EQ(ps_durable_lsn(s).raw, 2);
 
     /* flush_log failing is fatal. */
     set_hooks(&h);
     h.flush_rv = EIO;
-    alloc_with(3, "c");
+    alloc_with(ps_lsn_from(3), "c");
     const u64 c1 = mb_ckpt_count(mb);
     T_ERR(ps_checkpoint(s), EIO);
     T_EQ(h.nflush, 2);
     T_EQ(h.ndone, 1);
     T_EQ(mb_ckpt_count(mb), c1);
-    T_EQ(ps_durable_lsn(s), 2);
-    T_ERR(ps_op_begin(s, 4), EIO);
+    T_EQ(ps_durable_lsn(s).raw, 2);
+    T_ERR(ps_op_begin(s, ps_lsn_from(4)), EIO);
     struct ps_stats st = stats();
     T_CHECK(st.failed);
     T_EQ(st.checkpoints_failed, 1);
@@ -735,7 +735,7 @@ static void test_hooks_serialized(void)
     hooks_init(&a);
     hooks_init(&bh);
     set_hooks(&a);
-    alloc_with(1, "a");
+    alloc_with(ps_lsn_from(1), "a");
     bg_ckpt b;
     bg_start_blocked(&b, &a);
 
@@ -753,7 +753,7 @@ static void test_hooks_serialized(void)
     T_EQ(nflush(&bh), 0);
     T_EQ(ndone(&bh), 0);
 
-    alloc_with(2, "b");
+    alloc_with(ps_lsn_from(2), "b");
     T_OK(ps_checkpoint(s));
     T_EQ(nflush(&a), 1);
     T_EQ(nflush(&bh), 1);
@@ -766,7 +766,7 @@ static void test_hooks_serialized(void)
 static void test_nonfatal_merges_dirty(void)
 {
     open_store(64);
-    T_OK(ps_op_begin(s, 1));
+    T_OK(ps_op_begin(s, ps_lsn_from(1)));
     T_EQ(alloc_text("a").raw, 1);
     T_EQ(alloc_text("b").raw, 2);
     ps_op_commit(s);
@@ -780,7 +780,7 @@ static void test_nonfatal_merges_dirty(void)
     T_EQ(st.checkpoints_failed, 1);
     T_EQ(st.checkpoints_run, 1); /* format's */
     T_EQ(st.frames_dirty, 3);
-    T_EQ(ps_durable_lsn(s), 0);
+    T_EQ(ps_durable_lsn(s).raw, 0);
     T_EQ(mb_ckpt_count(mb), count);
 
     /* A non-fatal commit failure too. */
@@ -791,7 +791,7 @@ static void test_nonfatal_merges_dirty(void)
     T_EQ(st.checkpoints_failed, 2);
     T_EQ(st.frames_dirty, 3);
 
-    T_OK(ps_op_begin(s, 2)); /* healthy */
+    T_OK(ps_op_begin(s, ps_lsn_from(2))); /* healthy */
     ps_op_commit(s);
     T_OK(ps_checkpoint(s));
     T_CHECK(mb_written_last(mb, ps_page_id_from(0)));
@@ -799,7 +799,7 @@ static void test_nonfatal_merges_dirty(void)
     T_CHECK(mb_written_last(mb, ps_page_id_from(2)));
     check_durable_text(ps_page_id_from(1), "a");
     check_durable_text(ps_page_id_from(2), "b");
-    T_EQ(ps_durable_lsn(s), 2);
+    T_EQ(ps_durable_lsn(s).raw, 2);
     T_EQ(stats().frames_dirty, 0);
     T_EQ(stats().checkpoints_run, 2);
     close_store();
@@ -812,7 +812,7 @@ static void test_merge_back_both_lists(void)
     ps_log_hooks_ctx h;
     hooks_init(&h);
     set_hooks(&h);
-    T_OK(ps_op_begin(s, 1));
+    T_OK(ps_op_begin(s, ps_lsn_from(1)));
     T_EQ(alloc_text("a").raw, 1);
     T_EQ(alloc_text("b").raw, 2);
     ps_op_commit(s);
@@ -821,7 +821,7 @@ static void test_merge_back_both_lists(void)
     mb_fail(mb, MB_WRITE, ENOSPC, 1);
     bg_ckpt b;
     bg_start_blocked(&b, &h);
-    T_OK(ps_op_begin(s, 2));
+    T_OK(ps_op_begin(s, ps_lsn_from(2)));
     write_text(ps_page_id_from(1), "B");
     ps_op_commit(s);
     T_EQ(stats().frames_dirty, 3); /* page 1 is on both lists, counted once */
@@ -852,26 +852,26 @@ static void test_merge_back_both_lists(void)
 static void test_fatal_failed_state(void)
 {
     open_store(64);
-    alloc_with(1, "a");
+    alloc_with(ps_lsn_from(1), "a");
     const ps_backend_info before = mb_info(mb);
     mb_fail(mb, MB_COMMIT_FATAL, EIO, 1);
     T_ERR(ps_checkpoint(s), EIO);
     struct ps_stats st = stats();
     T_CHECK(st.failed);
     T_EQ(st.checkpoints_failed, 1);
-    T_ERR(ps_op_begin(s, 2), EIO);
+    T_ERR(ps_op_begin(s, ps_lsn_from(2)), EIO);
     T_ERR(ps_checkpoint(s), EIO);
     T_EQ(mb_info(mb).seq, before.seq);
-    T_EQ(ps_durable_lsn(s), 0);
+    T_EQ(ps_durable_lsn(s).raw, 0);
     close_store();
 }
 
 static void test_commit_completes_in_failed_state(void)
 {
     open_store(64);
-    alloc_with(1, "a");
-    alloc_with(2, "b");
-    T_OK(ps_op_begin(s, 3));
+    alloc_with(ps_lsn_from(1), "a");
+    alloc_with(ps_lsn_from(2), "b");
+    T_OK(ps_op_begin(s, ps_lsn_from(3)));
     const ps_page_id id = alloc_text("c");
     T_EQ(id.raw, 3);
     mb_fail(mb, MB_COMMIT_FATAL, EIO, 1);
@@ -886,17 +886,17 @@ static void test_commit_completes_in_failed_state(void)
     T_ERR(ps_read(s, ps_page_id_from(1), &rp), EIO);
     T_ERR(ps_free(s, ps_page_id_from(1)), EIO);
     ps_op_commit(s);
-    T_EQ(ps_committed_lsn(s), 3);
+    T_EQ(ps_committed_lsn(s).raw, 3);
     T_EQ(stats().allocated_pages, 3);
     T_CHECK(stats().failed);
-    T_ERR(ps_op_begin(s, 4), EIO);
+    T_ERR(ps_op_begin(s, ps_lsn_from(4)), EIO);
     close_store();
 }
 
 static void test_checksums(void)
 {
     open_store(64);
-    T_OK(ps_op_begin(s, 1));
+    T_OK(ps_op_begin(s, ps_lsn_from(1)));
     for (u32 i = 1; i <= 5; i++) {
         char text[16];
         snprintf(text, sizeof(text), "page %u", i);
@@ -904,7 +904,7 @@ static void test_checksums(void)
     }
     ps_op_commit(s);
     T_OK(ps_checkpoint(s));
-    T_OK(ps_op_begin(s, 2));
+    T_OK(ps_op_begin(s, ps_lsn_from(2)));
     for (u32 i = 0; i <= 5; i++) {
         const ps_page_id id = ps_page_id_from(i);
         const u8 *d = mb_page(mb, id);
@@ -933,14 +933,14 @@ static void test_group_growth_persists(void)
 {
     const u32 G = ps_group_size(PS);
     mb = mb_create();
-    const ps_backend_info info = {PS, 1, 1, 9};
+    const ps_backend_info info = {PS, 1, 1, ps_lsn_from(9)};
     mb_set_info(mb, info);
     u8 buf[PS];
     memset(buf, 0, PS);
     ps_page *bp = (ps_page *) buf;
     bp->magic = PS_BITMAP_MAGIC;
     bp->flags = PS_PAGE_FLAG_BITMAP;
-    bp->lsn = 9;
+    bp->lsn = ps_lsn_from(9);
     for (u32 bit = 0; bit < G - 10; bit++) {
         buf[HDR + bit / 8] |= (u8) (1u << (bit % 8));
     }
@@ -951,7 +951,7 @@ static void test_group_growth_persists(void)
 
     u64 lsn = 10;
     for (u32 chunk = 0; chunk < 2; chunk++) {
-        T_OK(ps_op_begin(s, lsn++));
+        T_OK(ps_op_begin(s, ps_lsn_from(lsn++)));
         for (u32 i = 0; i < 5; i++) {
             T_EQ(alloc_text("g0").raw, G - 10 + chunk * 5 + i);
         }
@@ -959,7 +959,7 @@ static void test_group_growth_persists(void)
         T_OK(ps_checkpoint(s));
     }
     T_EQ(mb_info(mb).num_groups, 1);
-    T_OK(ps_op_begin(s, lsn++));
+    T_OK(ps_op_begin(s, ps_lsn_from(lsn++)));
     T_EQ(alloc_text("g1").raw, G + 1);
     ps_op_commit(s);
     T_OK(ps_checkpoint(s));
@@ -975,7 +975,7 @@ static void test_group_growth_persists(void)
     struct ps_stats st = stats();
     T_EQ(st.num_groups, 2);
     T_EQ(st.allocated_pages, G);
-    T_OK(ps_op_begin(s, lsn++));
+    T_OK(ps_op_begin(s, ps_lsn_from(lsn++)));
     check_text(ps_page_id_from(G + 1), "g1");
     check_text(ps_page_id_from(G - 1), "g0");
     T_EQ(alloc_text("next").raw, G + 2);

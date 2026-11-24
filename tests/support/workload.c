@@ -287,7 +287,7 @@ int w_decode(const void *buf, usize len, w_op *op)
 
 int w_apply_store_begin(ps_store *s, const w_op *op)
 {
-    int rv = ps_op_begin(s, op->lsn);
+    int rv = ps_op_begin(s, ps_lsn_from(op->lsn));
     if (rv != 0) {
         return rv;
     }
@@ -302,7 +302,7 @@ int w_apply_store_begin(ps_store *s, const w_op *op)
                 if (rv == 0) {
                     T_EQ(id.raw, a->id.raw);
                     T_EQ(p->id.raw, id.raw);
-                    T_EQ(p->lsn, op->lsn);
+                    T_EQ(p->lsn.raw, op->lsn);
                 }
                 break;
             }
@@ -371,7 +371,7 @@ void w_apply_model(model *m, const w_op *op)
     model_op_commit(m);
 }
 
-int w_apply_record(ps_apply_ctx *ctx, ps_store *s, u64 lsn, const void *rec, usize len)
+int w_apply_record(ps_apply_ctx *ctx, ps_store *s, ps_lsn lsn, const void *rec, usize len)
 {
     PS_UNUSED(ctx);
     w_op op;
@@ -379,7 +379,7 @@ int w_apply_record(ps_apply_ctx *ctx, ps_store *s, u64 lsn, const void *rec, usi
     if (rv != 0) {
         return rv;
     }
-    if (op.lsn != lsn) {
+    if (op.lsn != lsn.raw) {
         return EBADMSG;
     }
     for (u32 tries = 0;; tries++) {
@@ -411,8 +411,8 @@ void w_check_store(ps_store *s, const model *m)
 {
     ps_snapshot *sn = NULL;
     T_OK(ps_snapshot_open(s, &sn));
-    const u64 lsn = ps_snapshot_lsn(sn);
-    T_EQ(lsn, ps_committed_lsn(s));
+    const u64 lsn = ps_snapshot_lsn(sn).raw;
+    T_EQ(lsn, ps_committed_lsn(s).raw);
     T_EQ(ps_page_size(s), model_page_size(m));
 
     const u32 n = model_allocated_at(m, lsn, NULL, 0);
@@ -429,7 +429,7 @@ void w_check_store(ps_store *s, const model *m)
         const ps_page *p = NULL;
         T_OK(check_read(s, sn, id, &p));
         T_EQ(p->id.raw, id.raw);
-        T_EQ(p->lsn, mp.lsn);
+        T_EQ(p->lsn.raw, mp.lsn);
         T_EQ(p->flags, 0);
         T_EQ(p->checksum, 0);
         T_EQ(p->magic, 0);

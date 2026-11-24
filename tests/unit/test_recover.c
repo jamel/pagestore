@@ -86,15 +86,15 @@ static void encode_rec(u8 *buf, ps_page_id id, u8 fill)
 /* Flush the log before committing the allocation. Returns its page ID. */
 static ps_page_id logged_op(ps_store *s, ps_wal *w, u64 lsn)
 {
-    T_OK(ps_op_begin(s, lsn));
+    T_OK(ps_op_begin(s, ps_lsn_from(lsn)));
     ps_page_id id = PS_PAGE_ID_NONE;
     ps_page *p = NULL;
     T_OK(ps_alloc(s, &id, &p));
     memset((u8 *) p + HDR, fill_of(lsn), BODY);
     u8 rec[REC_LEN];
     encode_rec(rec, id, fill_of(lsn));
-    T_OK(ps_wal_append(w, lsn, rec, sizeof(rec)));
-    T_OK(ps_wal_flush(w, lsn));
+    T_OK(ps_wal_append(w, ps_lsn_from(lsn), rec, sizeof(rec)));
+    T_OK(ps_wal_flush(w, ps_lsn_from(lsn)));
     ps_op_commit(s);
     return id;
 }
@@ -119,22 +119,23 @@ struct ps_apply_ctx {
     u32 nseen;
 };
 
-static int apply_rec(ps_apply_ctx *ctx, ps_store *s, u64 lsn, const void *rec, usize len)
+static int apply_rec(ps_apply_ctx *ctx, ps_store *s, ps_lsn lsn, const void *rec, usize len)
 {
     T_EQ(len, REC_LEN);
     T_CHECK(ctx->nseen < NREC + 1);
-    ctx->seen[ctx->nseen++] = lsn;
+    ctx->seen[ctx->nseen++] = lsn.raw;
     const u8 *r = rec;
     const ps_page_id want_id = ps_page_id_from(ps_get_le32(r));
     const u8 fill = r[4];
-    T_EQ(fill, fill_of(lsn));
+    T_EQ(fill, fill_of(lsn.raw));
     if (ctx->mode == APPLY_NO_OP) {
         return 0;
     }
-    if ((ctx->mode == APPLY_FAIL || ctx->mode == APPLY_CKPT_THEN_FAIL) && lsn == ctx->fail_lsn) {
+    if ((ctx->mode == APPLY_FAIL || ctx->mode == APPLY_CKPT_THEN_FAIL) &&
+        lsn.raw == ctx->fail_lsn) {
         return EPROTO;
     }
-    const u64 op_lsn = ctx->mode == APPLY_WRONG_LSN ? lsn + 1 : lsn;
+    const ps_lsn op_lsn = ctx->mode == APPLY_WRONG_LSN ? ps_lsn_next(lsn) : lsn;
     int rv = ps_op_begin(s, op_lsn);
     if (rv != 0) {
         return rv;
@@ -153,13 +154,13 @@ static int apply_rec(ps_apply_ctx *ctx, ps_store *s, u64 lsn, const void *rec, u
     if (ctx->mode == APPLY_NO_COMMIT) {
         return 0;
     }
-    if (ctx->mode == APPLY_FAIL_OPEN && lsn == ctx->fail_lsn) {
+    if (ctx->mode == APPLY_FAIL_OPEN && lsn.raw == ctx->fail_lsn) {
         return EPROTO;
     }
     ps_op_commit(s);
-    if (ctx->mode == APPLY_CKPT_THEN_FAIL && lsn == ctx->ckpt_lsn) {
+    if (ctx->mode == APPLY_CKPT_THEN_FAIL && lsn.raw == ctx->ckpt_lsn) {
         T_OK(ps_checkpoint(s));
-        T_EQ(ps_durable_lsn(s), lsn);
+        T_EQ(ps_durable_lsn(s).raw, lsn.raw);
     }
     return 0;
 }
@@ -199,7 +200,7 @@ static void build(ps_page_id *ids)
             T_OK(ps_checkpoint(s));
         }
     }
-    T_EQ(ps_durable_lsn(s), CKPT_LSN);
+    T_EQ(ps_durable_lsn(s).raw, CKPT_LSN);
     fault_vfs_reboot(fv, FAULT_DROP_UNSYNCED);
     close_both(s, w);
 }
@@ -227,19 +228,19 @@ static void test_recover_applies(void)
     for (u32 i = 0; i < ctx.nseen; i++) {
         T_EQ(ctx.seen[i], CKPT_LSN + 1 + i);
     }
-    T_EQ(ps_committed_lsn(s), NREC);
-    T_EQ(ps_durable_lsn(s), CKPT_LSN);
+    T_EQ(ps_committed_lsn(s).raw, NREC);
+    T_EQ(ps_durable_lsn(s).raw, CKPT_LSN);
     check_pages(s, ids, NREC);
 
     const ps_page_id id = logged_op(s, w, NREC + 1);
     T_OK(ps_checkpoint(s));
-    T_EQ(ps_durable_lsn(s), NREC + 1);
+    T_EQ(ps_durable_lsn(s).raw, NREC + 1);
     close_both(s, w);
 
     ctx_init(&ctx, APPLY_OK);
     T_OK(reopen_recover(&ctx, &s, &w));
     T_EQ(ctx.nseen, 0);
-    T_EQ(ps_committed_lsn(s), NREC + 1);
+    T_EQ(ps_committed_lsn(s).raw, NREC + 1);
     ps_page_id all[NREC + 2];
     memcpy(all, ids, sizeof(ids));
     all[NREC + 1] = id;
@@ -268,7 +269,7 @@ static void test_recover_twice_einval(void)
 /* A thread that holds an operation open until told to abort it. */
 typedef struct op_holder {
     ps_store *s;
-    u64 lsn;
+    ps_lsn lsn;
     atomic_bool begun;
     atomic_bool release;
 } op_holder;
@@ -303,7 +304,7 @@ static void test_recover_misuse(void)
     T_ERR(ps_recover(other, w, apply_rec, &ctx), EINVAL);
     ps_close(other);
 
-    op_holder h = {.s = s, .lsn = CKPT_LSN + 100};
+    op_holder h = {.s = s, .lsn = ps_lsn_from(CKPT_LSN + 100)};
     atomic_init(&h.begun, false);
     atomic_init(&h.release, false);
     pthread_t t;
@@ -316,12 +317,12 @@ static void test_recover_misuse(void)
     T_EQ(pthread_join(t, NULL), 0);
     T_EQ(ctx.nseen, 0);
 
-    T_OK(ps_op_begin(s, CKPT_LSN + 100));
+    T_OK(ps_op_begin(s, ps_lsn_from(CKPT_LSN + 100)));
     T_ERR(ps_recover(s, w, apply_rec, &ctx), EINVAL);
     ps_op_abort(s);
     T_EQ(ctx.nseen, 0);
 
-    T_OK(ps_wal_append(w, NREC + 1, NULL, 0));
+    T_OK(ps_wal_append(w, ps_lsn_from(NREC + 1), NULL, 0));
     T_ERR(ps_recover(s, w, apply_rec, &ctx), EINVAL);
     T_EQ(ctx.nseen, 0);
     close_both(s, w);
@@ -340,9 +341,9 @@ static void test_apply_must_commit(void)
         ctx_init(&ctx, modes[m]);
         T_ERR(reopen_recover(&ctx, &s, &w), EINVAL);
         T_EQ(ctx.nseen, 1);
-        T_EQ(ps_committed_lsn(s), modes[m] == APPLY_WRONG_LSN ? CKPT_LSN + 2 : CKPT_LSN);
-        /* Starting another op checks that recovery released the writer. */
-        T_OK(ps_op_begin(s, CKPT_LSN + 1000));
+        T_EQ(ps_committed_lsn(s).raw, modes[m] == APPLY_WRONG_LSN ? CKPT_LSN + 2 : CKPT_LSN);
+        /* Starting another operation checks that recovery released the writer. */
+        T_OK(ps_op_begin(s, ps_lsn_from(CKPT_LSN + 1000)));
         ps_op_abort(s);
         close_both(s, w);
 
@@ -350,7 +351,7 @@ static void test_apply_must_commit(void)
         ctx_init(&ctx, APPLY_OK);
         T_OK(reopen_recover(&ctx, &s, &w));
         T_EQ(ctx.nseen, NREC - CKPT_LSN);
-        T_EQ(ps_committed_lsn(s), NREC);
+        T_EQ(ps_committed_lsn(s).raw, NREC);
         check_pages(s, ids, NREC);
         close_both(s, w);
         fault_vfs_destroy(fv);
@@ -370,11 +371,11 @@ static void test_apply_error(void)
         ctx.fail_lsn = CKPT_LSN + 5;
         T_ERR(reopen_recover(&ctx, &s, &w), EPROTO);
         T_EQ(ctx.nseen, 5);
-        T_EQ(ps_committed_lsn(s), CKPT_LSN + 4);
-        T_OK(ps_op_begin(s, CKPT_LSN + 1000));
+        T_EQ(ps_committed_lsn(s).raw, CKPT_LSN + 4);
+        T_OK(ps_op_begin(s, ps_lsn_from(CKPT_LSN + 1000)));
         ps_op_abort(s);
         /* The unplayed record is still on disk and owns this LSN. */
-        T_ERR(ps_wal_append(w, CKPT_LSN + 5, NULL, 0), EINVAL);
+        T_ERR(ps_wal_append(w, ps_lsn_from(CKPT_LSN + 5), NULL, 0), EINVAL);
         close_both(s, w);
 
         ctx_init(&ctx, APPLY_OK);
@@ -398,7 +399,7 @@ static void test_crash_during_recovery(void)
     ctx.ckpt_lsn = CKPT_LSN + 10;
     ctx.fail_lsn = CKPT_LSN + 15;
     T_ERR(reopen_recover(&ctx, &s, &w), EPROTO);
-    T_EQ(ps_durable_lsn(s), CKPT_LSN + 10);
+    T_EQ(ps_durable_lsn(s).raw, CKPT_LSN + 10);
     fault_vfs_reboot(fv, FAULT_RANDOM_UNSYNCED);
     close_both(s, w);
 
@@ -406,7 +407,7 @@ static void test_crash_during_recovery(void)
     T_OK(reopen_recover(&ctx, &s, &w));
     T_EQ(ctx.nseen, NREC - CKPT_LSN - 10);
     T_EQ(ctx.seen[0], CKPT_LSN + 11);
-    T_EQ(ps_committed_lsn(s), NREC);
+    T_EQ(ps_committed_lsn(s).raw, NREC);
     check_pages(s, ids, NREC);
     close_both(s, w);
     fault_vfs_destroy(fv);
@@ -421,7 +422,7 @@ static void test_recover_fresh(void)
     ctx_init(&ctx, APPLY_OK);
     T_OK(ps_recover(s, w, apply_rec, &ctx));
     T_EQ(ctx.nseen, 0);
-    T_EQ(ps_committed_lsn(s), 0);
+    T_EQ(ps_committed_lsn(s).raw, 0);
     logged_op(s, w, 1);
     close_both(s, w);
     fault_vfs_destroy(fv);
@@ -458,24 +459,24 @@ static void test_startup_sequence_posix(void)
         ids[lsn] = logged_op(s, w, lsn);
     }
     ps_checkpoint_request(s);
-    for (u32 i = 0; i < 2000 && ps_durable_lsn(s) < 30; i++) {
+    for (u32 i = 0; i < 2000 && ps_durable_lsn(s).raw < 30; i++) {
         sleep_ms(5);
     }
-    T_EQ(ps_durable_lsn(s), 30);
+    T_EQ(ps_durable_lsn(s).raw, 30);
     for (u64 lsn = 31; lsn <= NREC; lsn++) {
         ids[lsn] = logged_op(s, w, lsn);
     }
-    const u64 d = ps_durable_lsn(s);
+    const u64 d = ps_durable_lsn(s).raw;
     ps_close(s);
     ps_wal_close(w);
 
     T_OK(ps_open(dir, &cfg, 0, &s));
-    T_EQ(ps_durable_lsn(s), d);
+    T_EQ(ps_durable_lsn(s).raw, d);
     T_OK(ps_wal_open(s, NULL, &wc, &w));
     ctx_init(&ctx, APPLY_OK);
     T_OK(ps_recover(s, w, apply_rec, &ctx));
     T_EQ(ctx.nseen, NREC - d);
-    T_EQ(ps_committed_lsn(s), NREC);
+    T_EQ(ps_committed_lsn(s).raw, NREC);
     check_pages(s, ids, NREC);
     logged_op(s, w, NREC + 1);
     ps_close(s);

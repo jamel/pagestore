@@ -58,7 +58,7 @@ typedef struct ps_op_group {
  * is also LSN order. reg_mu guards the links. Readers check dead atomically.
  */
 typedef struct ps_snapref {
-    u64 lsn;
+    ps_lsn lsn;
     bool is_ckpt;
     /* Set under reg_mu before unregistering a cut-off snapshot. */
     atomic_bool dead;
@@ -75,7 +75,7 @@ typedef struct ps_ckpt_item {
 
 /* Only the writer thread touches this state. */
 typedef struct ps_op {
-    u64 lsn;
+    ps_lsn lsn;
     u32 frames; /* op_frames in ps_pressure */
     u32 reserved; /* frames the current call will add after its allocator call */
 
@@ -147,7 +147,7 @@ struct ps_store {
     ps_snapref *reg_tail;
     ps_snapref ckpt_ref; /* the running checkpoint's registration */
     bool ckpt_running;
-    u64 ckpt_lsn; /* LSN of the running checkpoint */
+    ps_lsn ckpt_lsn; /* LSN of the running checkpoint */
     /* Old bitmap versions held for the running checkpoint. */
     ps_vnode *bmcopy_head; /* through ps_vnode.retire_next */
     /* Retire queue, FIFO through ps_vnode.retire_next, ordered by retire_r. */
@@ -347,10 +347,10 @@ void ps_ckpt_note_commit(ps_store *s);
 /* Registry (reg_mu held). r->lsn must be >= every registered lsn. */
 void ps_reg_add(ps_store *s, ps_snapref *r);
 void ps_reg_remove(ps_store *s, ps_snapref *r);
-/* Lowest registered lsn, UINT64_MAX if none. */
-u64 ps_reg_min(const ps_store *s);
+/* Lowest registered lsn, PS_LSN_MAX if none. */
+ps_lsn ps_reg_min(const ps_store *s);
 /* A version at c can only be visible if some reader has reached c. */
-bool ps_reg_any_at_or_above(const ps_store *s, u64 c);
+bool ps_reg_any_at_or_above(const ps_store *s, ps_lsn c);
 
 /* ---- snapshots, retire queue, cut-off (snapshot.c) ---- */
 
@@ -359,7 +359,7 @@ bool ps_reg_any_at_or_above(const ps_store *s, u64 c);
  * Process takes page latches itself and drops versions once every
  * registered reader has reached r. Pinned versions live until unpin.
  */
-void ps_retire_push(ps_store *s, ps_vnode *v, u64 r);
+void ps_retire_push(ps_store *s, ps_vnode *v, ps_lsn r);
 void ps_retire_process(ps_store *s);
 
 /*

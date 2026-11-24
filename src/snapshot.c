@@ -45,11 +45,11 @@ static u64 snap_size(u32 cap)
 
 /* ---- retire queue -------------------------------------------------------- */
 
-void ps_retire_push(ps_store *s, ps_vnode *v, u64 r)
+void ps_retire_push(ps_store *s, ps_vnode *v, ps_lsn r)
 {
     PS_ASSERT((v->flags & (PS_VF_RETIRED | PS_VF_FREE_WHEN_UNPINNED)) == 0);
     PS_ASSERT(v != v->entry->head);
-    PS_ASSERT(s->retire_tail == NULL || s->retire_tail->retire_r <= r);
+    PS_ASSERT(s->retire_tail == NULL || ps_lsn_le(s->retire_tail->retire_r, r));
     v->flags |= PS_VF_RETIRED;
     if (v->frame != PS_NO_FRAME) {
         atomic_fetch_add_explicit(&s->frames_retired, 1, memory_order_relaxed);
@@ -66,8 +66,8 @@ void ps_retire_push(ps_store *s, ps_vnode *v, u64 r)
 
 void ps_retire_process(ps_store *s)
 {
-    const u64 min = ps_reg_min(s);
-    while (s->retire_head != NULL && s->retire_head->retire_r <= min) {
+    const ps_lsn min = ps_reg_min(s);
+    while (s->retire_head != NULL && ps_lsn_le(s->retire_head->retire_r, min)) {
         ps_vnode *v = s->retire_head;
         s->retire_head = v->retire_next;
         if (s->retire_head == NULL) {
@@ -94,9 +94,10 @@ void ps_retire_process(ps_store *s)
  * Hold reg_mu. A queued version can free a frame only when the oldest
  * reader reaches its replacement LSN and the version has no pins.
  */
-static bool retire_frees_frame(ps_store *s, u64 min)
+static bool retire_frees_frame(ps_store *s, ps_lsn min)
 {
-    for (ps_vnode *v = s->retire_head; v != NULL && v->retire_r <= min; v = v->retire_next) {
+    for (ps_vnode *v = s->retire_head; v != NULL && ps_lsn_le(v->retire_r, min);
+         v = v->retire_next) {
         const ps_page_id id = v->entry->id;
         ps_latch(s->pt, id);
         const bool framed = v->frame != PS_NO_FRAME && v->pins == 0;
@@ -113,13 +114,17 @@ static bool retire_frees_frame(ps_store *s, u64 min)
  */
 static void cut_off_unlock(ps_store *s, ps_snapref *r)
 {
-    const u64 lsn = r->lsn;
+    const ps_lsn lsn = r->lsn;
     atomic_store_explicit(&r->dead, true, memory_order_release);
     ps_reg_remove(s, r);
     atomic_fetch_add_explicit(&s->snapshots_cut_off, 1, memory_order_relaxed);
     ps_retire_process(s);
     pthread_mutex_unlock(&s->reg_mu);
-    ps_log(s, PS_LOG_INFO, "snapshot at LSN %llu cut off to free memory", (unsigned long long) lsn);
+    ps_log(
+        s,
+        PS_LOG_INFO,
+        "snapshot at LSN %llu cut off to free memory",
+        (unsigned long long) lsn.raw);
 }
 
 bool ps_snap_cut_off_oldest(ps_store *s)
@@ -145,7 +150,7 @@ bool ps_snap_cut_off_for_frames(ps_store *s)
      * The oldest reader can advance at most to the checkpoint's LSN. Cut off
      * one snapshot at a time; the caller retries the frame request in between.
      */
-    u64 reach = UINT64_MAX;
+    ps_lsn reach = PS_LSN_MAX;
     for (const ps_snapref *q = r; q != NULL; q = q->next) {
         if (q->is_ckpt) {
             reach = q->lsn;
@@ -186,7 +191,7 @@ int ps_snapshot_open(ps_store *s, ps_snapshot **out)
 
     /* Capture and register together so commit keeps the versions we need. */
     pthread_mutex_lock(&s->reg_mu);
-    sn->ref.lsn = atomic_load_explicit(&s->committed_lsn, memory_order_relaxed);
+    sn->ref.lsn = ps_lsn_from(atomic_load_explicit(&s->committed_lsn, memory_order_relaxed));
     ps_reg_add(s, &sn->ref);
     pthread_mutex_unlock(&s->reg_mu);
 
@@ -196,7 +201,7 @@ int ps_snapshot_open(ps_store *s, ps_snapshot **out)
     return 0;
 }
 
-u64 ps_snapshot_lsn(const ps_snapshot *sn)
+ps_lsn ps_snapshot_lsn(const ps_snapshot *sn)
 {
     return sn->ref.lsn;
 }
@@ -251,7 +256,7 @@ typedef enum snap_misuse {
 static int pin_visible(ps_snapshot *sn, ps_page_id id, ps_vnode **out, snap_misuse *why)
 {
     ps_store *s = sn->s;
-    const u64 S = sn->ref.lsn;
+    const ps_lsn S = sn->ref.lsn;
     ps_latch(s->pt, id);
     for (;;) {
         ps_entry *e = ps_entry_find(s->pt, id);
@@ -278,7 +283,7 @@ static int pin_visible(ps_snapshot *sn, ps_page_id id, ps_vnode **out, snap_misu
             return EINVAL;
         }
         if (v != NULL && v->frame != PS_NO_FRAME) {
-            if (ps_node_page(s, v)->lsn > S) {
+            if (ps_lsn_gt(ps_node_page(s, v)->lsn, S)) {
                 ps_unlatch(s->pt, id);
                 *why = MISUSE_NOT_ALLOCATED;
                 return EINVAL;
@@ -312,11 +317,8 @@ static int pin_visible(ps_snapshot *sn, ps_page_id id, ps_vnode **out, snap_misu
             ps_unlatch(s->pt, id);
             return ESTALE;
         }
-        if (ps_node_page(s, got)->lsn > S) {
-            /*
-             * The disk copy's LSN may only become known after page-in, for
-             * example when ps_free left a disk node with LSN 0.
-             */
+        if (ps_lsn_gt(ps_node_page(s, got)->lsn, S)) {
+            /* The disk copy's LSN may be unknown until page-in, for example after ps_free. */
             ps_node_unpin(s, e, got);
             ps_unlatch(s->pt, id);
             *why = MISUSE_NOT_ALLOCATED;
@@ -357,14 +359,14 @@ int ps_snapshot_read(ps_snapshot *sn, ps_page_id id, const ps_page **page)
                 PS_LOG_ERROR,
                 "ps_snapshot_read: page %u is freed at LSN %llu",
                 id.raw,
-                (unsigned long long) sn->ref.lsn);
+                (unsigned long long) sn->ref.lsn.raw);
         } else if (why == MISUSE_NOT_ALLOCATED) {
             ps_log(
                 s,
                 PS_LOG_ERROR,
                 "ps_snapshot_read: page %u is not allocated at LSN %llu",
                 id.raw,
-                (unsigned long long) sn->ref.lsn);
+                (unsigned long long) sn->ref.lsn.raw);
         }
         return rv;
     }

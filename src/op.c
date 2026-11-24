@@ -354,7 +354,7 @@ static void cancel_alloc(ps_store *s, ps_page_id id)
 /* ---- begin / commit / abort ----------------------------------------------- */
 
 /* Reuse the arrays from the previous operation. */
-static void op_start(ps_store *s, u64 lsn)
+static void op_start(ps_store *s, ps_lsn lsn)
 {
     ps_op *op = &s->op;
     op->lsn = lsn;
@@ -386,7 +386,7 @@ static void gate_leave(ps_store *s)
     pthread_mutex_unlock(&s->gate_mu);
 }
 
-int ps_op_begin(ps_store *s, u64 lsn)
+int ps_op_begin(ps_store *s, ps_lsn lsn)
 {
     pthread_mutex_lock(&s->gate_mu);
     if (atomic_load_explicit(&s->op_active, memory_order_relaxed) &&
@@ -396,7 +396,7 @@ int ps_op_begin(ps_store *s, u64 lsn)
             s,
             PS_LOG_ERROR,
             "ps_op_begin(%llu): this thread already has an operation",
-            (unsigned long long) lsn);
+            (unsigned long long) lsn.raw);
         return EINVAL;
     }
     gate_enter_locked(s);
@@ -404,15 +404,16 @@ int ps_op_begin(ps_store *s, u64 lsn)
         pthread_mutex_unlock(&s->gate_mu);
         return EIO;
     }
-    const u64 committed = atomic_load_explicit(&s->committed_lsn, memory_order_acquire);
-    if (lsn <= committed) {
+    const ps_lsn committed =
+        ps_lsn_from(atomic_load_explicit(&s->committed_lsn, memory_order_acquire));
+    if (ps_lsn_le(lsn, committed)) {
         pthread_mutex_unlock(&s->gate_mu);
         ps_log(
             s,
             PS_LOG_ERROR,
             "ps_op_begin(%llu): LSN must exceed the committed LSN %llu",
-            (unsigned long long) lsn,
-            (unsigned long long) committed);
+            (unsigned long long) lsn.raw,
+            (unsigned long long) committed.raw);
         return EINVAL;
     }
     s->op_owner = pthread_self();
@@ -429,7 +430,7 @@ void ps_op_begin_format(ps_store *s)
     s->op_owner = pthread_self();
     atomic_store_explicit(&s->op_active, true, memory_order_release);
     pthread_mutex_unlock(&s->gate_mu);
-    op_start(s, 0);
+    op_start(s, PS_LSN_NONE);
 }
 
 /* Commit calls this under reg_mu. Abort needs only the individual latches. */
@@ -486,7 +487,7 @@ static void op_release(ps_store *s)
  */
 static void commit_group(ps_store *s, ps_op_group *r)
 {
-    const u64 lsn = s->op.lsn;
+    const ps_lsn lsn = s->op.lsn;
     const ps_page_id id = ps_bitmap_id(s, r->g);
     ps_entry *e = r->e;
     ps_latch(s->pt, id);
@@ -514,7 +515,7 @@ static void commit_group(ps_store *s, ps_op_group *r)
             ps_unlatch(s->pt, id);
             return;
         }
-        if (s->ckpt_running && v->lsn <= s->ckpt_lsn) {
+        if (s->ckpt_running && ps_lsn_le(v->lsn, s->ckpt_lsn)) {
             ps_vnode *c = r->spare_node;
             PS_ASSERT(c != NULL && r->spare != PS_NO_FRAME);
             p = (ps_page *) ps_frame(s->frames, r->spare);
@@ -587,7 +588,7 @@ void ps_op_commit(ps_store *s)
         &s->allocated_pages,
         ps_allocator_allocated(s->alloc),
         memory_order_relaxed);
-    atomic_store_explicit(&s->committed_lsn, op->lsn, memory_order_release);
+    atomic_store_explicit(&s->committed_lsn, op->lsn.raw, memory_order_release);
 
     /*
      * Registration shares reg_mu with commit, so a reader cannot register
@@ -1135,8 +1136,8 @@ int ps_free(ps_store *s, ps_page_id id)
         ps_update_evictable(s, e);
     } else {
         if (h == NULL) {
-            /* A zero LSN lets readers find the disk node before its first load. */
-            b->lsn = 0;
+            /* PS_LSN_NONE lets readers find the disk node before its first load. */
+            b->lsn = PS_LSN_NONE;
             b->entry = e;
             b->kind = PS_V_DATA;
             b->flags = PS_VF_ON_DISK | PS_VF_OP_BASE;

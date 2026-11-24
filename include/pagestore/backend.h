@@ -21,7 +21,7 @@ typedef struct ps_backend_info {
     u32 page_size;
     u32 num_groups;
     u64 seq; /* zero before the first checkpoint */
-    u64 durable_lsn;
+    ps_lsn durable_lsn;
 } ps_backend_info;
 
 /* Defined by the backend. */
@@ -40,7 +40,7 @@ typedef struct ps_backend {
     /* Fill one page-sized buffer. Zero-fill any part past EOF. */
     int (*read_page)(ps_backend_ctx *ctx, ps_page_id id, void *buf);
     /* The caller must write exactly count pages before committing. Zero is valid. */
-    int (*ckpt_begin)(ps_backend_ctx *ctx, u64 lsn, u32 num_groups, u32 count);
+    int (*ckpt_begin)(ps_backend_ctx *ctx, ps_lsn lsn, u32 num_groups, u32 count);
     /* The caller sets the page checksum and can reuse the buffer after this call. */
     int (*ckpt_write)(ps_backend_ctx *ctx, ps_page_id id, const void *page);
     /*

@@ -344,8 +344,8 @@ static int open_store(
         if (info.seq == 0) {
             rv = format(s);
         } else {
-            atomic_store_explicit(&s->committed_lsn, info.durable_lsn, memory_order_relaxed);
-            atomic_store_explicit(&s->durable_lsn, info.durable_lsn, memory_order_relaxed);
+            atomic_store_explicit(&s->committed_lsn, info.durable_lsn.raw, memory_order_relaxed);
+            atomic_store_explicit(&s->durable_lsn, info.durable_lsn.raw, memory_order_relaxed);
             rv = load_groups(s, info.num_groups);
         }
     }
@@ -432,14 +432,14 @@ u32 ps_page_size(const ps_store *s)
     return s->page_size;
 }
 
-u64 ps_committed_lsn(const ps_store *s)
+ps_lsn ps_committed_lsn(const ps_store *s)
 {
-    return atomic_load_explicit(&s->committed_lsn, memory_order_acquire);
+    return ps_lsn_from(atomic_load_explicit(&s->committed_lsn, memory_order_acquire));
 }
 
-u64 ps_durable_lsn(const ps_store *s)
+ps_lsn ps_durable_lsn(const ps_store *s)
 {
-    return atomic_load_explicit(&s->durable_lsn, memory_order_acquire);
+    return ps_lsn_from(atomic_load_explicit(&s->durable_lsn, memory_order_acquire));
 }
 
 void ps_stats(const ps_store *s, struct ps_stats *out)

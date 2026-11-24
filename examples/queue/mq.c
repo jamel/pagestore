@@ -72,16 +72,16 @@ struct mq {
     usize rec_cap;
 
     pthread_mutex_t mu;
-    u64 next_lsn;
+    ps_lsn next_lsn;
     u64 next_seq; /* the number the next pushed message gets */
     u8 *rec; /* holds one encoded record */
     mq_reader *open;
 
     pthread_mutex_t sync_mu;
     pthread_cond_t synced; /* broadcast when the durable LSN moves */
-    u64 committed_lsn; /* the newest committed change */
+    ps_lsn committed_lsn; /* the newest committed change */
     u64 committed_seq; /* next_seq as of committed_lsn */
-    u64 durable_lsn; /* changes through this LSN are durable */
+    ps_lsn durable_lsn; /* changes through this LSN are durable */
     u64 durable_seq; /* messages below this are durable */
     bool flushing; /* a leader is flushing the WAL */
 
@@ -238,7 +238,7 @@ struct ps_apply_ctx {
     mq *q;
 };
 
-static int replay(ps_apply_ctx *ctx, ps_store *s, u64 lsn, const void *rec, usize len)
+static int replay(ps_apply_ctx *ctx, ps_store *s, ps_lsn lsn, const void *rec, usize len)
 {
     int rv = ps_op_begin(s, lsn);
     if (rv != 0) {
@@ -260,9 +260,9 @@ static int replay(ps_apply_ctx *ctx, ps_store *s, u64 lsn, const void *rec, usiz
  * Runs the len-byte record in q->rec as the next operation and logs it.
  * Call with mu held, then wait_durable(*lsn) after releasing it.
  */
-static int run_locked(mq *q, usize len, u64 *lsn, u64 *first)
+static int run_locked(mq *q, usize len, ps_lsn *lsn, u64 *first)
 {
-    const u64 l = q->next_lsn;
+    const ps_lsn l = q->next_lsn;
     const u64 seq = q->next_seq;
     int rv = ps_op_begin(q->store, l);
     if (rv != 0) {
@@ -278,7 +278,7 @@ static int run_locked(mq *q, usize len, u64 *lsn, u64 *first)
         return rv;
     }
     ps_op_commit(q->store);
-    q->next_lsn = l + 1;
+    q->next_lsn = ps_lsn_next(l);
     pthread_mutex_lock(&q->sync_mu);
     q->committed_lsn = l;
     q->committed_seq = q->next_seq;
@@ -288,24 +288,24 @@ static int run_locked(mq *q, usize len, u64 *lsn, u64 *first)
 }
 
 /* Returns once lsn is durable, flushing the WAL if no other thread is. */
-static int wait_durable(mq *q, u64 lsn)
+static int wait_durable(mq *q, ps_lsn lsn)
 {
     int rv = 0;
     pthread_mutex_lock(&q->sync_mu);
-    while (q->durable_lsn < lsn && rv == 0) {
+    while (ps_lsn_lt(q->durable_lsn, lsn) && rv == 0) {
         if (q->flushing) {
             pthread_cond_wait(&q->synced, &q->sync_mu);
             continue;
         }
         /* Commits come before waiting, so this covers lsn. */
-        const u64 target = q->committed_lsn;
+        const ps_lsn target = q->committed_lsn;
         const u64 seq = q->committed_seq;
         q->flushing = true;
         pthread_mutex_unlock(&q->sync_mu);
         rv = ps_wal_flush(q->wal, target);
         pthread_mutex_lock(&q->sync_mu);
         q->flushing = false;
-        if (rv == 0 && target > q->durable_lsn) {
+        if (rv == 0 && ps_lsn_gt(target, q->durable_lsn)) {
             q->durable_lsn = target;
             q->durable_seq = seq;
         }
@@ -320,7 +320,7 @@ static int change_reader(mq *q, u8 type, const char *name, u64 pos)
 {
     pthread_mutex_lock(&q->mu);
     const usize len = rec_reader(q->rec, type, name, pos);
-    u64 lsn;
+    ps_lsn lsn;
     u64 first;
     const int rv = run_locked(q, len, &lsn, &first);
     pthread_mutex_unlock(&q->mu);
@@ -352,7 +352,7 @@ int mq_push_batch(mq *q, const mq_msg *msgs, u32 n, u64 *first)
     }
     pthread_mutex_lock(&q->mu);
     const usize len = rec_push(q->rec, msgs, n);
-    u64 lsn;
+    ps_lsn lsn;
     u64 seq = 0;
     int rv = run_locked(q, len, &lsn, &seq);
     pthread_mutex_unlock(&q->mu);
@@ -406,7 +406,7 @@ int mq_unsubscribe(mq *q, const char *name)
         return EBUSY;
     }
     const usize len = rec_reader(q->rec, REC_UNSUB, name, 0);
-    u64 lsn;
+    ps_lsn lsn;
     u64 first;
     const int rv = run_locked(q, len, &lsn, &first);
     pthread_mutex_unlock(&q->mu);
@@ -678,9 +678,9 @@ static int recover(mq *q, u64 cap)
     if (rv != 0) {
         return rv;
     }
-    q->next_lsn = ps_committed_lsn(q->store) + 1;
-    if (ps_committed_lsn(q->store) == 0) {
-        u64 lsn;
+    q->next_lsn = ps_lsn_next(ps_committed_lsn(q->store));
+    if (ps_lsn_is_none(ps_committed_lsn(q->store))) {
+        ps_lsn lsn;
         u64 first;
         rv = run_locked(q, rec_create(q->rec, cap), &lsn, &first);
         if (rv == 0) {
@@ -700,9 +700,9 @@ static int recover(mq *q, u64 cap)
     rv = ml_state_get(&q->log, snap, &st);
     ps_snapshot_close(snap);
     q->next_seq = st.next_seq;
-    q->committed_lsn = q->next_lsn - 1;
+    q->committed_lsn = ps_committed_lsn(q->store);
     q->committed_seq = st.next_seq;
-    q->durable_lsn = q->next_lsn - 1;
+    q->durable_lsn = q->committed_lsn;
     q->durable_seq = st.next_seq;
     return rv;
 }
