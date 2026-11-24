@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and test page-store using its CMake presets."""
+"""Build, test, and format page-store."""
 
 import argparse
 import json
@@ -69,13 +69,14 @@ def positive_int(value):
 
 def make_parser():
     parser = HelpParser(
-        description="Build and test page-store. The default preset is debug."
+        description="Build, test, and format page-store. The default preset is debug."
     )
     commands = parser.add_subparsers(dest="command", metavar="COMMAND")
     configure = commands.add_parser("configure", help="configure a build directory")
     build = commands.add_parser("build", help="configure and build")
     test = commands.add_parser("test", help="configure, build, and run tests")
     clean = commands.add_parser("clean", help="remove generated build outputs")
+    commands.add_parser("fmt", help="fix includes and format C files in place")
     commands.add_parser("presets", help="list available CMake and CTest presets")
 
     for command in (configure, build, test, clean):
@@ -251,6 +252,9 @@ def main():
         parser.print_help()
     elif args.command == "presets":
         run(["cmake", "--list-presets=all"])
+    elif args.command == "fmt":
+        run(["scripts/check-includes.sh", "--fix"])
+        run(["scripts/check-format.sh", "--fix"])
     elif args.command in ("build", "test", "clean") and args.preset == "all":
         run_all_presets(args)
     else:

@@ -1,20 +1,5 @@
 #!/bin/sh
 # In each clone, enable this hook with `git config core.hooksPath scripts/hooks`.
 set -eu
-CLANG_FORMAT=${CLANG_FORMAT:-clang-format}
-if ! command -v "$CLANG_FORMAT" >/dev/null 2>&1; then
-    echo "pre-commit: $CLANG_FORMAT not found; install it or set CLANG_FORMAT" >&2
-    exit 1
-fi
-status=0
-# A partly staged file can differ from what you see in the editor.
-for f in $(git diff --cached --name-only --diff-filter=ACMR -- '*.c' '*.h'); do
-    if ! git show ":$f" | "$CLANG_FORMAT" --assume-filename="$f" --dry-run --Werror >/dev/null 2>&1; then
-        echo "pre-commit: $f is not clang-format clean" >&2
-        status=1
-    fi
-done
-if [ "$status" -ne 0 ]; then
-    echo "pre-commit: run scripts/check-format.sh --fix (then re-stage) to fix" >&2
-fi
-exit "$status"
+scripts/check-format.sh --staged
+scripts/check-includes.sh --staged

@@ -28,6 +28,7 @@ and `llvm-profdata`. Run `msan` on Linux.
 ./dev.py test wal --coverage         # See which lines the matching tests cover
 ./dev.py test -p all                 # Build and test every preset
 ./dev.py clean -p all                # Clean every build preset
+./dev.py fmt                         # Fix includes and format C files in place
 ```
 
 Use `--release` for the release preset. Run `./dev.py presets` to see the full
@@ -37,3 +38,12 @@ list of available presets.
 report with line counts to `build/coverage/coverage/html/index.html`. The report
 covers only the tests in that run. Files those tests never reach show 0%, so
 gaps are easy to spot.
+
+### Pre-commit checks
+
+Install `clang-format` and `include-what-you-use` (the `iwyu` package on
+Ubuntu), then enable the hook in each clone.
+
+```sh
+git config core.hooksPath scripts/hooks
+```
