@@ -21,6 +21,7 @@
  */
 
 #include "mq.h"
+#include "pagestore/bytes.h"
 
 #include <errno.h>
 #include <pthread.h>
@@ -537,8 +538,8 @@ static u8 pattern(u32 producer, u64 counter, u32 i)
 
 static void bench_fill(u8 *p, u32 size, u32 producer, u64 counter)
 {
-    memcpy(p, &producer, 4);
-    memcpy(p + 4, &counter, 8);
+    ps_put_le32(p, producer);
+    ps_put_le64(p + 4, counter);
     for (u32 i = BENCH_HEADER; i < size; i++) {
         p[i] = pattern(producer, counter, i);
     }
@@ -573,10 +574,8 @@ static void *bench_produce(void *arg)
 /* Checks one delivered message. last[p] is the next counter expected from producer p. */
 static bool bench_verify(const bench *b, const u8 *msg, u32 len, u64 *next, char *why, usize cap)
 {
-    u32 producer;
-    u64 counter;
-    memcpy(&producer, msg, 4);
-    memcpy(&counter, msg + 4, 8);
+    const u32 producer = ps_get_le32(msg);
+    const u64 counter = ps_get_le64(msg + 4);
     if (len != b->size || producer >= b->producers) {
         snprintf(why, cap, "bad message header");
         return false;

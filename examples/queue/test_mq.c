@@ -9,6 +9,7 @@
 
 #include "fault_vfs.h"
 #include "mq.h"
+#include "pagestore/bytes.h"
 #include "rng.h"
 #include "test.h"
 
@@ -110,8 +111,8 @@ static u8 msg_byte(u32 producer, u64 counter, u32 i)
 static u32 msg_fill(u8 *buf, u32 producer, u64 counter, u32 max_extra)
 {
     const u32 size = msg_size(producer, counter, max_extra);
-    memcpy(buf, &producer, 4);
-    memcpy(buf + 4, &counter, 8);
+    ps_put_le32(buf, producer);
+    ps_put_le64(buf + 4, counter);
     for (u32 i = MSG_HEADER; i < size; i++) {
         buf[i] = msg_byte(producer, counter, i);
     }

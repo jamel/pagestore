@@ -1,4 +1,5 @@
 #include "mem_backend.h"
+#include "pagestore/bytes.h"
 #include "pagestore/pagestore.h"
 #include "store.h"
 #include "test.h"
@@ -880,14 +881,12 @@ typedef struct cr_reader {
 /* The fixture stamps the writer's LSN in the payload as well as the header. */
 static u64 page_value(const ps_page *p)
 {
-    u64 v;
-    memcpy(&v, (const u8 *) p + HDR, sizeof(v));
-    return v;
+    return ps_get_le64((const u8 *) p + HDR);
 }
 
 static void set_value(ps_page *p, u64 v)
 {
-    memcpy((u8 *) p + HDR, &v, sizeof(v));
+    ps_put_le64((u8 *) p + HDR, v);
 }
 
 static void check_read(const ps_page *p, ps_page_id id, u64 S)

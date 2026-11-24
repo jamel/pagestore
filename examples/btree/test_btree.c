@@ -7,6 +7,7 @@
  */
 
 #include "btree.h"
+#include "pagestore/bytes.h"
 #include "rng.h"
 #include "test.h"
 
@@ -729,9 +730,7 @@ static void test_check_finds_damage(void)
     fx_begin(&f);
     const ps_page *meta;
     T_OK(ps_read(f.s, f.meta, &meta));
-    u32 root_raw;
-    memcpy(&root_raw, (const u8 *) meta + PS_PAGE_HEADER_SIZE, sizeof(root_raw));
-    const ps_page_id root = ps_page_id_from(root_raw);
+    const ps_page_id root = ps_page_id_from(ps_get_le32((const u8 *) meta + PS_PAGE_HEADER_SIZE));
     ps_page *leaf;
     T_OK(ps_write(f.s, root, &leaf));
     swap_first_slots(leaf);
@@ -744,8 +743,7 @@ static void test_check_finds_damage(void)
     swap_first_slots(leaf);
     ps_page *mp;
     T_OK(ps_write(f.s, f.meta, &mp));
-    const u64 count = 3;
-    memcpy((u8 *) mp + PS_PAGE_HEADER_SIZE + 8, &count, sizeof(count));
+    ps_put_le64((u8 *) mp + PS_PAGE_HEADER_SIZE + 8, 3);
     ps_op_commit(f.s);
     expect_damage(&f, "meta page says 3");
     fx_destroy(&f);

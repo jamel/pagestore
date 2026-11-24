@@ -6,6 +6,7 @@
  */
 
 #include "msglog.h"
+#include "pagestore/bytes.h"
 #include "radix.h"
 #include "rng.h"
 #include "test.h"
@@ -751,8 +752,7 @@ static u32 page_u32(fixture *f, ps_page_id id, u32 off)
     T_OK(ps_snapshot_open(f->s, &snap));
     const ps_page *p;
     T_OK(ps_snapshot_read(snap, id, &p));
-    u32 v;
-    memcpy(&v, (const u8 *) p + off, sizeof(v));
+    const u32 v = ps_get_le32((const u8 *) p + off);
     ps_snapshot_close(snap);
     return v;
 }

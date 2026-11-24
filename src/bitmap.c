@@ -1,13 +1,12 @@
 /*
- * Scan bitmaps a word at a time. memcpy allows unaligned inputs, and
- * little-endian word order keeps bit numbers consistent with the byte
- * array. For a partial word, copy only the bytes inside the bitmap.
+ * Scans a little-endian 64-bit word at a time, which keeps bit numbers the
+ * same as in the byte array. A partial last word reads only bitmap bytes.
  */
 
 #include "bitmap.h"
 
+#include "pagestore/bytes.h"
 #include "pagestore/compiler.h"
-#include "util.h"
 
 #include <string.h>
 
@@ -29,19 +28,16 @@ bool ps_bit_test(const u8 *m, u32 bit)
 /* Pad the last word with ones when scanning and zeros when counting. */
 static u64 load_word(const u8 *m, u32 nbytes, u32 w, u8 fill)
 {
-    u64 v;
     u32 off = w * 8;
     u32 n = nbytes - off < 8 ? nbytes - off : 8;
 
     if (n == 8) {
-        memcpy(&v, m + off, 8);
-    } else {
-        u8 b[8];
-        memset(b, fill, sizeof(b));
-        memcpy(b, m + off, n);
-        memcpy(&v, b, 8);
+        return ps_get_le64(m + off);
     }
-    return v;
+    u8 b[8];
+    memset(b, fill, sizeof(b));
+    memcpy(b, m + off, n);
+    return ps_get_le64(b);
 }
 
 u32 ps_bit_find_clear(const u8 *m, u32 nbits, u32 from)

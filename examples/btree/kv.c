@@ -27,6 +27,7 @@
  */
 
 #include "btree.h"
+#include "pagestore/bytes.h"
 #include "pagestore/pagestore.h"
 #include "pagestore/wal.h"
 
@@ -85,22 +86,11 @@ static void log_line(ps_log_ctx *ctx, int level, const char *msg)
 
 /* ---- log records --------------------------------------------------------- */
 
-static void put_le16(u8 *p, u32 v)
-{
-    p[0] = (u8) v;
-    p[1] = (u8) (v >> 8);
-}
-
-static u32 get_le16(const u8 *p)
-{
-    return (u32) p[0] | (u32) p[1] << 8;
-}
-
 static usize rec_put(u8 *rec, const char *key, u32 klen, const char *val, u32 vlen)
 {
     rec[0] = REC_PUT;
-    put_le16(rec + 1, klen);
-    put_le16(rec + 3, vlen);
+    ps_put_le16(rec + 1, klen);
+    ps_put_le16(rec + 3, vlen);
     memcpy(rec + REC_PUT_HEADER, key, klen);
     memcpy(rec + REC_PUT_HEADER + klen, val, vlen);
     return REC_PUT_HEADER + klen + vlen;
@@ -109,7 +99,7 @@ static usize rec_put(u8 *rec, const char *key, u32 klen, const char *val, u32 vl
 static usize rec_delete(u8 *rec, const char *key, u32 klen)
 {
     rec[0] = REC_DELETE;
-    put_le16(rec + 1, klen);
+    ps_put_le16(rec + 1, klen);
     memcpy(rec + REC_DELETE_HEADER, key, klen);
     return REC_DELETE_HEADER + klen;
 }
@@ -130,8 +120,8 @@ static int apply_record(bt_tree *t, const u8 *rec, usize len)
         return rv;
     }
     if (rec[0] == REC_PUT && len >= REC_PUT_HEADER) {
-        const u32 klen = get_le16(rec + 1);
-        const u32 vlen = get_le16(rec + 3);
+        const u32 klen = ps_get_le16(rec + 1);
+        const u32 vlen = ps_get_le16(rec + 3);
         if (len != REC_PUT_HEADER + klen + vlen) {
             return EBADMSG;
         }
@@ -139,7 +129,7 @@ static int apply_record(bt_tree *t, const u8 *rec, usize len)
         return bt_put(t, key, klen, key + klen, vlen);
     }
     if (rec[0] == REC_DELETE && len >= REC_DELETE_HEADER) {
-        const u32 klen = get_le16(rec + 1);
+        const u32 klen = ps_get_le16(rec + 1);
         if (len != REC_DELETE_HEADER + klen) {
             return EBADMSG;
         }

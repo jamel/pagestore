@@ -1,4 +1,5 @@
 #include "mem_backend.h"
+#include "pagestore/bytes.h"
 #include "pagestore/pagestore.h"
 #include "store.h"
 #include "test.h"
@@ -143,18 +144,16 @@ static bool wait_ckpt_errors(u32 n, u32 ms)
 static void stamp(ps_page *p, ps_page_id id, u32 tag)
 {
     u8 *b = (u8 *) p;
-    memcpy(b + HDR, &id.raw, 4);
-    memcpy(b + HDR + 4, &tag, 4);
+    ps_put_le32(b + HDR, id.raw);
+    ps_put_le32(b + HDR + 4, tag);
     memset(b + HDR + 8, (int) ((id.raw * 31u + tag) & 0xFFu), PS - HDR - 8);
 }
 
 static bool stamped(const ps_page *p, ps_page_id id, u32 tag)
 {
     const u8 *b = (const u8 *) p;
-    u32 i = 0;
-    u32 t = 0;
-    memcpy(&i, b + HDR, 4);
-    memcpy(&t, b + HDR + 4, 4);
+    const u32 i = ps_get_le32(b + HDR);
+    const u32 t = ps_get_le32(b + HDR + 4);
     if (i != id.raw || t != tag || !ps_page_id_eq(p->id, id) || p->checksum != 0) {
         return false;
     }

@@ -8,6 +8,7 @@
 
 #include "crc32c.h"
 #include "format.h"
+#include "pagestore/bytes.h"
 #include "store.h"
 #include "util.h"
 #include "wal_internal.h"

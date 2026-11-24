@@ -6,6 +6,7 @@
 #include "format.h"
 
 #include "crc32c.h"
+#include "pagestore/bytes.h"
 #include "util.h"
 
 #include <errno.h>

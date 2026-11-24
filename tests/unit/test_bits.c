@@ -1,4 +1,5 @@
 #include "bitmap.h"
+#include "pagestore/bytes.h"
 #include "test.h"
 #include "util.h"
 
@@ -125,6 +126,13 @@ static void test_count_set(void)
 static void test_le_helpers(void)
 {
     u8 b[9];
+
+    ps_put_le16(b, 0xA1B2u);
+    T_EQ(b[0], 0xB2);
+    T_EQ(b[1], 0xA1);
+    T_EQ(ps_get_le16(b), 0xA1B2u);
+    ps_put_le16(b + 1, 0xFFFEu);
+    T_EQ(ps_get_le16(b + 1), 0xFFFEu);
 
     ps_put_le32(b, 0x11223344u);
     T_EQ(b[0], 0x44);

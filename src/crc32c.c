@@ -1,15 +1,13 @@
 /*
- * Fold eight input bytes into the CRC per pass. memcpy accepts unaligned
- * buffers. On a little-endian host, the low byte is first in the input,
- * so its table accounts for the seven bytes that follow it.
+ * Fold eight input bytes into the CRC per pass. ps_get_le64 accepts
+ * unaligned buffers and puts the first input byte in the low bits, so its
+ * table accounts for the seven bytes that follow it.
  */
 
 #include "crc32c.h"
 
 #include "crc32c_tables.h"
-#include "util.h"
-
-#include <string.h>
+#include "pagestore/bytes.h"
 
 u32 ps_crc32c(u32 crc, const void *buf, usize len)
 {
@@ -18,9 +16,7 @@ u32 ps_crc32c(u32 crc, const void *buf, usize len)
 
     crc = ~crc; /* Unwrap the public CRC to continue its running state. */
     while (len >= 8) {
-        u64 w;
-        memcpy(&w, p, 8);
-        w ^= crc;
+        const u64 w = ps_get_le64(p) ^ crc;
         crc = tab[7][w & 0xFF] ^ tab[6][(w >> 8) & 0xFF] ^ tab[5][(w >> 16) & 0xFF] ^
             tab[4][(w >> 24) & 0xFF] ^ tab[3][(w >> 32) & 0xFF] ^ tab[2][(w >> 40) & 0xFF] ^
             tab[1][(w >> 48) & 0xFF] ^ tab[0][w >> 56];

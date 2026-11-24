@@ -47,6 +47,9 @@
 #define PS_LIKELY(x) __builtin_expect(!!(x), 1)
 #define PS_UNLIKELY(x) __builtin_expect(!!(x), 0)
 
+/* Expanded inline even under -fno-builtin, so a small fixed-size copy stays one load or store. */
+#define PS_MEMCPY(dst, src, n) __builtin_memcpy(dst, src, n)
+
 /* PS_CTZ64 requires a nonzero argument. */
 #define PS_CTZ64(x) ((u32) __builtin_ctzll(x))
 #define PS_POPCOUNT64(x) ((u32) __builtin_popcountll(x))

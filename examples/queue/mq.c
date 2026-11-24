@@ -33,6 +33,7 @@
 
 #include "mq.h"
 
+#include "pagestore/bytes.h"
 #include "pagestore/wal.h"
 
 #include <errno.h>
@@ -110,44 +111,20 @@ const ml_log *mq_log(mq *q)
 
 /* ---- records -------------------------------------------------------------- */
 
-static u32 get32(const u8 *p)
-{
-    u32 v;
-    memcpy(&v, p, sizeof(v));
-    return v;
-}
-
-static void put32(u8 *p, u32 v)
-{
-    memcpy(p, &v, sizeof(v));
-}
-
-static u64 get64(const u8 *p)
-{
-    u64 v;
-    memcpy(&v, p, sizeof(v));
-    return v;
-}
-
-static void put64(u8 *p, u64 v)
-{
-    memcpy(p, &v, sizeof(v));
-}
-
 static usize rec_create(u8 *rec, u64 cap)
 {
     rec[0] = REC_CREATE;
-    put64(rec + 1, cap);
+    ps_put_le64(rec + 1, cap);
     return REC_CREATE_SIZE;
 }
 
 static usize rec_push(u8 *rec, const mq_msg *msgs, u32 n)
 {
     rec[0] = REC_PUSH;
-    put32(rec + 1, n);
+    ps_put_le32(rec + 1, n);
     usize at = REC_PUSH_HEADER;
     for (u32 i = 0; i < n; i++) {
-        put32(rec + at, msgs[i].len);
+        ps_put_le32(rec + at, msgs[i].len);
         at += REC_MSG_HEADER;
         if (msgs[i].len > 0) {
             memcpy(rec + at, msgs[i].data, msgs[i].len);
@@ -166,7 +143,7 @@ static usize rec_reader(u8 *rec, u8 type, const char *name, u64 pos)
     memcpy(rec + REC_READER_HEADER, name, nlen);
     usize len = REC_READER_HEADER + nlen;
     if (type != REC_UNSUB) {
-        put64(rec + len, pos);
+        ps_put_le64(rec + len, pos);
         len += 8;
     }
     return len;
@@ -177,13 +154,13 @@ static int apply_push(mq *q, const u8 *rec, usize len, u64 *first)
     if (len < REC_PUSH_HEADER) {
         return EBADMSG;
     }
-    const u32 n = get32(rec + 1);
+    const u32 n = ps_get_le32(rec + 1);
     usize at = REC_PUSH_HEADER;
     for (u32 i = 0; i < n; i++) {
         if (len - at < REC_MSG_HEADER) {
             return EBADMSG;
         }
-        const u32 mlen = get32(rec + at);
+        const u32 mlen = ps_get_le32(rec + at);
         at += REC_MSG_HEADER;
         if (len - at < mlen) {
             return EBADMSG;
@@ -223,9 +200,9 @@ static int apply_reader(mq *q, const u8 *rec, usize len)
         return EBADMSG;
     }
     if (rec[0] == REC_SUB) {
-        return ml_reader_add(&q->log, name, get64(rest));
+        return ml_reader_add(&q->log, name, ps_get_le64(rest));
     }
-    return ml_reader_ack(&q->log, name, get64(rest));
+    return ml_reader_ack(&q->log, name, ps_get_le64(rest));
 }
 
 /* Applies one record inside the current operation. A push sets *first. */
@@ -240,7 +217,7 @@ static int apply(mq *q, const u8 *rec, usize len, u64 *first)
                 return EBADMSG;
             }
             ps_page_id meta;
-            const int rv = ml_create(q->store, get64(rec + 1), &meta);
+            const int rv = ml_create(q->store, ps_get_le64(rec + 1), &meta);
             return rv == 0 && !ps_page_id_eq(meta, q->log.meta) ? EEXIST : rv;
         }
         case REC_PUSH:

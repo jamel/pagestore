@@ -1,6 +1,5 @@
 /*
- * Message log pages. Integers use host byte order, which PageStore
- * requires to be little-endian.
+ * Message log pages. Integers are little-endian.
  *
  * Meta page ("MLMT"), one per log. Its ID is the log's entry point.
  *
@@ -57,6 +56,8 @@
 
 #include "msglog.h"
 
+#include "pagestore/bytes.h"
+
 #include <assert.h>
 #include <errno.h>
 #include <stdarg.h>
@@ -92,30 +93,6 @@ PS_STATIC_ASSERT(META_CAP == PS_PAGE_HEADER_SIZE, "log fields follow the page he
 PS_STATIC_ASSERT(DATA_LOGICAL == PS_PAGE_HEADER_SIZE, "data fields follow the page header");
 PS_STATIC_ASSERT(SLOT_NAME + ML_NAME_MAX == SLOT_POS, "the name fills the slot up to the position");
 
-static u32 get32(const u8 *p)
-{
-    u32 v;
-    memcpy(&v, p, sizeof(v));
-    return v;
-}
-
-static void put32(u8 *p, u32 v)
-{
-    memcpy(p, &v, sizeof(v));
-}
-
-static u64 get64(const u8 *p)
-{
-    u64 v;
-    memcpy(&v, p, sizeof(v));
-    return v;
-}
-
-static void put64(u8 *p, u64 v)
-{
-    memcpy(p, &v, sizeof(v));
-}
-
 static u32 min32(u64 a, u64 b)
 {
     return (u32) (a < b ? a : b);
@@ -143,17 +120,17 @@ static int meta_decode(const ps_page *p, log_meta *m)
     if (p->magic != META_MAGIC) {
         return EBADMSG;
     }
-    m->cap = get64(b + META_CAP);
-    m->first_seq = get64(b + META_FIRST_SEQ);
-    m->next_seq = get64(b + META_NEXT_SEQ);
-    m->first_off = get64(b + META_FIRST_OFF);
-    m->end_off = get64(b + META_END_OFF);
-    m->tail = ps_page_id_from(get32(b + META_TAIL));
-    m->readers = get32(b + META_READERS);
-    m->index_root = ps_page_id_from(get32(b + META_INDEX_ROOT));
-    m->index_height = get32(b + META_INDEX_HEIGHT);
-    m->map_root = ps_page_id_from(get32(b + META_MAP_ROOT));
-    m->map_height = get32(b + META_MAP_HEIGHT);
+    m->cap = ps_get_le64(b + META_CAP);
+    m->first_seq = ps_get_le64(b + META_FIRST_SEQ);
+    m->next_seq = ps_get_le64(b + META_NEXT_SEQ);
+    m->first_off = ps_get_le64(b + META_FIRST_OFF);
+    m->end_off = ps_get_le64(b + META_END_OFF);
+    m->tail = ps_page_id_from(ps_get_le32(b + META_TAIL));
+    m->readers = ps_get_le32(b + META_READERS);
+    m->index_root = ps_page_id_from(ps_get_le32(b + META_INDEX_ROOT));
+    m->index_height = ps_get_le32(b + META_INDEX_HEIGHT);
+    m->map_root = ps_page_id_from(ps_get_le32(b + META_MAP_ROOT));
+    m->map_height = ps_get_le32(b + META_MAP_HEIGHT);
     return 0;
 }
 
@@ -161,17 +138,17 @@ static void meta_encode(ps_page *p, const log_meta *m)
 {
     u8 *b = (u8 *) p;
     p->magic = META_MAGIC;
-    put64(b + META_CAP, m->cap);
-    put64(b + META_FIRST_SEQ, m->first_seq);
-    put64(b + META_NEXT_SEQ, m->next_seq);
-    put64(b + META_FIRST_OFF, m->first_off);
-    put64(b + META_END_OFF, m->end_off);
-    put32(b + META_TAIL, m->tail.raw);
-    put32(b + META_READERS, m->readers);
-    put32(b + META_INDEX_ROOT, m->index_root.raw);
-    put32(b + META_INDEX_HEIGHT, m->index_height);
-    put32(b + META_MAP_ROOT, m->map_root.raw);
-    put32(b + META_MAP_HEIGHT, m->map_height);
+    ps_put_le64(b + META_CAP, m->cap);
+    ps_put_le64(b + META_FIRST_SEQ, m->first_seq);
+    ps_put_le64(b + META_NEXT_SEQ, m->next_seq);
+    ps_put_le64(b + META_FIRST_OFF, m->first_off);
+    ps_put_le64(b + META_END_OFF, m->end_off);
+    ps_put_le32(b + META_TAIL, m->tail.raw);
+    ps_put_le32(b + META_READERS, m->readers);
+    ps_put_le32(b + META_INDEX_ROOT, m->index_root.raw);
+    ps_put_le32(b + META_INDEX_HEIGHT, m->index_height);
+    ps_put_le32(b + META_MAP_ROOT, m->map_root.raw);
+    ps_put_le32(b + META_MAP_HEIGHT, m->map_height);
 }
 
 /* The radix arrays with the roots recorded in m. */
@@ -226,7 +203,7 @@ static int write_meta(ml_log *l, ps_page **p, log_meta *m)
 
 static bool data_ok(const ps_page *p, u64 logical)
 {
-    return p->magic == DATA_MAGIC && get64((const u8 *) p + DATA_LOGICAL) == logical;
+    return p->magic == DATA_MAGIC && ps_get_le64((const u8 *) p + DATA_LOGICAL) == logical;
 }
 
 /* ---- create and open ------------------------------------------------------ */
@@ -283,7 +260,7 @@ static int append_bytes(ml_log *l, log_meta *m, rx_array *pages, const u8 *msg, 
                 return rv;
             }
             p->magic = DATA_MAGIC;
-            put64((u8 *) p + DATA_LOGICAL, lp);
+            ps_put_le64((u8 *) p + DATA_LOGICAL, lp);
             m->tail = id;
         } else {
             rv = ps_write(l->store, m->tail, &p);
@@ -523,7 +500,7 @@ int ml_reader_add(ml_log *l, const char *name, u64 pos)
     memset(slot, 0, SLOT_SIZE);
     slot[0] = (u8) len;
     memcpy(slot + SLOT_NAME, name, len);
-    put64(slot + SLOT_POS, pos);
+    ps_put_le64(slot + SLOT_POS, pos);
     m.readers++;
     meta_encode(mp, &m);
     return 0;
@@ -571,8 +548,8 @@ int ml_reader_ack(ml_log *l, const char *name, u64 pos)
         return EINVAL;
     }
     u8 *slot = slot_mut(mp, i);
-    if (pos > get64(slot + SLOT_POS)) {
-        put64(slot + SLOT_POS, pos);
+    if (pos > ps_get_le64(slot + SLOT_POS)) {
+        ps_put_le64(slot + SLOT_POS, pos);
     }
     return 0;
 }
@@ -591,7 +568,7 @@ int ml_reader_get(const ml_log *l, ps_snapshot *snap, const char *name, u64 *pos
     u32 i;
     rv = p->magic != META_MAGIC ? EBADMSG : find_slot(l, p, name, len, &i);
     if (rv == 0) {
-        *pos = get64(slot_at(p, i) + SLOT_POS);
+        *pos = ps_get_le64(slot_at(p, i) + SLOT_POS);
     }
     ps_snapshot_unpin(snap, l->meta);
     return rv;
@@ -616,7 +593,7 @@ int ml_reader_next(
             const u32 len = s[0] <= ML_NAME_MAX ? s[0] : ML_NAME_MAX;
             memcpy(name, s + SLOT_NAME, len);
             name[len] = '\0';
-            *pos = get64(s + SLOT_POS);
+            *pos = ps_get_le64(s + SLOT_POS);
             *slot = i + 1;
             rv = 0;
         }
@@ -670,7 +647,7 @@ static int check_meta(const ml_log *l, const ps_page *p, const log_meta *m, char
         if (s[0] > ML_NAME_MAX || memchr(s + SLOT_NAME, 0, s[0]) != NULL) {
             return fail(msg, cap, "reader slot %u: bad name", i);
         }
-        if (get64(s + SLOT_POS) > m->next_seq) {
+        if (ps_get_le64(s + SLOT_POS) > m->next_seq) {
             return fail(msg, cap, "reader slot %u: position past the newest message", i);
         }
         for (u32 j = 0; j < i; j++) {

@@ -5,6 +5,7 @@
  */
 
 #include "mem_backend.h"
+#include "pagestore/bytes.h"
 #include "pagestore/pagestore.h"
 #include "rng.h"
 #include "test.h"
@@ -64,7 +65,7 @@ static void fill_page(u64 seed, ps_page *p, u32 id, u64 lsn)
     u8 *b = (u8 *) p + HDR;
     for (u32 i = 0; i < WORDS; i++) {
         const u64 w = word_at(seed, id, lsn, i);
-        memcpy(b + (usize) i * 8, &w, 8);
+        ps_put_le64(b + (usize) i * 8, w);
     }
 }
 
@@ -78,8 +79,7 @@ static void check_page(u64 seed, const ps_page *p, u32 id, u64 lsn)
     T_EQ(p->checksum, 0);
     const u8 *b = (const u8 *) p + HDR;
     for (u32 i = 0; i < WORDS; i++) {
-        u64 w = 0;
-        memcpy(&w, b + (usize) i * 8, 8);
+        const u64 w = ps_get_le64(b + (usize) i * 8);
         if (w != word_at(seed, id, lsn, i)) {
             t_fail(
                 __FILE__,

@@ -1,8 +1,6 @@
 /*
- * B+tree nodes are slotted pages. A sorted array of 2-byte slots grows up
- * from the node header, and the cells they point to grow down from the
- * end of the page. Integers use host byte order, which PageStore requires
- * to be little-endian.
+ * B+tree nodes are slotted pages: sorted 2-byte slots grow up from the
+ * header and cells grow down from the page end. Integers are little-endian.
  *
  * Meta page, one per tree.
  *
@@ -60,6 +58,8 @@
 
 #include "btree.h"
 
+#include "pagestore/bytes.h"
+
 #include <assert.h>
 #include <errno.h>
 #include <stdarg.h>
@@ -97,43 +97,6 @@ PS_STATIC_ASSERT(META_ROOT == PS_PAGE_HEADER_SIZE, "tree fields follow the page 
 PS_STATIC_ASSERT(NODE_COUNT == PS_PAGE_HEADER_SIZE, "node fields follow the page header");
 
 /* ---- small helpers -------------------------------------------------------- */
-
-static u32 get16(const u8 *p)
-{
-    u16 v;
-    memcpy(&v, p, sizeof(v));
-    return v;
-}
-
-static void put16(u8 *p, u32 v)
-{
-    const u16 x = (u16) v;
-    memcpy(p, &x, sizeof(x));
-}
-
-static u32 get32(const u8 *p)
-{
-    u32 v;
-    memcpy(&v, p, sizeof(v));
-    return v;
-}
-
-static void put32(u8 *p, u32 v)
-{
-    memcpy(p, &v, sizeof(v));
-}
-
-static u64 get64(const u8 *p)
-{
-    u64 v;
-    memcpy(&v, p, sizeof(v));
-    return v;
-}
-
-static void put64(u8 *p, u64 v)
-{
-    memcpy(p, &v, sizeof(v));
-}
 
 /* memcpy with a NULL source is undefined even for zero bytes. */
 static void copy(u8 *dst, const void *src, u32 n)
@@ -213,12 +176,12 @@ static u8 *sep_buf(bt_tree *t)
 
 static u32 n_count(const u8 *n)
 {
-    return get16(n + NODE_COUNT);
+    return ps_get_le16(n + NODE_COUNT);
 }
 
 static u32 n_level(const u8 *n)
 {
-    return get16(n + NODE_LEVEL);
+    return ps_get_le16(n + NODE_LEVEL);
 }
 
 static bool n_leaf(const u8 *n)
@@ -228,32 +191,32 @@ static bool n_leaf(const u8 *n)
 
 static ps_page_id n_link(const u8 *n)
 {
-    return ps_page_id_from(get32(n + NODE_LINK));
+    return ps_page_id_from(ps_get_le32(n + NODE_LINK));
 }
 
 static void n_set_link(u8 *n, ps_page_id link)
 {
-    put32(n + NODE_LINK, link.raw);
+    ps_put_le32(n + NODE_LINK, link.raw);
 }
 
 static u32 n_cell_start(const u8 *n)
 {
-    return get32(n + NODE_CELL_START);
+    return ps_get_le32(n + NODE_CELL_START);
 }
 
 static u32 n_garbage(const u8 *n)
 {
-    return get16(n + NODE_GARBAGE);
+    return ps_get_le16(n + NODE_GARBAGE);
 }
 
 static u32 n_last(const u8 *n)
 {
-    return get16(n + NODE_LAST);
+    return ps_get_le16(n + NODE_LAST);
 }
 
 static u32 n_slot(const u8 *n, u32 i)
 {
-    return get16(n + NODE_SLOTS + SLOT_SIZE * i);
+    return ps_get_le16(n + NODE_SLOTS + SLOT_SIZE * i);
 }
 
 static const u8 *n_cell(const u8 *n, u32 i)
@@ -282,9 +245,9 @@ static u32 n_used(const bt_tree *t, const u8 *n)
 static u32 cell_size(bool leaf, const u8 *c)
 {
     if (leaf) {
-        return LEAF_CELL_HEADER + get16(c) + get16(c + 2);
+        return LEAF_CELL_HEADER + ps_get_le16(c) + ps_get_le16(c + 2);
     }
-    return INNER_CELL_HEADER + get16(c + 4);
+    return INNER_CELL_HEADER + ps_get_le16(c + 4);
 }
 
 /* The space a cell takes in a node, including its slot. */
@@ -296,16 +259,16 @@ static u32 cell_cost(bool leaf, const u8 *c)
 static const u8 *cell_key(bool leaf, const u8 *c, u32 *klen)
 {
     if (leaf) {
-        *klen = get16(c);
+        *klen = ps_get_le16(c);
         return c + LEAF_CELL_HEADER;
     }
-    *klen = get16(c + 4);
+    *klen = ps_get_le16(c + 4);
     return c + INNER_CELL_HEADER;
 }
 
 static ps_page_id cell_child(const u8 *c)
 {
-    return ps_page_id_from(get32(c));
+    return ps_page_id_from(ps_get_le32(c));
 }
 
 static const u8 *n_key(const u8 *n, u32 i, u32 *klen)
@@ -321,8 +284,8 @@ static ps_page_id n_child(const u8 *n, u32 ci)
 
 static u32 leaf_cell_build(u8 *out, const void *key, u32 klen, const void *val, u32 vlen)
 {
-    put16(out, klen);
-    put16(out + 2, vlen);
+    ps_put_le16(out, klen);
+    ps_put_le16(out + 2, vlen);
     copy(out + LEAF_CELL_HEADER, key, klen);
     copy(out + LEAF_CELL_HEADER + klen, val, vlen);
     return LEAF_CELL_HEADER + klen + vlen;
@@ -330,8 +293,8 @@ static u32 leaf_cell_build(u8 *out, const void *key, u32 klen, const void *val, 
 
 static u32 inner_cell_build(u8 *out, ps_page_id child, const u8 *key, u32 klen)
 {
-    put32(out, child.raw);
-    put16(out + 4, klen);
+    ps_put_le32(out, child.raw);
+    ps_put_le16(out + 4, klen);
     copy(out + INNER_CELL_HEADER, key, klen);
     return INNER_CELL_HEADER + klen;
 }
@@ -382,7 +345,7 @@ static u32 inner_find(const u8 *n, const u8 *key, u32 klen)
 static bool node_sane(u32 page_size, const u8 *n, u32 level)
 {
     const u32 magic = level == 0 ? LEAF_MAGIC : INNER_MAGIC;
-    if (get32(n + PAGE_MAGIC) != magic || n_level(n) != level) {
+    if (ps_get_le32(n + PAGE_MAGIC) != magic || n_level(n) != level) {
         return false;
     }
     const u32 start = n_cell_start(n);
@@ -395,13 +358,13 @@ static bool node_sane(u32 page_size, const u8 *n, u32 level)
 /* Leaves the store-owned header fields alone. */
 static void node_init(u32 page_size, u8 *n, u32 level, ps_page_id link)
 {
-    put32(n + PAGE_MAGIC, level == 0 ? LEAF_MAGIC : INNER_MAGIC);
-    put16(n + NODE_COUNT, 0);
-    put16(n + NODE_LEVEL, level);
+    ps_put_le32(n + PAGE_MAGIC, level == 0 ? LEAF_MAGIC : INNER_MAGIC);
+    ps_put_le16(n + NODE_COUNT, 0);
+    ps_put_le16(n + NODE_LEVEL, level);
     n_set_link(n, link);
-    put32(n + NODE_CELL_START, page_size);
-    put16(n + NODE_GARBAGE, 0);
-    put16(n + NODE_LAST, NO_LAST);
+    ps_put_le32(n + NODE_CELL_START, page_size);
+    ps_put_le16(n + NODE_GARBAGE, 0);
+    ps_put_le16(n + NODE_LAST, NO_LAST);
 }
 
 /* Repacks the cells at the page end so that all free space is in the gap. */
@@ -416,10 +379,10 @@ static void node_compact(bt_tree *t, u8 *n)
         const u32 size = cell_size(leaf, c);
         end -= size;
         memcpy(n + end, c, size);
-        put16(n + NODE_SLOTS + SLOT_SIZE * i, end);
+        ps_put_le16(n + NODE_SLOTS + SLOT_SIZE * i, end);
     }
-    put32(n + NODE_CELL_START, end);
-    put16(n + NODE_GARBAGE, 0);
+    ps_put_le32(n + NODE_CELL_START, end);
+    ps_put_le16(n + NODE_GARBAGE, 0);
 }
 
 /*
@@ -438,10 +401,10 @@ static void node_insert(bt_tree *t, u8 *n, u32 i, const u8 *cell, u32 size)
     memcpy(n + at, cell, size);
     u8 *slot = n + NODE_SLOTS + SLOT_SIZE * i;
     memmove(slot + SLOT_SIZE, slot, SLOT_SIZE * (count - i));
-    put16(slot, at);
-    put16(n + NODE_COUNT, count + 1);
-    put32(n + NODE_CELL_START, at);
-    put16(n + NODE_LAST, NO_LAST);
+    ps_put_le16(slot, at);
+    ps_put_le16(n + NODE_COUNT, count + 1);
+    ps_put_le32(n + NODE_CELL_START, at);
+    ps_put_le16(n + NODE_LAST, NO_LAST);
 }
 
 /* Adds a cell to a node being rebuilt. Such a node has no garbage, so nothing gets compacted. */
@@ -457,9 +420,9 @@ static void node_remove(u8 *n, u32 i)
     const u32 size = cell_size(n_leaf(n), n_cell(n, i));
     u8 *slot = n + NODE_SLOTS + SLOT_SIZE * i;
     memmove(slot, slot + SLOT_SIZE, SLOT_SIZE * (count - i - 1));
-    put16(n + NODE_COUNT, count - 1);
-    put16(n + NODE_GARBAGE, n_garbage(n) + size);
-    put16(n + NODE_LAST, NO_LAST);
+    ps_put_le16(n + NODE_COUNT, count - 1);
+    ps_put_le16(n + NODE_GARBAGE, n_garbage(n) + size);
+    ps_put_le16(n + NODE_LAST, NO_LAST);
 }
 
 /* ---- meta page ---------------------------------------------------------------- */
@@ -473,12 +436,12 @@ typedef struct tree_meta {
 static int meta_decode(const ps_page *page, tree_meta *m)
 {
     const u8 *p = (const u8 *) page;
-    if (get32(p + PAGE_MAGIC) != META_MAGIC) {
+    if (ps_get_le32(p + PAGE_MAGIC) != META_MAGIC) {
         return EBADMSG;
     }
-    m->root = ps_page_id_from(get32(p + META_ROOT));
-    m->height = get32(p + META_HEIGHT);
-    m->count = get64(p + META_COUNT);
+    m->root = ps_page_id_from(ps_get_le32(p + META_ROOT));
+    m->height = ps_get_le32(p + META_HEIGHT);
+    m->count = ps_get_le64(p + META_COUNT);
     if (ps_page_id_is_none(m->root) || m->height == 0 || m->height > BT_MAX_HEIGHT) {
         return EBADMSG;
     }
@@ -488,10 +451,10 @@ static int meta_decode(const ps_page *page, tree_meta *m)
 static void meta_encode(ps_page *page, const tree_meta *m)
 {
     u8 *p = (u8 *) page;
-    put32(p + PAGE_MAGIC, META_MAGIC);
-    put32(p + META_ROOT, m->root.raw);
-    put32(p + META_HEIGHT, m->height);
-    put64(p + META_COUNT, m->count);
+    ps_put_le32(p + PAGE_MAGIC, META_MAGIC);
+    ps_put_le32(p + META_ROOT, m->root.raw);
+    ps_put_le32(p + META_HEIGHT, m->height);
+    ps_put_le64(p + META_COUNT, m->count);
 }
 
 /* ---- writer page access --------------------------------------------------------- */
@@ -702,9 +665,9 @@ static int node_split(bt_tree *t, u8 *n, u32 i, ps_page_id *right_id, u32 *seple
     }
     /* Keep the last insert slot so that a run carries on in the new nodes. */
     if (i < k) {
-        put16(n + NODE_LAST, i);
+        ps_put_le16(n + NODE_LAST, i);
     } else if (leaf || i > k) {
-        put16(r + NODE_LAST, leaf ? i - k : i - k - 1);
+        ps_put_le16(r + NODE_LAST, leaf ? i - k : i - k - 1);
     }
 
     u32 hilen;
@@ -735,7 +698,7 @@ static int grow_root(bt_tree *t, tree_meta *m, ps_page_id old_root, u32 level, u
     u8 *n = (u8 *) p;
     node_init(t->page_size, n, level, old_root);
     node_append(t, n, cell_buf(t), size);
-    put16(n + NODE_LAST, 0);
+    ps_put_le16(n + NODE_LAST, 0);
     m->root = id;
     m->height++;
     return 0;
@@ -755,7 +718,7 @@ static int insert_up(bt_tree *t, tree_meta *m, const tree_path *p, u32 d, u32 i,
         }
         if (n_free(n) >= size + SLOT_SIZE) {
             node_insert(t, n, i, cell_buf(t), size);
-            put16(n + NODE_LAST, i);
+            ps_put_le16(n + NODE_LAST, i);
             return 0;
         }
         ps_page_id right;
@@ -1268,8 +1231,8 @@ int bt_get(
     const u32 i = node_lower(leaf, key, klen, &found);
     if (found) {
         const u8 *c = n_cell(leaf, i);
-        const u32 len = get16(c + 2);
-        copy(buf, c + LEAF_CELL_HEADER + get16(c), len < cap ? len : cap);
+        const u32 len = ps_get_le16(c + 2);
+        copy(buf, c + LEAF_CELL_HEADER + ps_get_le16(c), len < cap ? len : cap);
         *vlen = len;
     }
     ps_snapshot_unpin(snap, id);
@@ -1321,8 +1284,8 @@ int bt_cursor_next(bt_cursor *c, bt_item *out)
         return ENOENT;
     }
     const u8 *cell = n_cell(c->page, c->slot++);
-    out->klen = get16(cell);
-    out->vlen = get16(cell + 2);
+    out->klen = ps_get_le16(cell);
+    out->vlen = ps_get_le16(cell + 2);
     out->key = cell + LEAF_CELL_HEADER;
     out->val = cell + LEAF_CELL_HEADER + out->klen;
     return 0;

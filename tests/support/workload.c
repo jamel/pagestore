@@ -1,8 +1,8 @@
 #include "workload.h"
 
 #include "crc32c.h"
+#include "pagestore/bytes.h"
 #include "test.h"
-#include "util.h"
 
 #include <errno.h>
 #include <stdlib.h>

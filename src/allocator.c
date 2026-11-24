@@ -8,6 +8,7 @@
 
 #include "bitmap.h"
 #include "format.h"
+#include "pagestore/bytes.h"
 #include "util.h"
 
 #include <errno.h>
@@ -482,8 +483,7 @@ bool ps_allocator_group_unchanged(const ps_allocator *a, u32 g)
         return false;
     }
     for (usize off = 0; off < delta_bytes(a); off += 8) {
-        u64 d;
-        memcpy(&d, r->delta + off, 8);
+        const u64 d = ps_get_le64(r->delta + off);
         if (d != 0) {
             return false;
         }
@@ -506,13 +506,10 @@ void ps_allocator_apply(const ps_allocator *a, u32 g, u8 *bits)
     }
     /* The bitmap payload is a multiple of 64 bits, so there is no partial word. */
     for (usize off = 0; off < delta_bytes(a); off += 8) {
-        u64 d;
-        memcpy(&d, r->delta + off, 8);
+        const u64 d = ps_get_le64(r->delta + off);
         if (d != 0) {
-            u64 v;
-            memcpy(&v, bits + off, 8);
-            v ^= d;
-            memcpy(bits + off, &v, 8);
+            const u64 v = ps_get_le64(bits + off);
+            ps_put_le64(bits + off, v ^ d);
         }
     }
 }

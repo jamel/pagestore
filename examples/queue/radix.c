@@ -1,6 +1,5 @@
 /*
- * Radix array nodes. Integers use host byte order, which PageStore
- * requires to be little-endian.
+ * Radix array nodes. Integers are little-endian.
  *
  * Leaf ("RXLF") and inner ("RXIN") node.
  *
@@ -35,10 +34,11 @@
 
 #include "radix.h"
 
+#include "pagestore/bytes.h"
+
 #include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
-#include <string.h>
 
 /* ---- page layout ---------------------------------------------------------- */
 
@@ -54,43 +54,19 @@
 
 PS_STATIC_ASSERT(NODE_LEVEL == PS_PAGE_HEADER_SIZE, "node fields follow the page header");
 
-static u32 get32(const u8 *p)
-{
-    u32 v;
-    memcpy(&v, p, sizeof(v));
-    return v;
-}
-
-static void put32(u8 *p, u32 v)
-{
-    memcpy(p, &v, sizeof(v));
-}
-
-static u64 get64(const u8 *p)
-{
-    u64 v;
-    memcpy(&v, p, sizeof(v));
-    return v;
-}
-
-static void put64(u8 *p, u64 v)
-{
-    memcpy(p, &v, sizeof(v));
-}
-
 static u64 slot_get(const u8 *n, u32 width, u64 i)
 {
     const u8 *p = n + NODE_SLOTS + i * width;
-    return width == 8 ? get64(p) : get32(p);
+    return width == 8 ? ps_get_le64(p) : ps_get_le32(p);
 }
 
 static void slot_put(u8 *n, u32 width, u64 i, u64 v)
 {
     u8 *p = n + NODE_SLOTS + i * width;
     if (width == 8) {
-        put64(p, v);
+        ps_put_le64(p, v);
     } else {
-        put32(p, (u32) v);
+        ps_put_le32(p, (u32) v);
     }
 }
 
@@ -175,8 +151,8 @@ static bool node_ok(const rx_array *a, const u8 *n, u32 level, u64 base)
 {
     const u32 magic = level == 0 ? LEAF_MAGIC : INNER_MAGIC;
     const u32 width = level == 0 ? a->width : CHILD_WIDTH;
-    return get32(n) == magic && get32(n + NODE_LEVEL) == level && get32(n + NODE_WIDTH) == width &&
-        get64(n + NODE_BASE) == base;
+    return ps_get_le32(n) == magic && ps_get_le32(n + NODE_LEVEL) == level &&
+        ps_get_le32(n + NODE_WIDTH) == width && ps_get_le64(n + NODE_BASE) == base;
 }
 
 /* Reads a node and checks that it is the one expected at level and base. */
@@ -210,9 +186,9 @@ static int new_node(const rx_array *a, ps_store *s, u32 level, u64 base, ps_page
     }
     u8 *n = (u8 *) p;
     p->magic = level == 0 ? LEAF_MAGIC : INNER_MAGIC;
-    put32(n + NODE_LEVEL, level);
-    put32(n + NODE_WIDTH, level == 0 ? a->width : CHILD_WIDTH);
-    put64(n + NODE_BASE, base);
+    ps_put_le32(n + NODE_LEVEL, level);
+    ps_put_le32(n + NODE_WIDTH, level == 0 ? a->width : CHILD_WIDTH);
+    ps_put_le64(n + NODE_BASE, base);
     *out = n;
     return 0;
 }

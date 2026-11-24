@@ -2,6 +2,7 @@
 
 #include "crc32c.h"
 #include "format.h"
+#include "pagestore/bytes.h"
 #include "test.h"
 
 #include <errno.h>
@@ -189,7 +190,7 @@ void mb_seal_page(void *page, u32 page_size)
 {
     u8 *p = page;
     const u32 crc = page_checksum(p, page_size);
-    memcpy(p + MB_HDR_CHECKSUM, &crc, 4);
+    ps_put_le32(p + MB_HDR_CHECKSUM, crc);
 }
 
 /* ---- ps_backend callbacks ---- */
@@ -283,10 +284,8 @@ static int be_ckpt_write(ps_backend_ctx *ctx, ps_page_id id, const void *page)
     }
     T_CHECK(mb->in_ckpt);
     T_CHECK(mb->nstaged < mb->ckpt_count);
-    u32 pid;
-    u32 sum;
-    memcpy(&pid, p + MB_HDR_PAGE_ID, 4);
-    memcpy(&sum, p + MB_HDR_CHECKSUM, 4);
+    const u32 pid = ps_get_le32(p + MB_HDR_PAGE_ID);
+    const u32 sum = ps_get_le32(p + MB_HDR_CHECKSUM);
     T_EQ(pid, id.raw);
     T_EQ(sum, page_checksum(p, mb->info.page_size));
     const int rv = take_fault(mb, MB_WRITE);
