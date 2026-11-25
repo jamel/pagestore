@@ -22,35 +22,40 @@ static u64 next_lsn;
 /* ---- log capture ---- */
 
 struct ps_logger_ctx {
-    pthread_mutex_t mu;
-    u32 errors; /* ERROR lines */
-    u32 ckpt_errors; /* ERROR lines containing "checkpoint" */
+    _Atomic u32 ckpt_errors; /* ERROR lines containing "checkpoint" */
+    pthread_mutex_t mu; /* guards last_ckpt_error */
     char last_ckpt_error[512];
 };
+
+static void logs_init(ps_logger_ctx *lc)
+{
+    atomic_init(&lc->ckpt_errors, 0);
+    pthread_mutex_init(&lc->mu, NULL);
+    lc->last_ckpt_error[0] = '\0';
+}
+
+/* Call after close_store, since the store can log until it closes. */
+static void logs_destroy(ps_logger_ctx *lc)
+{
+    pthread_mutex_destroy(&lc->mu);
+}
 
 static void capture_log(ps_logger_ctx *lc, ps_log_level level, const char *fmt, va_list ap)
 {
     char msg[512];
     vsnprintf(msg, sizeof(msg), fmt, ap);
-    pthread_mutex_lock(&lc->mu);
-    if (level == PS_LOG_LEVEL_ERROR) {
-        lc->errors++;
-        if (strstr(msg, "checkpoint") != NULL) {
-            lc->ckpt_errors++;
-            snprintf(lc->last_ckpt_error, sizeof(lc->last_ckpt_error), "%s", msg);
-        }
+    if (level == PS_LOG_LEVEL_ERROR && strstr(msg, "checkpoint") != NULL) {
+        pthread_mutex_lock(&lc->mu);
+        snprintf(lc->last_ckpt_error, sizeof(lc->last_ckpt_error), "%s", msg);
+        pthread_mutex_unlock(&lc->mu);
+        /* Count after storing, so a reader that sees the count finds the message. */
+        atomic_fetch_add(&lc->ckpt_errors, 1);
     }
-    pthread_mutex_unlock(&lc->mu);
 }
 
-static ps_logger_ctx logs;
-
-static u32 ckpt_errors(void)
+static u32 ckpt_errors(ps_logger_ctx *lc)
 {
-    pthread_mutex_lock(&logs.mu);
-    const u32 n = logs.ckpt_errors;
-    pthread_mutex_unlock(&logs.mu);
-    return n;
+    return atomic_load(&lc->ckpt_errors);
 }
 
 /* ---- store setup ---- */
@@ -61,23 +66,30 @@ typedef struct thread_cfg {
     u32 interval_ms;
 } thread_cfg;
 
-static void open_store(thread_cfg tc)
+/* logs captures the store's log lines. NULL turns logging off. */
+static void open_store_with_logs(thread_cfg tc, ps_logger_ctx *logs)
 {
     mb = mb_create();
     ps_config cfg = mb_config(tc.frames);
     cfg.checkpoint_thread = true;
     cfg.checkpoint_dirty_pct = tc.dirty_pct;
     cfg.checkpoint_interval_ms = tc.interval_ms;
-    pthread_mutex_lock(&logs.mu);
-    logs.errors = 0;
-    logs.ckpt_errors = 0;
-    logs.last_ckpt_error[0] = '\0';
-    pthread_mutex_unlock(&logs.mu);
-    cfg.logger = (ps_logger) {.max_level = PS_LOG_LEVEL_DEBUG, .ctx = &logs, .write = capture_log};
+    if (logs != NULL) {
+        cfg.logger = (ps_logger) {
+            .max_level = PS_LOG_LEVEL_DEBUG,
+            .ctx = logs,
+            .write = capture_log,
+        };
+    }
     ps_backend be;
     mb_backend(mb, &be);
     T_OK(ps_open_backend(&be, &cfg, PS_CREATE, &s));
     next_lsn = 1;
+}
+
+static void open_store(thread_cfg tc)
+{
+    open_store_with_logs(tc, NULL);
 }
 
 static void close_store(void)
@@ -130,10 +142,10 @@ static bool wait_durable(u64 lsn, u32 ms)
 }
 
 /* Poll for n ERROR log lines that mention "checkpoint". Returns false after ms. */
-static bool wait_ckpt_errors(u32 n, u32 ms)
+static bool wait_ckpt_errors(ps_logger_ctx *lc, u32 n, u32 ms)
 {
     const u64 end = t_now_ms() + ms;
-    while (ckpt_errors() < n) {
+    while (ckpt_errors(lc) < n) {
         if (t_now_ms() >= end) {
             return false;
         }
@@ -552,7 +564,9 @@ static void test_waiter_gets_inflight_result(void)
 
 static void test_fatal_wakes_waiters(void)
 {
-    open_store((thread_cfg) {16, 100, 0});
+    ps_logger_ctx logs;
+    logs_init(&logs);
+    open_store_with_logs((thread_cfg) {16, 100, 0}, &logs);
     commit_allocs(2, 7);
     T_OK(ps_checkpoint(s));
     T_CHECK(ps_test_evict(s, ps_page_id_from(2)));
@@ -571,7 +585,7 @@ static void test_fatal_wakes_waiters(void)
     T_CHECK(st.failed);
     T_EQ(st.writer_waits, 1);
     /* Waiters are woken before the checkpoint logs its failure. */
-    T_CHECK(wait_ckpt_errors(1, 2000));
+    T_CHECK(wait_ckpt_errors(&logs, 1, 2000));
 
     /* The existing snapshot still reads its resident page. */
     const ps_page *p = NULL;
@@ -591,6 +605,7 @@ static void test_fatal_wakes_waiters(void)
     T_CHECK(t_now_ms() - t < 1000);
     ps_snapshot_close(sn);
     close_store();
+    logs_destroy(&logs);
 }
 
 static void test_flush_log_failure_wakes_waiters(void)
@@ -611,12 +626,14 @@ static void test_flush_log_failure_wakes_waiters(void)
 
 static void test_log_on_failure(void)
 {
-    open_store((thread_cfg) {64, 100, 0});
+    ps_logger_ctx logs;
+    logs_init(&logs);
+    open_store_with_logs((thread_cfg) {64, 100, 0}, &logs);
     commit_alloc(1);
     mb_fail(mb, MB_WRITE, ENOSPC, 1);
     ps_checkpoint_request(s);
-    T_CHECK(wait_ckpt_errors(1, 2000));
-    T_EQ(ckpt_errors(), 1);
+    T_CHECK(wait_ckpt_errors(&logs, 1, 2000));
+    T_EQ(ckpt_errors(&logs), 1);
     pthread_mutex_lock(&logs.mu);
     T_CHECK(strstr(logs.last_ckpt_error, strerror(ENOSPC)) != NULL);
     pthread_mutex_unlock(&logs.mu);
@@ -626,8 +643,9 @@ static void test_log_on_failure(void)
 
     /* With no trigger (no timer, no watermark, no request) the thread retries by itself. */
     T_CHECK(wait_durable(1, 2000));
-    T_EQ(ckpt_errors(), 1);
+    T_EQ(ckpt_errors(&logs), 1);
     close_store();
+    logs_destroy(&logs);
 }
 
 /* Releases the held flush_log once ps_close has asked the thread to stop. */
@@ -761,7 +779,6 @@ static void test_many_waits(void)
 int main(int argc, char **argv)
 {
     t_init(argc, argv);
-    pthread_mutex_init(&logs.mu, NULL);
     T_RUN(test_dirty_watermark);
     T_RUN(test_request);
     T_RUN(test_request_thread_off);
@@ -780,6 +797,5 @@ int main(int argc, char **argv)
     T_RUN(test_close_failed_no_leak);
     T_RUN(test_open_error_no_thread);
     T_RUN(test_many_waits);
-    pthread_mutex_destroy(&logs.mu);
     return t_done();
 }
