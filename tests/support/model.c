@@ -73,7 +73,7 @@ static void *xmalloc(usize n)
 {
     void *p = malloc(n == 0 ? 1 : n);
     if (p == NULL) {
-        t_fail(__FILE__, __LINE__, "model: out of memory");
+        T_FAIL("model: out of memory");
     }
     return p;
 }
@@ -82,7 +82,7 @@ static void *xcalloc(usize n)
 {
     void *p = calloc(1, n == 0 ? 1 : n);
     if (p == NULL) {
-        t_fail(__FILE__, __LINE__, "model: out of memory");
+        T_FAIL("model: out of memory");
     }
     return p;
 }
@@ -91,7 +91,7 @@ static void *xrealloc(void *p, usize n)
 {
     void *q = realloc(p, n == 0 ? 1 : n);
     if (q == NULL) {
-        t_fail(__FILE__, __LINE__, "model: out of memory");
+        T_FAIL("model: out of memory");
     }
     return q;
 }

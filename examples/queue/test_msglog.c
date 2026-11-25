@@ -108,7 +108,7 @@ static rx_stats rx_checked(fixture *f, const rx_array *a, u64 lo, u64 hi)
     const int rv = rx_check(a, snap, lo, hi, &st, msg, sizeof(msg));
     ps_snapshot_close(snap);
     if (rv != 0) {
-        t_fail(__FILE__, __LINE__, "rx_check: %s (%d)", msg, rv);
+        T_FAIL("rx_check: %s (%d)", msg, rv);
     }
     T_EQ(allocated(f), st.leaves + st.inner);
     return st;
@@ -342,12 +342,7 @@ static void expect_msg(const u8 *buf, u64 seq, u32 len)
 {
     for (u32 i = 0; i < len; i++) {
         if (buf[i] != msg_byte(seq, i)) {
-            t_fail(
-                __FILE__,
-                __LINE__,
-                "message %llu: byte %u differs",
-                (unsigned long long) seq,
-                i);
+            T_FAIL("message %llu: byte %u differs", (unsigned long long) seq, i);
         }
     }
 }
@@ -371,7 +366,7 @@ static ml_stats log_checked(fixture *f, const ml_log *l)
     const int rv = ml_check(l, snap, &st, msg, sizeof(msg));
     ps_snapshot_close(snap);
     if (rv != 0) {
-        t_fail(__FILE__, __LINE__, "ml_check: %s (%d)", msg, rv);
+        T_FAIL("ml_check: %s (%d)", msg, rv);
     }
     T_EQ(allocated(f), 1 + st.data_pages + st.index_pages + st.map_pages);
     return st;
@@ -775,7 +770,7 @@ static void expect_damage(fixture *f, const ml_log *l, const char *what)
     T_ERR(ml_check(l, snap, &st, msg, sizeof(msg)), EBADMSG);
     ps_snapshot_close(snap);
     if (strstr(msg, what) == NULL) {
-        t_fail(__FILE__, __LINE__, "ml_check said '%s', want '%s'", msg, what);
+        T_FAIL("ml_check said '%s', want '%s'", msg, what);
     }
 }
 

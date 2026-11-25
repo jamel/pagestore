@@ -56,7 +56,7 @@ static ml_state check_queue(mq *q)
     const int rv = ml_check(mq_log(q), snap, &ms, msg, sizeof(msg));
     ps_snapshot_close(snap);
     if (rv != 0) {
-        t_fail(__FILE__, __LINE__, "ml_check: %s (%d)", msg, rv);
+        T_FAIL("ml_check: %s (%d)", msg, rv);
     }
     struct ps_stats ss;
     ps_stats(mq_store(q), &ss);
@@ -675,9 +675,7 @@ static void crash_verify(crash_state *c)
 {
     const ml_state st = check_queue(c->q);
     if (c->seen > st.next_seq) {
-        t_fail(
-            __FILE__,
-            __LINE__,
+        T_FAIL(
             "a reader got message %llu, but only %llu survived",
             (unsigned long long) c->seen - 1,
             (unsigned long long) st.next_seq);
@@ -691,11 +689,7 @@ static void crash_verify(crash_state *c)
     for (usize i = 0; i < c->nok; i++) {
         const pushed *p = &c->ok[i];
         if (p->seq >= st.next_seq) {
-            t_fail(
-                __FILE__,
-                __LINE__,
-                "acknowledged push %llu was lost",
-                (unsigned long long) p->seq);
+            T_FAIL("acknowledged push %llu was lost", (unsigned long long) p->seq);
         }
         if (p->seq < st.first_seq) {
             continue;

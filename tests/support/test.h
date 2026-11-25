@@ -58,10 +58,13 @@ PS_NORETURN void t_fail_mem(
     const void *b,
     usize n);
 
+/* T_FAIL(fmt, ...) */
+#define T_FAIL(...) t_fail(__FILE__, __LINE__, __VA_ARGS__)
+
 #define T_CHECK(c) \
     do { \
         if (!(c)) \
-            t_fail(__FILE__, __LINE__, "T_CHECK(%s) failed", #c); \
+            T_FAIL("T_CHECK(%s) failed", #c); \
     } while (0)
 
 #define T_EQ(a, b) \

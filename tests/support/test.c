@@ -198,12 +198,12 @@ char *t_tmpdir(void)
     len = strlen(base) + sizeof("/pstest.XXXXXX");
     path = malloc(len);
     if (path == NULL) {
-        t_fail(__FILE__, __LINE__, "t_tmpdir: out of memory");
+        T_FAIL("t_tmpdir: out of memory");
     }
     snprintf(path, len, "%s/pstest.XXXXXX", base);
     if (mkdtemp(path) == NULL) {
         const int rv = errno;
-        t_fail(__FILE__, __LINE__, "t_tmpdir: mkdtemp(%s): %s", path, strerror(rv));
+        T_FAIL("t_tmpdir: mkdtemp(%s): %s", path, strerror(rv));
     }
     return path;
 }
@@ -231,7 +231,7 @@ void t_rmtree(const char *path)
     }
     if (nftw(path, t_rm_cb, 16, FTW_DEPTH | FTW_PHYS) != 0) {
         const int rv = errno;
-        t_fail(__FILE__, __LINE__, "t_rmtree(%s) failed: %s", path, strerror(rv));
+        T_FAIL("t_rmtree(%s) failed: %s", path, strerror(rv));
     }
 }
 
@@ -241,7 +241,7 @@ u64 t_now_ms(void)
 
     if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
         const int rv = errno;
-        t_fail(__FILE__, __LINE__, "clock_gettime: %s", strerror(rv));
+        T_FAIL("clock_gettime: %s", strerror(rv));
     }
     return (u64) ts.tv_sec * 1000u + (u64) ts.tv_nsec / 1000000u;
 }

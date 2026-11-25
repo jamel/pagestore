@@ -187,7 +187,7 @@ static bt_stats check_tree(fixture *f, ps_snapshot *snap)
     char msg[256];
     const int rv = bt_check(&f->t, snap, &st, msg, sizeof(msg));
     if (rv != 0) {
-        t_fail(__FILE__, __LINE__, "bt_check: %s (error %d)", msg, rv);
+        T_FAIL("bt_check: %s (error %d)", msg, rv);
     }
     return st;
 }
@@ -719,7 +719,7 @@ static void expect_damage(fixture *f, const char *what)
     char msg[256];
     T_ERR(bt_check(&f->t, snap, &st, msg, sizeof(msg)), EBADMSG);
     if (strstr(msg, what) == NULL) {
-        t_fail(__FILE__, __LINE__, "bt_check said '%s', want '%s'", msg, what);
+        T_FAIL("bt_check said '%s', want '%s'", msg, what);
     }
     ps_snapshot_close(snap);
 }
@@ -781,7 +781,7 @@ static void *reader_main(void *arg)
         const int rv = bt_check(&rs->f->t, snap, &st, msg, sizeof(msg));
         if (rv != ESTALE) {
             if (rv != 0) {
-                t_fail(__FILE__, __LINE__, "bt_check: %s (error %d)", msg, rv);
+                T_FAIL("bt_check: %s (error %d)", msg, rv);
             }
             T_EQ(st.keys, keys_at(rs, ps_snapshot_lsn(snap).raw));
             rs->checks++;

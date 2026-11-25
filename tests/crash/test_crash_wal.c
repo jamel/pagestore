@@ -327,7 +327,7 @@ typedef struct wcase {
 #define CASE_CHECK(c_, cond) \
     do { \
         if (!(cond)) { \
-            t_fail(__FILE__, __LINE__, "[%s] CHECK(%s) failed", (c_)->desc, #cond); \
+            T_FAIL("[%s] CHECK(%s) failed", (c_)->desc, #cond); \
         } \
     } while (0)
 
@@ -335,7 +335,7 @@ typedef struct wcase {
     do { \
         const int case_rv_ = (e); \
         if (case_rv_ != 0) { \
-            t_fail(__FILE__, __LINE__, "[%s] %s returned %d", (c_)->desc, #e, case_rv_); \
+            T_FAIL("[%s] %s returned %d", (c_)->desc, #e, case_rv_); \
         } \
     } while (0)
 
@@ -401,9 +401,7 @@ static int apply_rec(ps_apply_ctx *a, ps_store *s, ps_lsn at, const void *rec, u
     a->last = lsn;
     const bool known = lsn < c->nexp && c->exp[lsn] != 0;
     if (!known || c->exp[lsn] != (((u64) 1 << 32) | ps_crc32c(0, rec, len))) {
-        t_fail(
-            __FILE__,
-            __LINE__,
+        T_FAIL(
             "[%s] replayed record %llu was never appended %s",
             c->desc,
             (unsigned long long) lsn,
@@ -524,7 +522,7 @@ static void case_free(wcase *c)
 static void expect_stop(wcase *c, int rv, const char *what)
 {
     if (!fault_vfs_crashed(c->fv) && c->enospc_injected == 0) {
-        t_fail(__FILE__, __LINE__, "[%s] %s failed (%d) without a crash", c->desc, what, rv);
+        T_FAIL("[%s] %s failed (%d) without a crash", c->desc, what, rv);
     }
 }
 
@@ -703,7 +701,7 @@ static bool crashed_startup(wcase *c, rcrash rc, u64 q, fault_mode mode)
     if (rv == 0) {
         shutdown_both(c);
     } else if (!crashed) {
-        t_fail(__FILE__, __LINE__, "[%s] startup failed (%d) without a crash", c->desc, rv);
+        T_FAIL("[%s] startup failed (%d) without a crash", c->desc, rv);
     }
     wrap_arm(&c->vc, 0);
     fault_vfs_reboot(c->fv, mode);

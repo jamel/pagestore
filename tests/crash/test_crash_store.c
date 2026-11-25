@@ -80,13 +80,7 @@ static void check_content(const ps_page *p, ps_page_id id, u64 lsn)
     const u8 *b = (const u8 *) p;
     for (u32 j = HDR; j < PS; j++) {
         if (b[j] != content_byte(id, lsn, j)) {
-            t_fail(
-                __FILE__,
-                __LINE__,
-                "page %u lsn %llu: byte %u differs",
-                id.raw,
-                (unsigned long long) lsn,
-                j);
+            T_FAIL("page %u lsn %llu: byte %u differs", id.raw, (unsigned long long) lsn, j);
         }
     }
 }
@@ -225,9 +219,7 @@ static const image *expected_at(const run *rn, u64 L)
             return &rn->images[i];
         }
     }
-    t_fail(
-        __FILE__,
-        __LINE__,
+    T_FAIL(
         "durable lsn %llu is no allowed checkpoint (last ok %llu)",
         (unsigned long long) L,
         (unsigned long long) rn->images[last_ok].lsn);

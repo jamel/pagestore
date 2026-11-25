@@ -210,9 +210,7 @@ static int misuse_read(run *t, snap_rec *sr, ps_page_id id)
         model_misuse_ok(t->m, sr->lsn, id, 0, p->lsn.raw, (const u8 *) p + HDR) :
         model_misuse_ok(t->m, sr->lsn, id, rv, 0, NULL);
     if (!ok) {
-        t_fail(
-            __FILE__,
-            __LINE__,
+        T_FAIL(
             "misuse read of %u at LSN %llu: rv %d, page lsn %llu",
             id.raw,
             (unsigned long long) sr->lsn,

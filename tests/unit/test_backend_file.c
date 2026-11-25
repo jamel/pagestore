@@ -90,14 +90,7 @@ static u8 page_byte(ps_backend *be, ps_page_id id)
     T_OK(be->read_page(be->ctx, id, buf));
     for (usize i = 1; i < PS; i++) {
         if (buf[i] != buf[0]) {
-            t_fail(
-                __FILE__,
-                __LINE__,
-                "page %u byte %zu = %#x, byte 0 = %#x",
-                id.raw,
-                i,
-                buf[i],
-                buf[0]);
+            T_FAIL("page %u byte %zu = %#x, byte 0 = %#x", id.raw, i, buf[i], buf[0]);
         }
     }
     return buf[0];

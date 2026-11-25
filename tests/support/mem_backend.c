@@ -71,7 +71,7 @@ static void *xalloc(usize n)
 {
     void *p = calloc(1, n);
     if (p == NULL) {
-        t_fail(__FILE__, __LINE__, "mem_backend: out of memory");
+        T_FAIL("mem_backend: out of memory");
     }
     return p;
 }

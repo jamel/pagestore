@@ -82,9 +82,7 @@ static void check_page(u64 seed, const ps_page *p, u32 id, u64 lsn)
     for (u32 i = 0; i < WORDS; i++) {
         const u64 w = ps_get_le64(b + (usize) i * 8);
         if (w != word_at(seed, id, lsn, i)) {
-            t_fail(
-                __FILE__,
-                __LINE__,
+            T_FAIL(
                 "page %u (lsn %llu): word %u is %016llx, want %016llx",
                 id,
                 (unsigned long long) lsn,
@@ -333,7 +331,7 @@ static u32 next_alloc_id(const writer *w, u32 cursor)
             return id;
         }
     }
-    t_fail(__FILE__, __LINE__, "ran out of test ids");
+    T_FAIL("ran out of test ids");
 }
 
 typedef struct change {
