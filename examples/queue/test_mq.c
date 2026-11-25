@@ -225,8 +225,7 @@ static void test_mq_basic(void)
     T_EQ(st.readers, 2);
     T_OK(mq_checkpoint(q));
     mq_close(q);
-    t_rmtree(dir);
-    free(dir);
+    t_tmpdir_free(dir);
 }
 
 /* A reader that falls more than the cap behind hears how many it missed. */
@@ -258,8 +257,7 @@ static void test_mq_missed(void)
     const ml_state st = check_queue(q);
     T_EQ(st.first_seq, 15);
     mq_close(q);
-    t_rmtree(dir);
-    free(dir);
+    t_tmpdir_free(dir);
 }
 
 typedef struct waiter {
@@ -297,8 +295,7 @@ static void test_mq_wakeup(void)
     T_OK(w.rv);
     T_EQ(w.it.seq, seq);
     mq_close(q);
-    t_rmtree(dir);
-    free(dir);
+    t_tmpdir_free(dir);
 }
 
 /*
@@ -343,8 +340,7 @@ static void test_mq_cut_off(void)
     ps_stats(mq_store(q), &ss);
     T_CHECK(ss.snapshots_cut_off > 0);
     mq_close(q);
-    t_rmtree(dir);
-    free(dir);
+    t_tmpdir_free(dir);
 }
 
 /* ---- threads -------------------------------------------------------------- */
@@ -470,8 +466,7 @@ static void test_mq_threads(void)
         T_EQ(reader_pos(st.q, name), st.total);
     }
     mq_close(st.q);
-    t_rmtree(dir);
-    free(dir);
+    t_tmpdir_free(dir);
 }
 
 /* ---- power loss ----------------------------------------------------------- */

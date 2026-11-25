@@ -27,8 +27,7 @@ static void setup(void)
 
 static void teardown(void)
 {
-    t_rmtree(dir);
-    free(dir);
+    t_tmpdir_free(dir);
     dir = NULL;
 }
 

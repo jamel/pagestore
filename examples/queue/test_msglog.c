@@ -72,8 +72,7 @@ static void fx_reopen(fixture *f)
 static void fx_destroy(fixture *f)
 {
     ps_close(f->s);
-    t_rmtree(f->dir);
-    free(f->dir);
+    t_tmpdir_free(f->dir);
 }
 
 static u64 allocated(const fixture *f)

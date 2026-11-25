@@ -132,8 +132,7 @@ static void test_wal_uses_store_logger(void)
     ps_wal_close(w);
 
     ps_close(s);
-    t_rmtree(dir);
-    free(dir);
+    t_tmpdir_free(dir);
     free(c);
 }
 

@@ -149,13 +149,16 @@ void *t_realloc(void *p, usize n);
 u32 t_scale(void);
 
 /*
- * Creates a directory under TMPDIR, or /tmp by default. Call t_rmtree
- * on the returned path and then free it.
+ * Creates a directory under TMPDIR, or /tmp by default. Remove it with
+ * t_tmpdir_free.
  */
 char *t_tmpdir(void);
 
-/* A missing path is fine. Removal errors abort the test. */
-void t_rmtree(const char *path);
+/*
+ * Deletes the directory and everything in it, then frees dir. A missing
+ * directory is fine. Removal errors abort the test.
+ */
+void t_tmpdir_free(char *dir);
 
 /* Monotonic clock in milliseconds. */
 u64 t_now_ms(void);

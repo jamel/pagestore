@@ -10,7 +10,6 @@
 #include <sched.h>
 #include <stdatomic.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 #define PS 4096u
@@ -474,8 +473,7 @@ static void test_startup_sequence_posix(void)
     logged_op(s, w, NREC + 1);
     ps_close(s);
     ps_wal_close(w);
-    t_rmtree(root);
-    free(root);
+    t_tmpdir_free(root);
 }
 
 int main(int argc, char **argv)

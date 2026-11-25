@@ -245,7 +245,7 @@ static int t_rm_cb(const char *path, const struct stat *sb, int flag, struct FTW
     return 0;
 }
 
-void t_rmtree(const char *path)
+static void t_rmtree(const char *path)
 {
     if (access(path, F_OK) != 0) {
         const int rv = errno;
@@ -257,6 +257,12 @@ void t_rmtree(const char *path)
         const int rv = errno;
         T_FAIL("t_rmtree(%s) failed: %s", path, strerror(rv));
     }
+}
+
+void t_tmpdir_free(char *dir)
+{
+    t_rmtree(dir);
+    free(dir);
 }
 
 u64 t_now_ms(void)

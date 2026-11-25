@@ -995,8 +995,7 @@ static void test_posix_smoke(void)
     T_EQ(st.st_size, SEG);
     snprintf(path, sizeof(path), "%s/wal/LOCK", dir);
     T_EQ(stat(path, &st), 0);
-    t_rmtree(root);
-    free(root);
+    t_tmpdir_free(root);
 }
 
 int main(int argc, char **argv)

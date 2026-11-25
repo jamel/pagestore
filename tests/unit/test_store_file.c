@@ -7,7 +7,6 @@
 
 #include <errno.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 #define HDR PS_PAGE_HEADER_SIZE
@@ -23,8 +22,7 @@ static void setup(void)
 
 static void teardown(void)
 {
-    t_rmtree(root);
-    free(root);
+    t_tmpdir_free(root);
     root = NULL;
 }
 

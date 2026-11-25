@@ -79,8 +79,7 @@ static fixture fx_new(u32 page_size, u32 frames)
 static void fx_destroy(fixture *f)
 {
     fx_close(f);
-    t_rmtree(f->dir);
-    free(f->dir);
+    t_tmpdir_free(f->dir);
 }
 
 /* ---- reference model ------------------------------------------------------ */
