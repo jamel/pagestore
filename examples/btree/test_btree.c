@@ -30,12 +30,12 @@ typedef struct fixture {
     ps_lsn lsn; /* the last LSN handed to ps_op_begin */
 } fixture;
 
-static void log_line(ps_log_ctx *ctx, int level, const char *msg)
+static void log_line(ps_logger_ctx *ctx, ps_log_level level, const char *fmt, va_list ap)
 {
-    PS_UNUSED(ctx);
-    if (level <= PS_LOG_WARN) {
-        fprintf(stderr, "store: %s\n", msg);
-    }
+    PS_UNUSED(ctx, level);
+    char msg[512];
+    vsnprintf(msg, sizeof(msg), fmt, ap);
+    fprintf(stderr, "store: %s\n", msg);
 }
 
 static void fx_begin(fixture *f)
@@ -51,7 +51,7 @@ static void fx_open(fixture *f, u32 page_size, u32 frames)
     ps_config_init(&cfg);
     cfg.page_size = page_size;
     cfg.cache_size = (usize) frames * page_size;
-    cfg.log = log_line;
+    cfg.logger = (ps_logger) {.max_level = PS_LOG_LEVEL_WARN, .write = log_line};
     T_OK(ps_open(f->dir, &cfg, PS_CREATE, &f->s));
     f->lsn = ps_committed_lsn(f->s);
     if (ps_lsn_is_none(f->lsn)) {

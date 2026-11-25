@@ -13,7 +13,7 @@
 
 static int recover_misuse(ps_store *s, const char *why)
 {
-    ps_log(s, PS_LOG_ERROR, "ps_recover: %s", why);
+    PS_LOG_ERROR(&s->logger, "ps_recover: %s", why);
     return EINVAL;
 }
 
@@ -60,9 +60,8 @@ int ps_recover(ps_store *store, ps_wal *wal, ps_apply_fn apply, ps_apply_ctx *ct
         }
         if (rv != 0) {
             char buf[128];
-            ps_log(
-                store,
-                PS_LOG_ERROR,
+            PS_LOG_ERROR(
+                &store->logger,
                 "ps_recover: reading the WAL after LSN %llu failed: %s (error %d)",
                 (unsigned long long) (n > 0 ? lsn : d).raw,
                 ps_strerror(rv, buf, sizeof(buf)),
@@ -72,9 +71,8 @@ int ps_recover(ps_store *store, ps_wal *wal, ps_apply_fn apply, ps_apply_ctx *ct
         rv = apply(ctx, store, lsn, rec, len);
         if (ps_op_active_here(store)) {
             ps_op_abort(store);
-            ps_log(
-                store,
-                PS_LOG_ERROR,
+            PS_LOG_ERROR(
+                &store->logger,
                 "ps_recover: apply left the operation of record %llu open; aborted it",
                 (unsigned long long) lsn.raw);
             if (rv == 0) {
@@ -84,9 +82,8 @@ int ps_recover(ps_store *store, ps_wal *wal, ps_apply_fn apply, ps_apply_ctx *ct
         }
         if (rv != 0) {
             char buf[128];
-            ps_log(
-                store,
-                PS_LOG_ERROR,
+            PS_LOG_ERROR(
+                &store->logger,
                 "ps_recover: applying record %llu failed: %s (error %d)",
                 (unsigned long long) lsn.raw,
                 ps_strerror(rv, buf, sizeof(buf)),
@@ -95,9 +92,8 @@ int ps_recover(ps_store *store, ps_wal *wal, ps_apply_fn apply, ps_apply_ctx *ct
         }
         const ps_lsn c = ps_committed_lsn(store);
         if (!ps_lsn_eq(c, lsn)) {
-            ps_log(
-                store,
-                PS_LOG_ERROR,
+            PS_LOG_ERROR(
+                &store->logger,
                 "ps_recover: after applying record %llu the committed LSN is %llu "
                 "(apply must commit one operation at the record's LSN)",
                 (unsigned long long) lsn.raw,
@@ -113,18 +109,16 @@ int ps_recover(ps_store *store, ps_wal *wal, ps_apply_fn apply, ps_apply_ctx *ct
     ps_wal_iter_close(it);
     if (rv == 0) {
         if (n > 0) {
-            ps_log(
-                store,
-                PS_LOG_INFO,
+            PS_LOG_INFO(
+                &store->logger,
                 "recovered %llu WAL records (LSNs %llu..%llu) above the durable LSN %llu",
                 (unsigned long long) n,
                 (unsigned long long) first.raw,
                 (unsigned long long) lsn.raw,
                 (unsigned long long) d.raw);
         } else {
-            ps_log(
-                store,
-                PS_LOG_INFO,
+            PS_LOG_INFO(
+                &store->logger,
                 "no WAL records above the durable LSN %llu",
                 (unsigned long long) d.raw);
         }

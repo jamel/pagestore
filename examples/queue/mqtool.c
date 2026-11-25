@@ -38,15 +38,9 @@
 
 #define LOAD_BATCH 256u
 
-/* Messages from the store at or below this level reach stderr. */
-struct ps_log_ctx {
-    int max_level;
-};
-
 typedef struct tool {
     mq *q;
     mq_config cfg;
-    struct ps_log_ctx log;
 } tool;
 
 static void report(const char *what, int rv)
@@ -54,11 +48,12 @@ static void report(const char *what, int rv)
     fprintf(stderr, "mq: %s: %s\n", what, strerror(rv));
 }
 
-static void log_line(ps_log_ctx *ctx, int level, const char *msg)
+static void log_line(ps_logger_ctx *ctx, ps_log_level level, const char *fmt, va_list ap)
 {
-    if (level <= ctx->max_level) {
-        fprintf(stderr, "mq: store: %s\n", msg);
-    }
+    PS_UNUSED(ctx, level);
+    char msg[512];
+    vsnprintf(msg, sizeof(msg), fmt, ap);
+    fprintf(stderr, "mq: store: %s\n", msg);
 }
 
 /* Parses a whole decimal number. */
@@ -832,12 +827,12 @@ int main(int argc, char **argv)
 {
     tool t = {0};
     mq_config_init(&t.cfg);
-    t.log.max_level = PS_LOG_WARN;
+    ps_log_level max_level = PS_LOG_LEVEL_WARN;
     bool checkpoint = true;
     int i = 1;
     for (; i < argc && argv[i][0] == '-'; i++) {
         if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
-            t.log.max_level = PS_LOG_INFO;
+            max_level = PS_LOG_LEVEL_INFO;
         } else if (strcmp(argv[i], "--no-checkpoint") == 0) {
             checkpoint = false;
         } else if (
@@ -870,8 +865,7 @@ int main(int argc, char **argv)
         return EXIT_ERROR;
     }
 
-    t.cfg.log = log_line;
-    t.cfg.log_ctx = &t.log;
+    t.cfg.logger = (ps_logger) {.max_level = max_level, .write = log_line};
     int rv = mq_open(dir, &t.cfg, cmd->creates ? PS_CREATE : 0, &t.q);
     if (rv == ENOENT && !cmd->creates) {
         fprintf(stderr, "mq: no queue in %s (push, load, sub or bench creates one)\n", dir);

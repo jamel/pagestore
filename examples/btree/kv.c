@@ -58,11 +58,6 @@
 #define EXIT_NOT_FOUND 1
 #define EXIT_ERROR 2
 
-/* Messages from the store at or below this level reach stderr. */
-struct ps_log_ctx {
-    int max_level;
-};
-
 typedef struct kv {
     ps_store *store;
     ps_wal *wal;
@@ -70,7 +65,6 @@ typedef struct kv {
     bool tree_open;
     ps_lsn next_lsn;
     u8 *rec; /* holds one encoded record */
-    struct ps_log_ctx log;
 } kv;
 
 static void report(const char *what, int rv)
@@ -78,11 +72,12 @@ static void report(const char *what, int rv)
     fprintf(stderr, "kv: %s: %s\n", what, strerror(rv));
 }
 
-static void log_line(ps_log_ctx *ctx, int level, const char *msg)
+static void log_line(ps_logger_ctx *ctx, ps_log_level level, const char *fmt, va_list ap)
 {
-    if (level <= ctx->max_level) {
-        fprintf(stderr, "kv: store: %s\n", msg);
-    }
+    PS_UNUSED(ctx, level);
+    char msg[512];
+    vsnprintf(msg, sizeof(msg), fmt, ap);
+    fprintf(stderr, "kv: store: %s\n", msg);
 }
 
 /* ---- log records --------------------------------------------------------- */
@@ -219,11 +214,12 @@ static int kv_close(kv *db, bool checkpoint)
 static int kv_open(kv *db, const char *dir, bool create, bool verbose)
 {
     memset(db, 0, sizeof(*db));
-    db->log.max_level = verbose ? PS_LOG_INFO : PS_LOG_WARN;
     ps_config cfg;
     ps_config_init(&cfg);
-    cfg.log = log_line;
-    cfg.log_ctx = &db->log;
+    cfg.logger = (ps_logger) {
+        .max_level = verbose ? PS_LOG_LEVEL_INFO : PS_LOG_LEVEL_WARN,
+        .write = log_line,
+    };
     int rv = ps_open(dir, &cfg, create ? PS_CREATE : 0, &db->store);
     if (rv == ENOENT && !create) {
         fprintf(stderr, "kv: no store in %s (put or load creates one)\n", dir);

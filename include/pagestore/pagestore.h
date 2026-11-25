@@ -6,7 +6,7 @@
  * memory until ps_checkpoint makes them durable.
  *
  * Functions returning int use 0 for success and a positive errno on failure.
- * Detected API misuse returns EINVAL and logs at PS_LOG_ERROR in every build.
+ * Detected API misuse returns EINVAL and logs at PS_LOG_LEVEL_ERROR in every build.
  *
  * An operation that allocates a page and writes its first payload byte:
  *
@@ -25,6 +25,7 @@
  *     ps_op_commit(s);
  */
 
+#include "pagestore/logger.h" // IWYU pragma: export
 #include "pagestore/types.h" // IWYU pragma: export
 
 PS_EXTERN_C_BEGIN
@@ -50,18 +51,6 @@ PS_STATIC_ASSERT(sizeof(ps_page) == PS_PAGE_HEADER_SIZE, "ps_page must be 24 byt
 /* ps_page.magic of a bitmap page ("BMSP" little-endian). */
 #define PS_BITMAP_MAGIC 0x50534D42u
 
-/* Log levels passed to ps_config.log. */
-#define PS_LOG_ERROR 0
-#define PS_LOG_WARN 1
-#define PS_LOG_INFO 2
-#define PS_LOG_DEBUG 3
-
-/* Define struct ps_log_ctx to pass state to the log callback. */
-typedef struct ps_log_ctx ps_log_ctx;
-
-/* Receives one formatted log line (no trailing newline). May be called from any thread. */
-typedef void (*ps_log_fn)(ps_log_ctx *ctx, int level, const char *msg);
-
 typedef struct ps_config {
     u32 page_size; /* 0 uses 4096 on create or the stored size on open */
     usize cache_size; /* bytes of frame memory, at least 16 frames */
@@ -69,16 +58,13 @@ typedef struct ps_config {
     u32 snapshot_pin_cap; /* pins per snapshot */
     u32 max_pinned_pct; /* share of the cache all snapshots may pin, 1..100 */
     /*
-     * The thread wakes on a request, a frame wait, the dirty watermark or
-     * the timer. It logs failures at PS_LOG_ERROR and starts retrying after
-     * 100 ms, doubling the delay up to 10 s. With the thread disabled, a
-     * frame request that needs a checkpoint returns EAGAIN.
+     * The background checkpointer retries failures with backoff. Without it,
+     * a frame request that needs a checkpoint returns EAGAIN.
      */
     bool checkpoint_thread;
     u32 checkpoint_interval_ms; /* 0 = no timer */
     u32 checkpoint_dirty_pct; /* dirty watermark, 0..100 */
-    ps_log_fn log; /* optional */
-    ps_log_ctx *log_ctx;
+    ps_logger logger; /* copied at open, zeroed is off */
     const ps_vfs *vfs; /* copied at open, NULL selects POSIX */
 } ps_config;
 
@@ -119,16 +105,11 @@ ps_lsn ps_committed_lsn(const ps_store *s);
 ps_lsn ps_durable_lsn(const ps_store *s);
 
 /*
- * op_frames includes copies, allocations, distinct ps_read pins and a
- * spare per group touched or created. A copy also holds its committed
- * version in memory. Reading a committed page and then writing it costs
- * two frames in total. op_limit leaves room for the snapshot budget
- * and one resident bitmap per group. A call beyond the limit returns ENOBUFS.
- *
- * The cache must leave at least four frames for an operation. Open returns
- * EINVAL below that floor. When a full store would cross it by adding a
- * group, ps_alloc logs at PS_LOG_ERROR and returns ENOBUFS. Reopen with a
- * larger cache to add groups.
+ * op_frames counts copies, allocations, distinct ps_read pins and a spare
+ * per group touched. A copy also keeps its committed version, so reading
+ * and then writing a page costs two frames. A call past op_limit returns
+ * ENOBUFS. Open returns EINVAL if the cache leaves fewer than four frames
+ * per operation, and ps_alloc returns ENOBUFS if adding a group would.
  */
 typedef struct ps_pressure {
     u32 op_frames; /* frames held by the current operation */

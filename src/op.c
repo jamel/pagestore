@@ -156,9 +156,9 @@ bool ps_op_in_progress(ps_store *s)
 static void log_not_owner(ps_store *s, op_owner_state st, const char *what)
 {
     if (st == OP_NONE) {
-        ps_log(s, PS_LOG_ERROR, "%s outside an operation", what);
+        PS_LOG_ERROR(&s->logger, "%s outside an operation", what);
     } else {
-        ps_log(s, PS_LOG_ERROR, "%s from a thread that does not own the operation", what);
+        PS_LOG_ERROR(&s->logger, "%s from a thread that does not own the operation", what);
     }
 }
 
@@ -180,7 +180,7 @@ static int op_enter(ps_store *s, const char *what)
 static int check_user_id(ps_store *s, ps_page_id id, const char *what)
 {
     if (id.raw == UINT32_MAX || ps_is_bitmap_id(s, id)) {
-        ps_log(s, PS_LOG_ERROR, "%s: page %u is not a user page", what, id.raw);
+        PS_LOG_ERROR(&s->logger, "%s: page %u is not a user page", what, id.raw);
         return EINVAL;
     }
     return 0;
@@ -392,9 +392,8 @@ int ps_op_begin(ps_store *s, ps_lsn lsn)
     if (atomic_load_explicit(&s->op_active, memory_order_relaxed) &&
         pthread_equal(s->op_owner, pthread_self())) {
         pthread_mutex_unlock(&s->gate_mu);
-        ps_log(
-            s,
-            PS_LOG_ERROR,
+        PS_LOG_ERROR(
+            &s->logger,
             "ps_op_begin(%llu): this thread already has an operation",
             (unsigned long long) lsn.raw);
         return EINVAL;
@@ -408,9 +407,8 @@ int ps_op_begin(ps_store *s, ps_lsn lsn)
         ps_lsn_from(atomic_load_explicit(&s->committed_lsn, memory_order_acquire));
     if (ps_lsn_le(lsn, committed)) {
         pthread_mutex_unlock(&s->gate_mu);
-        ps_log(
-            s,
-            PS_LOG_ERROR,
+        PS_LOG_ERROR(
+            &s->logger,
             "ps_op_begin(%llu): LSN must exceed the committed LSN %llu",
             (unsigned long long) lsn.raw,
             (unsigned long long) committed.raw);
@@ -698,7 +696,7 @@ static int writer_head(
         ps_vnode *h = e != NULL ? e->head : NULL;
         if (h != NULL && h->kind == PS_V_FREE) {
             ps_unlatch(s->pt, id);
-            ps_log(s, PS_LOG_ERROR, "%s: page %u is freed", what, id.raw);
+            PS_LOG_ERROR(&s->logger, "%s: page %u is freed", what, id.raw);
             return EINVAL;
         }
         if (h != NULL && (h->flags & PS_VF_IN_OP) != 0) {
@@ -714,7 +712,7 @@ static int writer_head(
              */
             ps_unlatch(s->pt, id);
             if (!committed_allocated(s, id)) {
-                ps_log(s, PS_LOG_ERROR, "%s: page %u is not allocated", what, id.raw);
+                PS_LOG_ERROR(&s->logger, "%s: page %u is not allocated", what, id.raw);
                 return EINVAL;
             }
             checked = true;
@@ -921,9 +919,8 @@ int ps_alloc(ps_store *s, ps_page_id *id_out, ps_page **page)
     rv = ps_allocator_next(s->alloc, bitmap_get, &gc, &id, &new_group);
     if (rv == ENOBUFS && !gc.no_room) {
         /* The allocator's group limit (set at open): another bitmap page would not fit. */
-        ps_log(
-            s,
-            PS_LOG_ERROR,
+        PS_LOG_ERROR(
+            &s->logger,
             "ps_alloc: every page of the %u groups is in use and a new group's bitmap page "
             "would leave an operation fewer than %u of the %u cache frames; reopen with a "
             "larger cache",
@@ -1072,7 +1069,7 @@ int ps_free(ps_store *s, ps_page_id id)
             1 :
             0;
         if (rv == 0 && h != NULL && h->kind == PS_V_FREE) {
-            ps_log(s, PS_LOG_ERROR, "ps_free: page %u is already freed", id.raw);
+            PS_LOG_ERROR(&s->logger, "ps_free: page %u is already freed", id.raw);
             ps_unlatch(s->pt, id);
             rv = EINVAL;
         } else if (rv == 0 && !op_room(s, held)) {
@@ -1107,7 +1104,7 @@ int ps_free(ps_store *s, ps_page_id id)
         ps_vnode_delete(s->pt, m);
         ps_vnode_delete(s->pt, b);
         if (rv == EINVAL) {
-            ps_log(s, PS_LOG_ERROR, "ps_free: page %u is not allocated", id.raw);
+            PS_LOG_ERROR(&s->logger, "ps_free: page %u is not allocated", id.raw);
         }
         return rv;
     }

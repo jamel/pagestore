@@ -21,17 +21,19 @@ static u64 next_lsn;
 
 /* ---- log capture ---- */
 
-struct ps_log_ctx {
+struct ps_logger_ctx {
     pthread_mutex_t mu;
     u32 errors; /* ERROR lines */
     u32 ckpt_errors; /* ERROR lines containing "checkpoint" */
     char last_ckpt_error[512];
 };
 
-static void capture_log(ps_log_ctx *lc, int level, const char *msg)
+static void capture_log(ps_logger_ctx *lc, ps_log_level level, const char *fmt, va_list ap)
 {
+    char msg[512];
+    vsnprintf(msg, sizeof(msg), fmt, ap);
     pthread_mutex_lock(&lc->mu);
-    if (level == PS_LOG_ERROR) {
+    if (level == PS_LOG_LEVEL_ERROR) {
         lc->errors++;
         if (strstr(msg, "checkpoint") != NULL) {
             lc->ckpt_errors++;
@@ -41,7 +43,7 @@ static void capture_log(ps_log_ctx *lc, int level, const char *msg)
     pthread_mutex_unlock(&lc->mu);
 }
 
-static ps_log_ctx logs;
+static ps_logger_ctx logs;
 
 static u32 ckpt_errors(void)
 {
@@ -71,8 +73,7 @@ static void open_store(thread_cfg tc)
     logs.ckpt_errors = 0;
     logs.last_ckpt_error[0] = '\0';
     pthread_mutex_unlock(&logs.mu);
-    cfg.log = capture_log;
-    cfg.log_ctx = &logs;
+    cfg.logger = (ps_logger) {.max_level = PS_LOG_LEVEL_DEBUG, .ctx = &logs, .write = capture_log};
     ps_backend be;
     mb_backend(mb, &be);
     T_OK(ps_open_backend(&be, &cfg, PS_CREATE, &s));

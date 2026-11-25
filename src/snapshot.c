@@ -109,9 +109,7 @@ static bool retire_frees_frame(ps_store *s, ps_lsn min)
     return false;
 }
 
-/*
- * Enter with reg_mu held. Release it before calling the log callback.
- */
+/* Enter with reg_mu held. Release it before logging. */
 static void cut_off_unlock(ps_store *s, ps_snapref *r)
 {
     const ps_lsn lsn = r->lsn;
@@ -120,9 +118,8 @@ static void cut_off_unlock(ps_store *s, ps_snapref *r)
     atomic_fetch_add_explicit(&s->snapshots_cut_off, 1, memory_order_relaxed);
     ps_retire_process(s);
     pthread_mutex_unlock(&s->reg_mu);
-    ps_log(
-        s,
-        PS_LOG_INFO,
+    PS_LOG_INFO(
+        &s->logger,
         "snapshot at LSN %llu cut off to free memory",
         (unsigned long long) lsn.raw);
 }
@@ -337,7 +334,7 @@ int ps_snapshot_read(ps_snapshot *sn, ps_page_id id, const ps_page **page)
         return ESTALE;
     }
     if (id.raw == UINT32_MAX || ps_is_bitmap_id(s, id)) {
-        ps_log(s, PS_LOG_ERROR, "ps_snapshot_read: page %u is not a user page", id.raw);
+        PS_LOG_ERROR(&s->logger, "ps_snapshot_read: page %u is not a user page", id.raw);
         return EINVAL;
     }
     const ps_snap_slot *held = find_slot(sn, id);
@@ -354,16 +351,14 @@ int ps_snapshot_read(ps_snapshot *sn, ps_page_id id, const ps_page **page)
     if (rv != 0) {
         budget_give(s, 1);
         if (why == MISUSE_FREED) {
-            ps_log(
-                s,
-                PS_LOG_ERROR,
+            PS_LOG_ERROR(
+                &s->logger,
                 "ps_snapshot_read: page %u is freed at LSN %llu",
                 id.raw,
                 (unsigned long long) sn->ref.lsn.raw);
         } else if (why == MISUSE_NOT_ALLOCATED) {
-            ps_log(
-                s,
-                PS_LOG_ERROR,
+            PS_LOG_ERROR(
+                &s->logger,
                 "ps_snapshot_read: page %u is not allocated at LSN %llu",
                 id.raw,
                 (unsigned long long) sn->ref.lsn.raw);

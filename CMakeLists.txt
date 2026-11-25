@@ -87,6 +87,7 @@ endif()
 
 set(PS_SOURCES
   src/crc32c.c
+  src/logger.c
   src/bitmap.c
   src/vfs_posix.c
   src/format.c

@@ -82,9 +82,8 @@ void ps_store_fail(ps_store *s, int err)
     pthread_cond_signal(&s->ckpt_thread_cv);
     pthread_mutex_unlock(&s->mem_mu);
     char eb[128];
-    ps_log(
-        s,
-        PS_LOG_ERROR,
+    PS_LOG_ERROR(
+        &s->logger,
         "store failed: %s (error %d); reopen to recover",
         ps_strerror(err, eb, sizeof(eb)),
         err);
@@ -229,9 +228,9 @@ static int ckpt_failed(ps_store *s, ps_lsn L, int err, bool fatal, bool began)
     atomic_fetch_add_explicit(&s->checkpoints_failed, 1, memory_order_relaxed);
     /* A background failure has no caller to see it, so log it at ERROR. */
     char eb[128];
-    ps_log(
-        s,
-        fatal || s->ckpt_bg ? PS_LOG_ERROR : PS_LOG_WARN,
+    PS_LOG(
+        &s->logger,
+        fatal || s->ckpt_bg ? PS_LOG_LEVEL_ERROR : PS_LOG_LEVEL_WARN,
         "%scheckpoint at LSN %llu failed: %s (error %d)%s",
         s->ckpt_bg ? "background " : "",
         (unsigned long long) L.raw,
@@ -420,7 +419,7 @@ int ps_checkpoint_run(ps_store *s)
     ps_retire_process(s);
     pthread_mutex_unlock(&s->reg_mu);
     atomic_fetch_add_explicit(&s->checkpoints_run, 1, memory_order_relaxed);
-    ps_log(s, PS_LOG_DEBUG, "checkpoint at LSN %llu: %u pages", (unsigned long long) L.raw, count);
+    PS_LOG_DEBUG(&s->logger, "checkpoint at LSN %llu: %u pages", (unsigned long long) L.raw, count);
 
     if (s->hooks.checkpoint_done != NULL) {
         s->hooks.checkpoint_done(s->hooks.ctx, L);

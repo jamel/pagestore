@@ -7,8 +7,7 @@
 #include "pagestore/vfs.h"
 
 #include <errno.h>
-#include <stdarg.h>
-#include <stdio.h>
+#include <stdio.h> // IWYU pragma: keep (snprintf off glibc)
 #include <stdlib.h>
 #include <string.h>
 
@@ -23,7 +22,7 @@
 #define PS_DEFAULT_PAGE_SIZE 4096u
 #define PS_MIN_FRAMES 16u
 
-/* ---- configuration and logging ------------------------------------------- */
+/* ---- configuration ------------------------------------------------------- */
 
 void ps_config_init(ps_config *cfg)
 {
@@ -36,22 +35,8 @@ void ps_config_init(ps_config *cfg)
     cfg->checkpoint_thread = true;
     cfg->checkpoint_interval_ms = 5000;
     cfg->checkpoint_dirty_pct = 40;
-    cfg->log = NULL;
-    cfg->log_ctx = NULL;
+    cfg->logger = (ps_logger) {0};
     cfg->vfs = NULL;
-}
-
-void ps_log(ps_store *s, int level, const char *fmt, ...)
-{
-    if (s->cfg.log == NULL) {
-        return;
-    }
-    char msg[512];
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(msg, sizeof(msg), fmt, ap);
-    va_end(ap);
-    s->cfg.log(s->cfg.log_ctx, level, msg);
 }
 
 const char *ps_strerror(int err, char *buf, usize n)
@@ -183,9 +168,8 @@ static int check_op_limit(ps_store *s, u32 num_groups)
     if (need <= s->total_frames) {
         return 0;
     }
-    ps_log(
-        s,
-        PS_LOG_ERROR,
+    PS_LOG_ERROR(
+        &s->logger,
         "cache of %u frames too small: %u bitmap pages and %u snapshot pins (max_pinned_pct %u) "
         "leave fewer than %u frames for an operation",
         s->total_frames,
@@ -236,7 +220,7 @@ static int load_groups(ps_store *s, u32 num_groups)
             const u8 *bits = (const u8 *) ps_node_page(s, v) + PS_PAGE_HEADER_SIZE;
             rv = ps_allocator_init_group(s->alloc, g, bits);
             if (rv == EINVAL) {
-                ps_log(s, PS_LOG_ERROR, "bitmap page %u: its own bit is clear", id.raw);
+                PS_LOG_ERROR(&s->logger, "bitmap page %u: its own bit is clear", id.raw);
                 rv = EBADMSG;
             }
             ps_node_unpin(s, e, v);
@@ -276,6 +260,7 @@ static int open_store(
     }
     s->cfg = *cfg;
     s->cfg.vfs = NULL;
+    s->logger = cfg->logger;
     if (cfg->vfs != NULL) {
         s->vfs = *cfg->vfs;
     } else {
@@ -316,9 +301,8 @@ static int open_store(
         rv = ENOENT; /* an interrupted format */
     }
     if (rv == 0 && cfg->page_size != 0 && cfg->page_size != info.page_size) {
-        ps_log(
-            s,
-            PS_LOG_ERROR,
+        PS_LOG_ERROR(
+            &s->logger,
             "page size %u does not match the stored %u",
             cfg->page_size,
             info.page_size);
@@ -407,6 +391,11 @@ const char *ps_store_dir(const ps_store *s)
 const ps_vfs *ps_store_vfs(const ps_store *s)
 {
     return &s->vfs;
+}
+
+const ps_logger *ps_store_logger(const ps_store *s)
+{
+    return &s->logger;
 }
 
 void ps_close(ps_store *s)

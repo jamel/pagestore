@@ -24,8 +24,7 @@
 
 /*
  * Take the store's ckpt_mu (when called from a checkpoint), then io_mu,
- * then buf_mu. Call into the store for logging only after releasing both
- * WAL locks.
+ * then buf_mu. Log only after releasing both WAL locks.
  *
  * appended includes buffered records. written has reached the OS and
  * synced has reached durable storage. Check synced under io_mu so callers
@@ -41,7 +40,8 @@ struct ps_log_hooks_ctx {
 };
 
 struct ps_wal {
-    ps_store *store; /* for logging while the store is open */
+    ps_store *store;
+    ps_logger logger; /* the store's, copied at open */
     ps_vfs vfs;
     ps_wal_config cfg;
     char *dir;
@@ -211,9 +211,8 @@ static bool is_failed(ps_wal *w)
 static void log_failure(ps_wal *w, const char *what, int err)
 {
     char buf[128];
-    ps_log(
-        w->store,
-        PS_LOG_ERROR,
+    PS_LOG_ERROR(
+        &w->logger,
         "WAL %s failed: %s (error %d); the WAL is failed until reopen",
         what,
         ps_strerror(err, buf, sizeof(buf)),
@@ -534,9 +533,8 @@ int ps_wal_truncate(ps_wal *w, ps_lsn lsn)
     pthread_mutex_unlock(&w->io_mu);
     if (rv != 0) {
         char buf[128];
-        ps_log(
-            w->store,
-            PS_LOG_WARN,
+        PS_LOG_WARN(
+            &w->logger,
             "WAL truncate: deleting segment %016llx failed: %s (error %d)",
             (unsigned long long) seq,
             ps_strerror(rv, buf, sizeof(buf)),
@@ -797,9 +795,8 @@ static int cmp_u64(const void *a, const void *b)
 static int open_fresh(ps_wal *w)
 {
     if (!ps_lsn_is_none(ps_durable_lsn(w->store))) {
-        ps_log(
-            w->store,
-            PS_LOG_ERROR,
+        PS_LOG_ERROR(
+            &w->logger,
             "WAL %s has no segments but the store's durable LSN is %llu: the log was lost",
             w->dir,
             (unsigned long long) ps_durable_lsn(w->store).raw);
@@ -839,9 +836,8 @@ static int find_anchor(
         int rv = scan_open(&w->vfs, seg_path(w, w->path, segs[i], false), sc, segs[i], &h);
         scan_close(&w->vfs, sc);
         if (rv == EBADMSG) {
-            ps_log(
-                w->store,
-                PS_LOG_ERROR,
+            PS_LOG_ERROR(
+                &w->logger,
                 "WAL %s: segment %016llx has a bad header",
                 w->dir,
                 (unsigned long long) segs[i]);
@@ -858,9 +854,8 @@ static int find_anchor(
             break;
         }
         if (segs[i - 1] != segs[i] - 1) {
-            ps_log(
-                w->store,
-                PS_LOG_ERROR,
+            PS_LOG_ERROR(
+                &w->logger,
                 "WAL %s: segment %016llx is missing (records after the durable LSN %llu are lost)",
                 w->dir,
                 (unsigned long long) (segs[i] - 1),
@@ -868,9 +863,8 @@ static int find_anchor(
             return EBADMSG;
         }
     }
-    ps_log(
-        w->store,
-        PS_LOG_ERROR,
+    PS_LOG_ERROR(
+        &w->logger,
         "WAL %s: no segment starts at or before the durable LSN %llu (oldest %016llx starts after %llu)",
         w->dir,
         (unsigned long long) d.raw,
@@ -896,9 +890,8 @@ static int validate(
 {
     for (usize i = anchor; i < n; i++) {
         if (i > anchor && !ps_lsn_eq(prev[i], last[i - 1])) {
-            ps_log(
-                w->store,
-                PS_LOG_ERROR,
+            PS_LOG_ERROR(
+                &w->logger,
                 "WAL %s: segment %016llx starts after LSN %llu but segment %016llx ends at LSN %llu",
                 w->dir,
                 (unsigned long long) segs[i],
@@ -927,9 +920,8 @@ static int validate(
         last[i] = sc->last;
         scan_close(&w->vfs, sc);
         if (rv == EBADMSG) {
-            ps_log(
-                w->store,
-                PS_LOG_ERROR,
+            PS_LOG_ERROR(
+                &w->logger,
                 "WAL %s: segment %016llx has a bad header",
                 w->dir,
                 (unsigned long long) segs[i]);
@@ -938,9 +930,8 @@ static int validate(
             return rv;
         }
         if (i + 1 < n && off != sz) {
-            ps_log(
-                w->store,
-                PS_LOG_ERROR,
+            PS_LOG_ERROR(
+                &w->logger,
                 "WAL %s: sealed segment %016llx has an invalid record at offset %llu (size %llu)",
                 w->dir,
                 (unsigned long long) segs[i],
@@ -970,9 +961,8 @@ static int seal_at_open(ps_wal *w, u64 seq, u64 end, u64 size)
     }
     if (rv != 0) {
         char buf[128];
-        ps_log(
-            w->store,
-            PS_LOG_ERROR,
+        PS_LOG_ERROR(
+            &w->logger,
             "WAL %s: sealing segment %016llx failed: %s (error %d)",
             w->dir,
             (unsigned long long) seq,
@@ -1009,7 +999,7 @@ static int open_existing(ps_wal *w, u64 *segs, usize n)
     scan_free(&w->vfs, &sc);
     const u64 newest = segs[n - 1];
     if (rv == 0 && newest == UINT64_MAX) {
-        ps_log(w->store, PS_LOG_ERROR, "WAL %s: segment sequence numbers exhausted", w->dir);
+        PS_LOG_ERROR(&w->logger, "WAL %s: segment sequence numbers exhausted", w->dir);
         rv = EBADMSG;
     }
     /* Allocate before touching retained segments so ENOMEM here leaves them alone. */
@@ -1034,9 +1024,8 @@ static int open_existing(ps_wal *w, u64 *segs, usize n)
     }
     const ps_lsn last_lsn = rv == 0 ? last[n - 1] : PS_LSN_NONE;
     if (rv == 0 && ps_lsn_lt(last_lsn, d)) {
-        ps_log(
-            w->store,
-            PS_LOG_WARN,
+        PS_LOG_WARN(
+            &w->logger,
             "WAL %s: the last valid LSN %llu is below the store's durable LSN %llu "
             "(operations not logged, or the newest segments were lost)",
             w->dir,
@@ -1061,9 +1050,8 @@ static int open_existing(ps_wal *w, u64 *segs, usize n)
         w->written = last_lsn;
         w->synced = last_lsn;
         w->appended = last_lsn;
-        ps_log(
-            w->store,
-            PS_LOG_INFO,
+        PS_LOG_INFO(
+            &w->logger,
             "WAL %s opened: segments %016llx..%016llx, last LSN %llu, durable LSN %llu",
             w->dir,
             (unsigned long long) segs[anchor],
@@ -1110,11 +1098,13 @@ int ps_wal_open(ps_store *store, const char *waldir, const ps_wal_config *cfg, p
         ps_wal_config_init(&c);
     }
     if (check_config(&c) != 0) {
-        ps_log(store, PS_LOG_ERROR, "WAL config out of range");
+        PS_LOG_ERROR(ps_store_logger(store), "WAL config out of range");
         return EINVAL;
     }
     if (waldir == NULL && ps_store_dir(store) == NULL) {
-        ps_log(store, PS_LOG_ERROR, "WAL: a NULL waldir needs a store opened with ps_open");
+        PS_LOG_ERROR(
+            ps_store_logger(store),
+            "WAL: a NULL waldir needs a store opened with ps_open");
         return EINVAL;
     }
 
@@ -1124,6 +1114,7 @@ int ps_wal_open(ps_store *store, const char *waldir, const ps_wal_config *cfg, p
     }
     w->store = store;
     w->vfs = *ps_store_vfs(store);
+    w->logger = *ps_store_logger(store);
     w->cfg = c;
     w->hctx.w = w;
     atomic_init(&w->failed, false);
@@ -1206,7 +1197,7 @@ int ps_wal_iter_open(ps_wal *w, ps_lsn from_lsn, ps_wal_iter **out)
         return EINVAL;
     }
     if (appending(w)) {
-        ps_log(w->store, PS_LOG_ERROR, "ps_wal_iter_open: the WAL was appended to since open");
+        PS_LOG_ERROR(&w->logger, "ps_wal_iter_open: the WAL was appended to since open");
         return EINVAL;
     }
     ps_wal_iter *it = calloc(1, sizeof(*it));
@@ -1243,9 +1234,8 @@ int ps_wal_iter_open(ps_wal *w, ps_lsn from_lsn, ps_wal_iter **out)
 
 static int iter_changed(ps_wal_iter *it, const char *what)
 {
-    ps_log(
-        it->w->store,
-        PS_LOG_ERROR,
+    PS_LOG_ERROR(
+        &it->w->logger,
         "WAL %s: segment %016llx %s since open",
         it->w->dir,
         (unsigned long long) it->seq,
@@ -1257,7 +1247,7 @@ int ps_wal_iter_next(ps_wal_iter *it, ps_lsn *lsn, const void **buf, usize *len)
 {
     ps_wal *w = it->w;
     if (appending(w)) {
-        ps_log(w->store, PS_LOG_ERROR, "ps_wal_iter_next: the WAL was appended to since open");
+        PS_LOG_ERROR(&w->logger, "ps_wal_iter_next: the WAL was appended to since open");
         return EINVAL;
     }
     while (!it->done) {

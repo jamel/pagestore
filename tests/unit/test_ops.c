@@ -10,6 +10,7 @@
 #include <errno.h>
 #include <pthread.h>
 #include <stdatomic.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -70,14 +71,16 @@ static void check_text(ps_page_id id, const char *text)
     T_EQ(strcmp((const char *) p + HDR, text), 0);
 }
 
-struct ps_log_ctx {
+struct ps_logger_ctx {
     atomic_int errors;
 };
 
-static void count_log(ps_log_ctx *ctx, int level, const char *msg)
+/* Formats every message so the sanitizers check its arguments. */
+static void count_log(ps_logger_ctx *ctx, ps_log_level level, const char *fmt, va_list ap)
 {
-    PS_UNUSED(msg);
-    if (level == PS_LOG_ERROR) {
+    char msg[512];
+    vsnprintf(msg, sizeof(msg), fmt, ap);
+    if (level == PS_LOG_LEVEL_ERROR) {
         atomic_fetch_add(&ctx->errors, 1);
     }
 }
@@ -94,7 +97,7 @@ static void test_config_defaults(void)
     T_EQ(c.checkpoint_thread, true);
     T_EQ(c.checkpoint_interval_ms, 5000);
     T_EQ(c.checkpoint_dirty_pct, 40);
-    T_CHECK(c.log == NULL && c.log_ctx == NULL && c.vfs == NULL);
+    T_CHECK(c.logger.ctx == NULL && c.logger.write == NULL && c.vfs == NULL);
 }
 
 static void test_bad_config(void)
@@ -223,11 +226,10 @@ static void test_lsn_must_increase(void)
 static void test_nested_begin_einval(void)
 {
     mb = mb_create();
-    ps_log_ctx lc;
+    ps_logger_ctx lc;
     atomic_init(&lc.errors, 0);
     ps_config cfg = mb_config(64);
-    cfg.log = count_log;
-    cfg.log_ctx = &lc;
+    cfg.logger = (ps_logger) {.max_level = PS_LOG_LEVEL_DEBUG, .ctx = &lc, .write = count_log};
     ps_backend be;
     mb_backend(mb, &be);
     T_OK(ps_open_backend(&be, &cfg, PS_CREATE, &s));
@@ -1035,11 +1037,10 @@ static void *intruder(void *argp)
 static void test_non_owner_einval(void)
 {
     mb = mb_create();
-    ps_log_ctx lc;
+    ps_logger_ctx lc;
     atomic_init(&lc.errors, 0);
     ps_config cfg = mb_config(64);
-    cfg.log = count_log;
-    cfg.log_ctx = &lc;
+    cfg.logger = (ps_logger) {.max_level = PS_LOG_LEVEL_DEBUG, .ctx = &lc, .write = count_log};
     ps_backend be;
     mb_backend(mb, &be);
     T_OK(ps_open_backend(&be, &cfg, PS_CREATE, &s));

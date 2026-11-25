@@ -12,6 +12,7 @@
 #include <errno.h>
 #include <pthread.h>
 #include <stdatomic.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -695,29 +696,30 @@ static void test_chunked_job(void)
 }
 
 /* Bitmap pages take a frame each: open refuses a cache they leave too small. */
-struct ps_log_ctx {
+struct ps_logger_ctx {
     atomic_int too_small;
     atomic_int group; /* ps_alloc refused a new group */
 };
 
-static void log_fn(ps_log_ctx *ctx, int level, const char *msg)
+static void log_fn(ps_logger_ctx *ctx, ps_log_level level, const char *fmt, va_list ap)
 {
-    if (level == PS_LOG_ERROR && strstr(msg, "too small") != NULL) {
+    char msg[512];
+    vsnprintf(msg, sizeof(msg), fmt, ap);
+    if (level == PS_LOG_LEVEL_ERROR && strstr(msg, "too small") != NULL) {
         atomic_fetch_add(&ctx->too_small, 1);
     }
-    if (level == PS_LOG_ERROR && strstr(msg, "larger cache") != NULL) {
+    if (level == PS_LOG_LEVEL_ERROR && strstr(msg, "larger cache") != NULL) {
         atomic_fetch_add(&ctx->group, 1);
     }
 }
 
 static void test_open_cache_too_small(void)
 {
-    ps_log_ctx lc;
+    ps_logger_ctx lc;
     atomic_init(&lc.too_small, 0);
     atomic_init(&lc.group, 0);
     ps_config cfg = mb_config(FRAMES);
-    cfg.log = log_fn;
-    cfg.log_ctx = &lc;
+    cfg.logger = (ps_logger) {.max_level = PS_LOG_LEVEL_DEBUG, .ctx = &lc, .write = log_fn};
     ps_backend be;
 
     /* Reserving 12 pins and a bitmap leaves only three frames for the writer. */
@@ -777,12 +779,11 @@ static void inject_full_groups(u32 ngroups)
  */
 static void test_group_limit(void)
 {
-    ps_log_ctx lc;
+    ps_logger_ctx lc;
     atomic_init(&lc.too_small, 0);
     atomic_init(&lc.group, 0);
     ps_config cfg = mb_config(32);
-    cfg.log = log_fn;
-    cfg.log_ctx = &lc;
+    cfg.logger = (ps_logger) {.max_level = PS_LOG_LEVEL_DEBUG, .ctx = &lc, .write = log_fn};
     inject_full_groups(20);
     ps_backend be;
     mb_backend(mb, &be);

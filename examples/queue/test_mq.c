@@ -24,12 +24,12 @@
 #include <string.h>
 #include <time.h>
 
-static void log_line(ps_log_ctx *ctx, int level, const char *msg)
+static void log_line(ps_logger_ctx *ctx, ps_log_level level, const char *fmt, va_list ap)
 {
-    PS_UNUSED(ctx);
-    if (level <= PS_LOG_WARN) {
-        fprintf(stderr, "store: %s\n", msg);
-    }
+    PS_UNUSED(ctx, level);
+    char msg[512];
+    vsnprintf(msg, sizeof(msg), fmt, ap);
+    fprintf(stderr, "store: %s\n", msg);
 }
 
 static mq *open_queue(const char *dir, u64 cap)
@@ -38,7 +38,7 @@ static mq *open_queue(const char *dir, u64 cap)
     mq_config_init(&cfg);
     cfg.cap = cap;
     cfg.cache_size = (usize) 4 << 20;
-    cfg.log = log_line;
+    cfg.logger = (ps_logger) {.max_level = PS_LOG_LEVEL_WARN, .write = log_line};
     mq *q;
     T_OK(mq_open(dir, &cfg, PS_CREATE, &q));
     return q;
@@ -324,7 +324,7 @@ static void test_mq_cut_off(void)
     mq_config_init(&cfg);
     cfg.cache_size = (usize) 24 * 4096;
     cfg.max_batch = 4096;
-    cfg.log = log_line;
+    cfg.logger = (ps_logger) {.max_level = PS_LOG_LEVEL_WARN, .write = log_line};
     mq *q;
     T_OK(mq_open(dir, &cfg, PS_CREATE, &q));
     T_OK(mq_subscribe(q, "r", MQ_OLDEST));

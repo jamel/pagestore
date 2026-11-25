@@ -258,14 +258,16 @@ static void bg_start_blocked(bg_ckpt *b, ps_log_hooks_ctx *h)
     wait_flushes(h, n + 1);
 }
 
-struct ps_log_ctx {
+struct ps_logger_ctx {
     atomic_int errors;
 };
 
-static void count_log(ps_log_ctx *ctx, int level, const char *msg)
+/* Formats every message so the sanitizers check its arguments. */
+static void count_log(ps_logger_ctx *ctx, ps_log_level level, const char *fmt, va_list ap)
 {
-    PS_UNUSED(msg);
-    if (level == PS_LOG_ERROR) {
+    char msg[512];
+    vsnprintf(msg, sizeof(msg), fmt, ap);
+    if (level == PS_LOG_LEVEL_ERROR) {
         atomic_fetch_add(&ctx->errors, 1);
     }
 }
@@ -661,10 +663,10 @@ static void test_realloc_during_checkpoint(void)
 static void test_hooks_order_and_failure(void)
 {
     open_store(64);
-    ps_log_ctx lc;
+    ps_logger_ctx lc;
     atomic_init(&lc.errors, 0);
-    s->cfg.log = count_log; /* Count only messages after format. */
-    s->cfg.log_ctx = &lc;
+    /* Count only messages after format. */
+    s->logger = (ps_logger) {.max_level = PS_LOG_LEVEL_DEBUG, .ctx = &lc, .write = count_log};
     ps_log_hooks_ctx h;
     hooks_init(&h);
     set_hooks(&h);

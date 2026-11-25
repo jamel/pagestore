@@ -104,8 +104,9 @@ typedef struct ps_op {
 } ps_op;
 
 struct ps_store {
-    ps_config cfg; /* See vfs for the store's VFS copy. */
+    ps_config cfg; /* the store's own copies are vfs and logger */
     ps_backend be;
+    ps_logger logger;
     /* The WAL uses the same VFS as the store. */
     ps_vfs vfs;
     char *dir; /* owned path from ps_open, NULL for ps_open_backend */
@@ -209,9 +210,8 @@ struct ps_store {
  */
 const char *ps_store_dir(const ps_store *s);
 const ps_vfs *ps_store_vfs(const ps_store *s);
-
-/* Sends a formatted message to the configured log callback, if any. */
-void ps_log(ps_store *s, int level, const char *fmt, ...) PS_PRINTF(3, 4);
+/* The WAL copies the store's logger at open. */
+const ps_logger *ps_store_logger(const ps_store *s);
 
 /* Thread-safe strerror: the message for err, in buf (n bytes) or a static string. */
 const char *ps_strerror(int err, char *buf, usize n);
@@ -316,7 +316,7 @@ int ps_checkpoint_run(ps_store *s);
 
 /*
  * Wakes frame waiters with EIO and stops further checkpoints. Takes mem_mu
- * and calls the log callback. Keep reg_mu, page latches and mem_mu free.
+ * and logs. Keep reg_mu, page latches and mem_mu free.
  */
 void ps_store_fail(ps_store *s, int err);
 

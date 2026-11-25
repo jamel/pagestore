@@ -648,8 +648,7 @@ static int open_store(mq *q, const char *dir, const mq_config *cfg, u32 flags)
     }
     pc.checkpoint_interval_ms = cfg->checkpoint_interval_ms;
     pc.vfs = cfg->vfs;
-    pc.log = cfg->log;
-    pc.log_ctx = cfg->log_ctx;
+    pc.logger = cfg->logger;
     int rv = ps_open(dir, &pc, flags, &q->store);
     if (rv != 0) {
         q->store = NULL;

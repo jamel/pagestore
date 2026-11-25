@@ -18,20 +18,20 @@
 static int check_page(ps_store *s, ps_page_id id, ps_page *p)
 {
     if (!ps_page_id_eq(p->id, id)) {
-        ps_log(s, PS_LOG_ERROR, "page %u: header has id %u", id.raw, p->id.raw);
+        PS_LOG_ERROR(&s->logger, "page %u: header has id %u", id.raw, p->id.raw);
         return EBADMSG;
     }
     const u32 stored = p->checksum;
     p->checksum = 0; /* The CRC includes this field as zero, as it is in memory. */
     const u32 crc = ps_crc32c(0, p, s->page_size);
     if (crc != stored) {
-        ps_log(s, PS_LOG_ERROR, "page %u: checksum mismatch", id.raw);
+        PS_LOG_ERROR(&s->logger, "page %u: checksum mismatch", id.raw);
         return EBADMSG;
     }
     const bool bitmap = ps_is_bitmap_id(s, id);
     const bool flagged = (p->flags & PS_PAGE_FLAG_BITMAP) != 0;
     if (bitmap != flagged || (bitmap && p->magic != PS_BITMAP_MAGIC)) {
-        ps_log(s, PS_LOG_ERROR, "page %u: bad bitmap flag or magic", id.raw);
+        PS_LOG_ERROR(&s->logger, "page %u: bad bitmap flag or magic", id.raw);
         return EBADMSG;
     }
     return 0;

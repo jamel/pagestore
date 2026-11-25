@@ -67,8 +67,7 @@ typedef struct mq_config {
     usize cache_size; /* 0 uses the store default */
     u32 checkpoint_interval_ms; /* 0 turns off the timer */
     const ps_vfs *vfs; /* NULL selects POSIX */
-    ps_log_fn log; /* optional */
-    ps_log_ctx *log_ctx;
+    ps_logger logger; /* zeroed is off */
 } mq_config;
 
 /* Defaults to a cap of one million messages and 1 MiB batches. */
