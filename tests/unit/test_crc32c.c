@@ -73,10 +73,9 @@ static void test_unaligned_input(void)
         N = 1000,
         PAD = 16
     };
-    u8 *raw = malloc(N + PAD);
+    u8 *raw = t_malloc(N + PAD);
     u64 aligned_store[(N + 7) / 8];
     u8 *aligned = (u8 *) aligned_store;
-    T_CHECK(raw != NULL);
 
     fill_pattern(raw, N + PAD);
     for (usize off = 1; off < 8; off++) {

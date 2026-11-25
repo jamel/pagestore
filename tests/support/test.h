@@ -137,6 +137,14 @@ PS_NORETURN void t_fail_mem(
 
 #include <string.h> // IWYU pragma: keep
 
+/*
+ * malloc, calloc and realloc that abort the test when memory runs out.
+ * A size of 0 still returns a pointer that must be freed.
+ */
+void *t_malloc(usize n);
+void *t_calloc(usize count, usize size);
+void *t_realloc(void *p, usize n);
+
 /* Reads PS_TEST_SCALE. Values outside 1..1000000 fall back to 1. */
 u32 t_scale(void);
 

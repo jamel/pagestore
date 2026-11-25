@@ -174,8 +174,7 @@ void w_gen(rng *r, const model *m, u64 lsn, u32 max_actions, w_op *out)
     T_CHECK(lsn > model_last_lsn(m));
     const u64 last = model_last_lsn(m);
     const u32 nlive = model_allocated_at(m, last, NULL, 0);
-    ps_page_id *live = malloc(((usize) nlive + 1) * sizeof(*live));
-    T_CHECK(live != NULL);
+    ps_page_id *live = t_malloc(((usize) nlive + 1) * sizeof(*live));
     model_allocated_at(m, last, live, nlive);
     ps_page_id next[W_MAX_ACTIONS];
     model_next_ids(m, max_actions, next);
@@ -353,8 +352,7 @@ void w_apply_model_begin(model *m, const w_op *op)
                 break;
             case W_WRITE:
                 if (buf == NULL) {
-                    buf = malloc(model_caller_size(m));
-                    T_CHECK(buf != NULL);
+                    buf = t_malloc(model_caller_size(m));
                 }
                 T_CHECK((u64) a->off + a->len <= model_caller_size(m));
                 w_pattern_fill(a->fill, a->off, buf, a->len);
@@ -419,8 +417,7 @@ void w_check_store(ps_store *s, const model *m)
     struct ps_stats st;
     ps_stats(s, &st);
     T_EQ(st.allocated_pages, n);
-    ps_page_id *ids = malloc(((usize) n + 1) * sizeof(*ids));
-    T_CHECK(ids != NULL);
+    ps_page_id *ids = t_malloc(((usize) n + 1) * sizeof(*ids));
     model_allocated_at(m, lsn, ids, n);
     for (u32 i = 0; i < n; i++) {
         const ps_page_id id = ids[i];

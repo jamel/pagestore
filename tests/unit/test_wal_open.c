@@ -135,8 +135,7 @@ static u8 *read_file(const char *path, u64 *size)
     ps_file f;
     T_OK(vfs->open(vfs->ctx, path, 0, &f));
     T_OK(vfs->size(vfs->ctx, &f, size));
-    u8 *buf = malloc(*size > 0 ? *size : 1);
-    T_CHECK(buf != NULL);
+    u8 *buf = t_malloc(*size);
     usize got = 0;
     T_OK(vfs->pread(vfs->ctx, &f, buf, *size, 0, &got));
     T_EQ(got, *size);

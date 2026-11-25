@@ -749,8 +749,7 @@ static void inject_full_groups(u32 ngroups)
     mb = mb_create();
     ps_backend_info info = {PS, ngroups, 1, ps_lsn_from(9)};
     mb_set_info(mb, info);
-    u8 *buf = calloc(1, PS);
-    T_CHECK(buf != NULL);
+    u8 *buf = t_calloc(1, PS);
     for (u32 g = 0; g < ngroups; g++) {
         memset(buf, 0, PS);
         ps_page *p = (ps_page *) buf;

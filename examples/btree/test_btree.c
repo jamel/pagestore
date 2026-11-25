@@ -127,8 +127,7 @@ static usize model_find(const model *m, const u8 *key, u32 klen, bool *found)
 
 static u8 *dup_bytes(const u8 *p, u32 n)
 {
-    u8 *d = malloc(n > 0 ? n : 1);
-    T_CHECK(d != NULL);
+    u8 *d = t_malloc(n);
     if (n > 0) {
         memcpy(d, p, n);
     }
@@ -147,8 +146,7 @@ static void model_put(model *m, const u8 *key, u32 klen, const u8 *val, u32 vlen
     }
     if (m->n == m->cap) {
         m->cap = m->cap == 0 ? 64 : m->cap * 2;
-        m->v = realloc(m->v, m->cap * sizeof(*m->v));
-        T_CHECK(m->v != NULL);
+        m->v = t_realloc(m->v, m->cap * sizeof(*m->v));
     }
     memmove(m->v + i + 1, m->v + i, (m->n - i) * sizeof(*m->v));
     m->v[i] = (entry) {dup_bytes(key, klen), klen, dup_bytes(val, vlen), vlen};
@@ -287,11 +285,9 @@ static key_pool pool_make(rng *r, u32 n, u32 max_key)
             prefixes[p][i] = (u8) ('a' + rng_below(r, 26));
         }
     }
-    key_pool kp = {n, malloc(n * sizeof(u8 *)), malloc(n * sizeof(u32))};
-    T_CHECK(kp.keys != NULL && kp.lens != NULL);
+    key_pool kp = {n, t_malloc(n * sizeof(u8 *)), t_malloc(n * sizeof(u32))};
     for (u32 i = 0; i < n; i++) {
-        u8 *k = malloc(max_key);
-        T_CHECK(k != NULL);
+        u8 *k = t_malloc(max_key);
         const u32 p = (u32) rng_below(r, 4);
         u32 len = prefix_lens[p];
         memcpy(k, prefixes[p], len);
@@ -444,8 +440,7 @@ static void test_basic(void)
     expect_now(&f, "c", NULL);
 
     /* The longest key, and the longest value that fits beside it. */
-    u8 *big = malloc(f.t.max_entry + 1);
-    T_CHECK(big != NULL);
+    u8 *big = t_malloc(f.t.max_entry + 1);
     memset(big, 'z', f.t.max_entry + 1);
     const u32 vmax = f.t.max_entry - f.t.max_key;
     fx_begin(&f);
@@ -497,8 +492,7 @@ static void test_random(void)
     rng_seed(&r, 1);
     key_pool kp = pool_make(&r, 3000, f.t.max_key);
     model m = {0};
-    u8 *val = malloc(f.t.max_entry);
-    T_CHECK(val != NULL);
+    u8 *val = t_malloc(f.t.max_entry);
     workload w = {&f, &m, &r, &kp, val, 16};
     const u32 nops = 4000 * t_scale();
     run_random(&w, nops, 75, 250);
@@ -662,8 +656,7 @@ static void test_reopen(void)
     rng_seed(&r, 2);
     key_pool kp = pool_make(&r, 3000, f.t.max_key);
     model m = {0};
-    u8 *val = malloc(f.t.max_entry);
-    T_CHECK(val != NULL);
+    u8 *val = t_malloc(f.t.max_entry);
     workload w = {&f, &m, &r, &kp, val, 16};
     run_random(&w, 3000, 80, 1000);
     T_OK(ps_checkpoint(f.s));
@@ -691,8 +684,7 @@ static void test_large_pages(void)
     rng_seed(&r, 3);
     key_pool kp = pool_make(&r, 2000, f.t.max_key);
     model m = {0};
-    u8 *val = malloc(f.t.max_entry);
-    T_CHECK(val != NULL);
+    u8 *val = t_malloc(f.t.max_entry);
     workload w = {&f, &m, &r, &kp, val, 16};
     run_random(&w, 2000, 75, 500);
     run_random(&w, 2000, 30, 500);

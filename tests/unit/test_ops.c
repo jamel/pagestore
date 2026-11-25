@@ -576,8 +576,7 @@ static void setup_pagein_store(void)
     mb = mb_create();
     ps_backend_info info = {PS, 1, 1, ps_lsn_from(9)};
     mb_set_info(mb, info);
-    u8 *buf = calloc(1, PS);
-    T_CHECK(buf != NULL);
+    u8 *buf = t_calloc(1, PS);
     ps_page *p = (ps_page *) buf;
     p->magic = PS_BITMAP_MAGIC;
     p->id = ps_page_id_from(0);
@@ -654,8 +653,7 @@ static void test_pagein_read_error(void)
     close_store();
 
     setup_pagein_store();
-    u8 *buf = calloc(1, PS);
-    T_CHECK(buf != NULL);
+    u8 *buf = t_calloc(1, PS);
     memcpy(buf, mb_page(mb, ps_page_id_from(0)), PS);
     buf[HDR + 1] ^= 1;
     mb_put(mb, ps_page_id_from(0), buf);
@@ -792,8 +790,7 @@ static void setup_full_group0(u32 nuser)
     mb = mb_create();
     ps_backend_info info = {PS, 1, 1, ps_lsn_from(9)};
     mb_set_info(mb, info);
-    u8 *buf = calloc(1, PS);
-    T_CHECK(buf != NULL);
+    u8 *buf = t_calloc(1, PS);
     ps_page *p = (ps_page *) buf;
     p->magic = PS_BITMAP_MAGIC;
     p->id = ps_page_id_from(0);

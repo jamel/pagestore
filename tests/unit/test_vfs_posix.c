@@ -14,8 +14,7 @@ static char *dir;
 static char *path(const char *name)
 {
     usize n = strlen(dir) + 1 + strlen(name) + 1;
-    char *p = malloc(n);
-    T_CHECK(p != NULL);
+    char *p = t_malloc(n);
     snprintf(p, n, "%s/%s", dir, name);
     return p;
 }

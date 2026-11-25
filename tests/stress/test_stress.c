@@ -158,8 +158,7 @@ static void hist_push(stress *st, u32 id, u64 lsn, bool freed)
     T_CHECK(h->n == 0 || h->v[h->n - 1].lsn < lsn);
     if (h->n == h->cap) {
         h->cap = h->cap == 0 ? 8 : h->cap * 2;
-        h->v = realloc(h->v, (usize) h->cap * sizeof(*h->v));
-        T_CHECK(h->v != NULL);
+        h->v = t_realloc(h->v, (usize) h->cap * sizeof(*h->v));
     }
     h->v[h->n].lsn = lsn;
     h->v[h->n].freed = freed;
@@ -475,9 +474,8 @@ static void check_final(stress *st, writer *w, ps_store *s)
 
 static void test_writer_readers_checkpoint(void)
 {
-    stress *st = calloc(1, sizeof(*st));
-    writer *w = calloc(1, sizeof(*w));
-    T_CHECK(st != NULL && w != NULL);
+    stress *st = t_calloc(1, sizeof(*st));
+    writer *w = t_calloc(1, sizeof(*w));
     st->seed = 0x5EEDu + t_scale();
     T_EQ(pthread_rwlock_init(&st->mu, NULL), 0);
     atomic_init(&st->stop, false);

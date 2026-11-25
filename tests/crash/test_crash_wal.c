@@ -369,8 +369,7 @@ static void exp_set(wcase *c, u64 lsn, const u8 *rec, usize len)
         while (n <= lsn) {
             n *= 2;
         }
-        u64 *e = realloc(c->exp, n * sizeof(*e));
-        T_CHECK(e != NULL);
+        u64 *e = t_realloc(c->exp, n * sizeof(*e));
         memset(e + c->nexp, 0, (n - c->nexp) * sizeof(*e));
         c->exp = e;
         c->nexp = n;
@@ -470,8 +469,7 @@ static int startup(wcase *c, u32 flags)
 
 static wcase *case_new(u32 cls, u64 seed)
 {
-    wcase *c = calloc(1, sizeof(*c));
-    T_CHECK(c != NULL);
+    wcase *c = t_calloc(1, sizeof(*c));
     c->fv = fault_vfs_create(seed);
     c->vc.inner = *fault_vfs_get(c->fv);
     c->vc.fv = c->fv;
@@ -527,8 +525,7 @@ static void expect_stop(wcase *c, int rv, const char *what)
 /* Returns false if a crash or full disk stops the workload early. */
 static bool workload(wcase *c, u32 nops)
 {
-    u8 *rec = malloc(REC_MAX);
-    T_CHECK(rec != NULL);
+    u8 *rec = t_malloc(REC_MAX);
     CASE_CHECK(c, ps_committed_lsn(c->s).raw == model_last_lsn(c->m));
     u64 lsn = ps_committed_lsn(c->s).raw;
     u64 retry = 0;
@@ -654,8 +651,7 @@ static u64 scan_last_lsn(wcase *c)
     CASE_CHECK(c, lc.newest != 0);
     char path[64];
     snprintf(path, sizeof(path), WALDIR "/%016llx.wal", (unsigned long long) lc.newest);
-    u8 *buf = malloc(SEG);
-    T_CHECK(buf != NULL);
+    u8 *buf = t_malloc(SEG);
     usize got = 0;
     CASE_OK(c, fault_vfs_read_durable(c->fv, path, 0, buf, SEG, &got));
     ps_wal_seg_header h;

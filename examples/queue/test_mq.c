@@ -377,8 +377,7 @@ static void *th_produce(void *arg)
     th_producer *p = arg;
     rng r;
     rng_seed(&r, 100 + p->id);
-    u8 *buf = malloc(8 * (MSG_HEADER + TH_EXTRA));
-    T_CHECK(buf != NULL);
+    u8 *buf = t_malloc(8 * (MSG_HEADER + TH_EXTRA));
     u64 counter = 0;
     while (counter < p->st->per_producer) {
         u32 n = 1 + (u32) rng_below(&r, 8);
@@ -516,8 +515,7 @@ static void record_push(crash_state *c, u64 first, u32 producer, u64 counter, u3
     pthread_mutex_lock(&c->mu);
     if (c->nok + n > c->ok_cap) {
         c->ok_cap = c->ok_cap == 0 ? 4096 : 2 * c->ok_cap;
-        c->ok = realloc(c->ok, c->ok_cap * sizeof(*c->ok));
-        T_CHECK(c->ok != NULL);
+        c->ok = t_realloc(c->ok, c->ok_cap * sizeof(*c->ok));
     }
     for (u32 i = 0; i < n; i++) {
         c->ok[c->nok++] = (pushed) {first + i, producer, counter + i};
@@ -531,8 +529,7 @@ static void *crash_produce(void *arg)
     crash_state *c = t->c;
     rng r;
     rng_seed(&r, c->seed * 31 + t->id);
-    u8 *buf = malloc(CR_BATCH * (MSG_HEADER + CR_EXTRA));
-    T_CHECK(buf != NULL);
+    u8 *buf = t_malloc(CR_BATCH * (MSG_HEADER + CR_EXTRA));
     u64 counter = c->counters[t->id];
     while (!atomic_load(&c->stop)) {
         const u32 n = 1 + (u32) rng_below(&r, CR_BATCH);
@@ -610,8 +607,7 @@ static void *crash_read(void *arg)
         mq_reader_close(&h);
         return NULL;
     }
-    u8 *buf = malloc(MSG_HEADER + CR_EXTRA);
-    T_CHECK(buf != NULL);
+    u8 *buf = t_malloc(MSG_HEADER + CR_EXTRA);
     u64 last[CR_PRODUCERS];
     memset(last, 0xFF, sizeof(last));
     while (!atomic_load(&c->stop)) {
@@ -671,8 +667,7 @@ static void crash_verify(crash_state *c)
     ps_snapshot *snap;
     T_OK(ps_snapshot_open(mq_store(c->q), &snap));
     const ml_log *l = mq_log(c->q);
-    u8 *buf = malloc(MSG_HEADER + CR_EXTRA);
-    T_CHECK(buf != NULL);
+    u8 *buf = t_malloc(MSG_HEADER + CR_EXTRA);
     usize kept = 0;
     for (usize i = 0; i < c->nok; i++) {
         const pushed *p = &c->ok[i];

@@ -241,8 +241,7 @@ static void verify_snap(run *t, snap_rec *sr)
         check_page(m, sr->held[i], sr->held_id[i], &mp);
     }
     const u32 n = model_allocated_at(m, sr->lsn, NULL, 0);
-    ps_page_id *ids = malloc(((usize) n + 1) * sizeof(*ids));
-    T_CHECK(ids != NULL);
+    ps_page_id *ids = t_malloc(((usize) n + 1) * sizeof(*ids));
     T_EQ(model_allocated_at(m, sr->lsn, ids, n), n);
 
     bool stale = false;
@@ -418,8 +417,7 @@ static void step_snap_open(run *t)
     T_EQ(sr.lsn, ps_committed_lsn(t->s).raw);
 
     const u32 n = model_allocated_at(t->m, sr.lsn, NULL, 0);
-    ps_page_id *ids = malloc(((usize) n + 1) * sizeof(*ids));
-    T_CHECK(ids != NULL);
+    ps_page_id *ids = t_malloc(((usize) n + 1) * sizeof(*ids));
     model_allocated_at(t->m, sr.lsn, ids, n);
     for (u32 k = 0; k < t->held && n > 0; k++) {
         const ps_page_id id = ids[rng_below(&t->r, n)];
@@ -597,8 +595,7 @@ static void test_model_alloc_matches_policy(void)
             T_OK(ps_op_begin(s, ps_lsn_from(lsn)));
             model_op_begin(m, lsn);
             const u32 nlive = model_allocated_at(m, model_last_lsn(m), NULL, 0);
-            ps_page_id *live = malloc(((usize) nlive + 1) * sizeof(*live));
-            T_CHECK(live != NULL);
+            ps_page_id *live = t_malloc(((usize) nlive + 1) * sizeof(*live));
             model_allocated_at(m, model_last_lsn(m), live, nlive);
             ps_page_id mine[8];
             u32 nmine = 0;
@@ -681,8 +678,7 @@ static void test_model_vs_allocator(void)
         ps_allocator *a = NULL;
         T_OK(ps_allocator_create(PS, &a));
         u8 *bits[MAX_GROUPS] = {0};
-        bits[0] = calloc(1, gbytes);
-        T_CHECK(bits[0] != NULL);
+        bits[0] = t_calloc(1, gbytes);
         bits[0][0] = 1; /* the bitmap page's own bit */
         T_OK(ps_allocator_init_group(a, 0, bits[0]));
         ps_bitmap_get_ctx ctx = {bits};
@@ -693,8 +689,7 @@ static void test_model_vs_allocator(void)
             ps_allocator_op_begin(a);
             model_op_begin(m, lsn);
             const u32 nlive = model_allocated_at(m, model_last_lsn(m), NULL, 0);
-            ps_page_id *live = malloc(((usize) nlive + 1) * sizeof(*live));
-            T_CHECK(live != NULL);
+            ps_page_id *live = t_malloc(((usize) nlive + 1) * sizeof(*live));
             model_allocated_at(m, model_last_lsn(m), live, nlive);
             const u32 runs = 1 + (u32) rng_below(&r, 4);
             ps_page_id last_alloc = PS_PAGE_ID_NONE;
@@ -745,8 +740,7 @@ static void test_model_vs_allocator(void)
                 const u32 gi = groups[i];
                 T_CHECK(gi < MAX_GROUPS);
                 if (ps_allocator_group_is_new(a, gi)) {
-                    bits[gi] = calloc(1, gbytes);
-                    T_CHECK(bits[gi] != NULL);
+                    bits[gi] = t_calloc(1, gbytes);
                 }
                 ps_allocator_apply(a, gi, bits[gi]);
             }

@@ -1,5 +1,6 @@
 #include "fault_vfs.h"
 #include "rng.h"
+#include "test.h"
 
 #include <errno.h>
 #include <pthread.h>
@@ -13,42 +14,9 @@
 
 /* ---- allocation ---- */
 
-static void oom(void)
-{
-    fprintf(stderr, "fault_vfs: out of memory\n");
-    abort();
-}
-
-static void *xmalloc(usize n)
-{
-    void *p = malloc(n != 0 ? n : 1);
-    if (p == NULL) {
-        oom();
-    }
-    return p;
-}
-
-static void *xcalloc(usize n)
-{
-    void *p = calloc(1, n != 0 ? n : 1);
-    if (p == NULL) {
-        oom();
-    }
-    return p;
-}
-
-static void *xrealloc(void *p, usize n)
-{
-    void *q = realloc(p, n != 0 ? n : 1);
-    if (q == NULL) {
-        oom();
-    }
-    return q;
-}
-
 static char *xstrndup(const char *s, usize n)
 {
-    char *p = xmalloc(n + 1);
+    char *p = t_malloc(n + 1);
     memcpy(p, s, n);
     p[n] = '\0';
     return p;
@@ -70,7 +38,7 @@ static void *grow(void *p, usize *cap, usize need, usize elem)
         c *= 2;
     }
     *cap = c;
-    return xrealloc(p, c * elem);
+    return t_realloc(p, c * elem);
 }
 
 static u64 min_u64(u64 a, u64 b)
@@ -123,7 +91,7 @@ static u8 *image_block(image *img, u64 idx, bool create)
     memmove(&img->blocks[pos + 1], &img->blocks[pos], (img->n - pos) * sizeof(*img->blocks));
     img->n++;
     img->blocks[pos].idx = idx;
-    img->blocks[pos].data = xcalloc(BLOCK_SIZE);
+    img->blocks[pos].data = t_calloc(1, BLOCK_SIZE);
     return img->blocks[pos].data;
 }
 
@@ -142,10 +110,10 @@ static void image_copy(image *dst, const image *src)
     dst->size = src->size;
     dst->n = src->n;
     dst->cap = src->n;
-    dst->blocks = src->n != 0 ? xmalloc(src->n * sizeof(*dst->blocks)) : NULL;
+    dst->blocks = src->n != 0 ? t_malloc(src->n * sizeof(*dst->blocks)) : NULL;
     for (usize i = 0; i < src->n; i++) {
         dst->blocks[i].idx = src->blocks[i].idx;
-        dst->blocks[i].data = xmalloc(BLOCK_SIZE);
+        dst->blocks[i].data = t_malloc(BLOCK_SIZE);
         memcpy(dst->blocks[i].data, src->blocks[i].data, BLOCK_SIZE);
     }
 }
@@ -304,7 +272,7 @@ static void ents_copy(entries *dst, const entries *src)
 {
     dst->n = src->n;
     dst->cap = src->n;
-    dst->v = src->n != 0 ? xmalloc(src->n * sizeof(*dst->v)) : NULL;
+    dst->v = src->n != 0 ? t_malloc(src->n * sizeof(*dst->v)) : NULL;
     for (usize i = 0; i < src->n; i++) {
         dst->v[i].name = xstrdup(src->v[i].name);
         dst->v[i].node = src->v[i].node;
@@ -389,7 +357,7 @@ static void log_change(node *n, change_kind kind, u64 off, const u8 *data, u64 l
     c->len = len;
     c->data = NULL;
     if (kind == CH_WRITE) {
-        c->data = xmalloc((usize) len);
+        c->data = t_malloc((usize) len);
         memcpy(c->data, data, (usize) len);
     }
 }
@@ -466,7 +434,7 @@ static inline fv_file *ff(ps_file *f)
 
 static node *node_new(fault_vfs *fv, bool is_dir)
 {
-    node *n = xcalloc(sizeof(*n));
+    node *n = t_calloc(1, sizeof(*n));
     n->is_dir = is_dir;
     if (fv->nodes_tail != NULL) {
         fv->nodes_tail->next = n;
@@ -942,7 +910,7 @@ static int fv_list(ps_vfs_ctx *ctx, const char *dir, ps_vfs_list_fn fn, ps_vfs_l
             rv = ENOTDIR;
         } else {
             n = l.node->ents_cur.n;
-            names = xmalloc(n * sizeof(*names));
+            names = t_malloc(n * sizeof(*names));
             for (usize i = 0; i < n; i++) {
                 names[i] = xstrdup(l.node->ents_cur.v[i].name);
             }
@@ -986,7 +954,7 @@ static int fv_lock(ps_vfs_ctx *ctx, const char *path, ps_file *out)
 
 fault_vfs *fault_vfs_create(u64 seed)
 {
-    ps_vfs_ctx *ctx = xcalloc(sizeof(*ctx));
+    ps_vfs_ctx *ctx = t_calloc(1, sizeof(*ctx));
     fault_vfs *fv = &ctx->fv;
     if (pthread_mutex_init(&fv->mu, NULL) != 0) {
         fprintf(stderr, "fault_vfs: pthread_mutex_init failed\n");

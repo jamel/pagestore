@@ -99,8 +99,7 @@ static void test_computed_level(void)
 /* The sink formats the message, so ps_log_write imposes no length limit. */
 static void test_long_message(void)
 {
-    ps_logger_ctx *c = malloc(sizeof(*c));
-    T_CHECK(c != NULL);
+    ps_logger_ctx *c = t_malloc(sizeof(*c));
     const ps_logger lg = capture_logger(c, PS_LOG_LEVEL_ERROR);
     char path[5000];
     memset(path, 'p', sizeof(path) - 1);
@@ -115,8 +114,7 @@ static void test_long_message(void)
 static void test_wal_uses_store_logger(void)
 {
     char *dir = t_tmpdir();
-    ps_logger_ctx *c = malloc(sizeof(*c));
-    T_CHECK(c != NULL);
+    ps_logger_ctx *c = t_malloc(sizeof(*c));
     ps_config cfg;
     ps_config_init(&cfg);
     cfg.checkpoint_thread = false;

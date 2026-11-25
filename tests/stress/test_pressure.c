@@ -244,8 +244,7 @@ static void test_long_snapshot_writer_never_stalls(void)
     ps_snapshot *sn = NULL;
     T_OK(ps_snapshot_open(s, &sn));
     const ps_page *held[LS_PINNED];
-    u8 *copy = malloc((usize) LS_PINNED * PS);
-    T_CHECK(copy != NULL);
+    u8 *copy = t_malloc((usize) LS_PINNED * PS);
     for (u32 i = 0; i < LS_PINNED; i++) {
         T_OK(ps_snapshot_read(sn, ps_page_id_from(i + 1), &held[i]));
         T_CHECK(is_version(held[i], i + 1, at_s[i + 1]));
@@ -372,8 +371,7 @@ static void test_cutoff_oldest_first(void)
     open_store(&cfg);
     u64 ver[LS_PAGES + 1] = {0};
     make_pages(LS_PAGES, 10, ver);
-    co_snap *c = calloc(CO_SNAPS, sizeof(*c)); /* oldest first */
-    T_CHECK(c != NULL);
+    co_snap *c = t_calloc(CO_SNAPS, sizeof(*c)); /* oldest first */
     rng g;
     rng_seed(&g, 0xC0FFu);
     u32 nopen = 0;
@@ -534,8 +532,7 @@ static void test_pin_limits(void)
     T_CHECK(is_version(p, 2 * PL_CAP + 1, ver[2 * PL_CAP + 1]));
     T_ERR(ps_snapshot_read(s1, ps_page_id_from(1), &p), ENOBUFS);
 
-    u8 *copy = malloc((usize) 2 * PL_CAP * PS);
-    T_CHECK(copy != NULL);
+    u8 *copy = t_malloc((usize) 2 * PL_CAP * PS);
     for (u32 i = 1; i < PL_CAP; i++) {
         memcpy(copy + (usize) i * PS, h1[i], PS);
     }
@@ -699,8 +696,7 @@ static void test_chunked_job(void)
 {
     const ps_config cfg = pressure_config(FRAMES);
     open_store(&cfg);
-    u64 *ver = calloc(CJ_PAGES + 1, sizeof(*ver));
-    T_CHECK(ver != NULL);
+    u64 *ver = t_calloc(CJ_PAGES + 1, sizeof(*ver));
 
     /* Once the operation has the group spare, each additional allocation costs one frame. */
     u32 chunks = 0;
@@ -756,8 +752,7 @@ static void test_group_growth_full(void)
     open_store(&cfg);
     pattern_len = 64; /* Keep the cost of stamping a full group down. */
     const u32 G = ps_group_size(PS);
-    u64 *ver = calloc((usize) G + 3, sizeof(*ver));
-    T_CHECK(ver != NULL);
+    u64 *ver = t_calloc((usize) G + 3, sizeof(*ver));
 
     /* Leave room for a user page, a new group bitmap and its spare. */
     begin();

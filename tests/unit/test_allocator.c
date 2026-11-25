@@ -52,9 +52,8 @@ static void fx_open(fx *f, u32 page_size)
     f->ctx.page_size = page_size;
     f->ctx.gsize = ps_group_size(page_size);
     f->ctx.max_groups = ps_max_groups(page_size);
-    f->ctx.bits = calloc(f->ctx.max_groups, sizeof(*f->ctx.bits));
-    f->ctx.calls = calloc(f->ctx.max_groups, sizeof(*f->ctx.calls));
-    T_CHECK(f->ctx.bits != NULL && f->ctx.calls != NULL);
+    f->ctx.bits = t_calloc(f->ctx.max_groups, sizeof(*f->ctx.bits));
+    f->ctx.calls = t_calloc(f->ctx.max_groups, sizeof(*f->ctx.calls));
 }
 
 static void fx_close(fx *f)
@@ -71,8 +70,7 @@ static void fx_close(fx *f)
 static u8 *fx_add_group(fx *f, bool full)
 {
     u32 g = ps_allocator_num_groups(f->a);
-    u8 *b = malloc(fx_bytes(f));
-    T_CHECK(b != NULL);
+    u8 *b = t_malloc(fx_bytes(f));
     memset(b, full ? 0xFF : 0x00, fx_bytes(f));
     ps_bit_set(b, 0);
     f->ctx.bits[g] = b;
@@ -120,8 +118,7 @@ static void fx_commit(fx *f)
         }
         if (ps_allocator_group_is_new(f->a, g)) {
             T_CHECK(f->ctx.bits[g] == NULL);
-            f->ctx.bits[g] = calloc(1, fx_bytes(f));
-            T_CHECK(f->ctx.bits[g] != NULL);
+            f->ctx.bits[g] = t_calloc(1, fx_bytes(f));
         }
         T_CHECK(f->ctx.bits[g] != NULL);
         ps_allocator_apply(f->a, g, f->ctx.bits[g]);
@@ -160,8 +157,7 @@ static void test_init_group(void)
     fx_open(&f, 4096);
     T_EQ(ps_allocator_num_groups(f.a), 0);
 
-    u8 *b = calloc(1, fx_bytes(&f));
-    T_CHECK(b != NULL);
+    u8 *b = t_calloc(1, fx_bytes(&f));
     /* Bit 0 belongs to the bitmap itself. */
     T_ERR(ps_allocator_init_group(f.a, 0, b), EINVAL);
     ps_bit_set(b, 0);
@@ -456,8 +452,7 @@ static void test_apply_new_group(void)
     T_EQ(fx_next(&f), G4K + 3);
     T_CHECK(fx_free(&f, G4K + 2));
 
-    u8 *b = calloc(1, fx_bytes(&f));
-    T_CHECK(b != NULL);
+    u8 *b = t_calloc(1, fx_bytes(&f));
     ps_allocator_apply(f.a, 1, b);
     T_EQ(ps_bit_count_set(b, G4K), 3);
     T_CHECK(ps_bit_test(b, 0) && ps_bit_test(b, 1) && !ps_bit_test(b, 2) && ps_bit_test(b, 3));
@@ -473,8 +468,7 @@ static void test_last_group_tail(void)
     const u32 gs = f.ctx.gsize;
     const u32 mg = f.ctx.max_groups;
     const u32 tail = (u32) (UINT32_MAX - (u64) (mg - 1) * gs);
-    u8 *ones = malloc(fx_bytes(&f));
-    T_CHECK(ones != NULL);
+    u8 *ones = t_malloc(fx_bytes(&f));
     memset(ones, 0xFF, fx_bytes(&f));
     f.ctx.shared = ones;
     for (u32 g = 0; g + 1 < mg; g++) {
@@ -486,8 +480,7 @@ static void test_last_group_tail(void)
     T_EQ(first, (mg - 1) * gs + 1);
     T_CHECK(f.last_new);
     T_CHECK(fx_free(&f, first));
-    u8 *b = calloc(1, fx_bytes(&f));
-    T_CHECK(b != NULL);
+    u8 *b = t_calloc(1, fx_bytes(&f));
     ps_allocator_apply(f.a, mg - 1, b);
     T_EQ(gs - ps_bit_count_set(b, gs), tail - 1);
     T_CHECK(ps_bit_test(b, 0));
@@ -526,8 +519,7 @@ static void test_enospc(void)
 {
     fx f;
     fx_open(&f, 65536);
-    u8 *ones = malloc(fx_bytes(&f));
-    T_CHECK(ones != NULL);
+    u8 *ones = t_malloc(fx_bytes(&f));
     memset(ones, 0xFF, fx_bytes(&f));
     f.ctx.shared = ones;
     for (u32 g = 0; g < f.ctx.max_groups; g++) {

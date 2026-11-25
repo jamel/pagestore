@@ -167,6 +167,33 @@ void t_fail_mem(
     t_abort();
 }
 
+void *t_malloc(usize n)
+{
+    void *p = malloc(n != 0 ? n : 1);
+    if (p == NULL) {
+        T_FAIL("out of memory allocating %zu bytes", n);
+    }
+    return p;
+}
+
+void *t_calloc(usize count, usize size)
+{
+    void *p = calloc(count != 0 ? count : 1, size != 0 ? size : 1);
+    if (p == NULL) {
+        T_FAIL("out of memory allocating %zu x %zu bytes", count, size);
+    }
+    return p;
+}
+
+void *t_realloc(void *p, usize n)
+{
+    void *q = realloc(p, n != 0 ? n : 1);
+    if (q == NULL) {
+        T_FAIL("out of memory growing to %zu bytes", n);
+    }
+    return q;
+}
+
 u32 t_scale(void)
 {
     const char *s = getenv("PS_TEST_SCALE");
@@ -196,10 +223,7 @@ char *t_tmpdir(void)
         base = "/tmp";
     }
     len = strlen(base) + sizeof("/pstest.XXXXXX");
-    path = malloc(len);
-    if (path == NULL) {
-        T_FAIL("t_tmpdir: out of memory");
-    }
+    path = t_malloc(len);
     snprintf(path, len, "%s/pstest.XXXXXX", base);
     if (mkdtemp(path) == NULL) {
         const int rv = errno;

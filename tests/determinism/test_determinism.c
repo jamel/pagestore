@@ -89,8 +89,7 @@ static void compare_memory(dstore *d, const model *m)
         T_EQ(st.allocated_pages, model_allocated_at(m, lsn, NULL, 0));
     }
     const u32 n = model_allocated_at(m, lsn, NULL, 0);
-    ps_page_id *ids = malloc(((usize) n + 1) * sizeof(*ids));
-    T_CHECK(ids != NULL);
+    ps_page_id *ids = t_malloc(((usize) n + 1) * sizeof(*ids));
     model_allocated_at(m, lsn, ids, n);
     for (u32 i = 0; i < n; i++) {
         const ps_page *p[NSTORES];
@@ -137,8 +136,7 @@ static void compare_durable(dstore *d, const model *m)
         }
     }
     const u32 n = model_allocated_at(m, lsn, NULL, 0);
-    ps_page_id *ids = malloc(((usize) n + 1) * sizeof(*ids));
-    T_CHECK(ids != NULL);
+    ps_page_id *ids = t_malloc(((usize) n + 1) * sizeof(*ids));
     model_allocated_at(m, lsn, ids, n);
     for (u32 i = 0; i < n; i++) {
         const u8 *p0 = mb_page(d[0].mb, ids[i]);
@@ -159,8 +157,7 @@ static void run_seed(u64 seed)
     model *m = model_create(PS);
 
     /* Generate once so store behavior cannot steer the workload. */
-    w_op *ops = malloc((usize) OPS * sizeof(*ops));
-    T_CHECK(ops != NULL);
+    w_op *ops = t_malloc((usize) OPS * sizeof(*ops));
     u32 nalloc = 0;
     for (u32 i = 0; i < OPS; i++) {
         const u64 lsn = model_last_lsn(m) + 1 + rng_below(&r, 3);

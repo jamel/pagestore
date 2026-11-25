@@ -66,23 +66,14 @@ struct mem_backend {
     u32 reads_held;
 };
 
-static void *xalloc(usize n)
-{
-    void *p = calloc(1, n);
-    if (p == NULL) {
-        T_FAIL("mem_backend: out of memory");
-    }
-    return p;
-}
-
 mem_backend *mb_create(void)
 {
-    mem_backend *mb = xalloc(sizeof(*mb));
+    mem_backend *mb = t_calloc(1, sizeof(*mb));
     mb->ctx.mb = mb;
     pthread_mutex_init(&mb->mu, NULL);
     pthread_cond_init(&mb->cv, NULL);
     mb->nbuckets = 256;
-    mb->buckets = xalloc(mb->nbuckets * sizeof(*mb->buckets));
+    mb->buckets = t_calloc(1, mb->nbuckets * sizeof(*mb->buckets));
     return mb;
 }
 
@@ -128,7 +119,7 @@ static mb_page_rec *find(const mem_backend *mb, ps_page_id id)
 static void rehash(mem_backend *mb)
 {
     const u32 n = mb->nbuckets * 2;
-    mb_page_rec **nb = xalloc(n * sizeof(*nb));
+    mb_page_rec **nb = t_calloc(1, n * sizeof(*nb));
     for (u32 b = 0; b < mb->nbuckets; b++) {
         mb_page_rec *r = mb->buckets[b];
         while (r != NULL) {
@@ -153,9 +144,9 @@ static void store_page(mem_backend *mb, ps_page_id id, const void *page, u64 seq
         if (mb->npages >= mb->nbuckets) {
             rehash(mb);
         }
-        r = xalloc(sizeof(*r));
+        r = t_calloc(1, sizeof(*r));
         r->id = id;
-        r->data = xalloc(ps);
+        r->data = t_calloc(1, ps);
         r->next = mb->buckets[id.raw & (mb->nbuckets - 1)];
         mb->buckets[id.raw & (mb->nbuckets - 1)] = r;
         mb->npages++;
@@ -261,7 +252,7 @@ static int be_ckpt_begin(ps_backend_ctx *ctx, ps_lsn lsn, u32 num_groups, u32 co
     mb->ckpt_lsn = lsn;
     mb->ckpt_ng = num_groups;
     mb->ckpt_count = count;
-    mb->staged = count == 0 ? NULL : xalloc((usize) count * sizeof(*mb->staged));
+    mb->staged = count == 0 ? NULL : t_calloc(1, (usize) count * sizeof(*mb->staged));
     mb->nstaged = 0;
     pthread_mutex_unlock(&mb->mu);
     return 0;
@@ -285,7 +276,7 @@ static int be_ckpt_write(ps_backend_ctx *ctx, ps_page_id id, const void *page)
     if (rv == 0) {
         mb_staged *st = &mb->staged[mb->nstaged++];
         st->id = id;
-        st->data = xalloc(mb->info.page_size);
+        st->data = t_calloc(1, mb->info.page_size);
         memcpy(st->data, page, mb->info.page_size);
     }
     pthread_mutex_unlock(&mb->mu);

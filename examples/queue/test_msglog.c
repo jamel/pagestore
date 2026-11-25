@@ -386,8 +386,7 @@ static void test_log_basic(void)
 
     /* An empty message, a small one and one that spans three pages. */
     const u32 lens[] = {0, 10, 2 * l.data_size + 100};
-    u8 *buf = malloc(3 * PAGE);
-    T_CHECK(buf != NULL);
+    u8 *buf = t_malloc(3 * PAGE);
     fx_begin(&f);
     for (u64 i = 0; i < 3; i++) {
         u64 seq;
@@ -529,8 +528,7 @@ static void model_push(log_model *m, u32 len)
 {
     if (m->next == m->lens_cap) {
         m->lens_cap = m->lens_cap == 0 ? 1024 : 2 * m->lens_cap;
-        m->lens = realloc(m->lens, m->lens_cap * sizeof(*m->lens));
-        T_CHECK(m->lens != NULL);
+        m->lens = t_realloc(m->lens, m->lens_cap * sizeof(*m->lens));
     }
     m->lens[m->next++] = len;
     if (m->next - m->first > m->cap) {
@@ -619,8 +617,7 @@ static void log_model_run(u64 seed, u64 cap, u32 nops)
         m.pos[i] = UINT64_MAX;
     }
     const u32 buf_cap = 3 * l.data_size;
-    u8 *buf = malloc(buf_cap);
-    T_CHECK(buf != NULL);
+    u8 *buf = t_malloc(buf_cap);
     for (u32 op = 0; op < nops; op++) {
         const log_model saved = m;
         fx_begin(&f);
@@ -674,8 +671,7 @@ static void test_log_trim_all_pages(void)
     fixture f = fx_new(256);
     ml_log l;
     log_create(&f, 1, &l);
-    u8 *buf = malloc(l.data_size);
-    T_CHECK(buf != NULL);
+    u8 *buf = t_malloc(l.data_size);
     u64 seq;
     fx_begin(&f);
     T_OK(ml_push(&l, buf, fill_msg(buf, 0, l.data_size), &seq));

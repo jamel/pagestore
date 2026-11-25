@@ -69,41 +69,14 @@ struct model {
     u32 pend_cap;
 };
 
-static void *xmalloc(usize n)
-{
-    void *p = malloc(n == 0 ? 1 : n);
-    if (p == NULL) {
-        T_FAIL("model: out of memory");
-    }
-    return p;
-}
-
-static void *xcalloc(usize n)
-{
-    void *p = calloc(1, n == 0 ? 1 : n);
-    if (p == NULL) {
-        T_FAIL("model: out of memory");
-    }
-    return p;
-}
-
-static void *xrealloc(void *p, usize n)
-{
-    void *q = realloc(p, n == 0 ? 1 : n);
-    if (q == NULL) {
-        T_FAIL("model: out of memory");
-    }
-    return q;
-}
-
 model *model_create(u32 page_size)
 {
     T_CHECK(page_size > PS_PAGE_HEADER_SIZE);
-    model *m = xcalloc(sizeof(*m));
+    model *m = t_calloc(1, sizeof(*m));
     m->page_size = page_size;
     m->csize = page_size - PS_PAGE_HEADER_SIZE;
     m->gsize = ps_group_size(page_size);
-    m->zero = xcalloc(m->csize);
+    m->zero = t_calloc(1, m->csize);
     m->num_groups = 1; /* the format creates group 0 */
     return m;
 }
@@ -175,11 +148,11 @@ static void ensure_page(model *m, u32 id)
         want = M_ID_LIMIT;
     }
     const u32 n = (u32) want;
-    m->pages = xrealloc(m->pages, (usize) n * sizeof(*m->pages));
+    m->pages = t_realloc(m->pages, (usize) n * sizeof(*m->pages));
     memset(m->pages + m->npages, 0, (usize) (n - m->npages) * sizeof(*m->pages));
     const usize old_words = ((usize) m->npages + 63) / 64;
     const usize words = ((usize) n + 63) / 64;
-    m->alloc = xrealloc(m->alloc, words * sizeof(*m->alloc));
+    m->alloc = t_realloc(m->alloc, words * sizeof(*m->alloc));
     memset(m->alloc + old_words, 0, (words - old_words) * sizeof(*m->alloc));
     m->npages = n;
 }
@@ -291,7 +264,7 @@ static m_pend *add_pend(model *m, u32 id, m_pend_kind kind, u8 *bytes)
 {
     if (m->npend == m->pend_cap) {
         m->pend_cap = m->pend_cap == 0 ? 64 : m->pend_cap * 2;
-        m->pend = xrealloc(m->pend, (usize) m->pend_cap * sizeof(*m->pend));
+        m->pend = t_realloc(m->pend, (usize) m->pend_cap * sizeof(*m->pend));
     }
     m_pend *p = &m->pend[m->npend++];
     p->id = id;
@@ -347,13 +320,13 @@ void model_write(model *m, ps_page_id page, u32 off, const void *data, u32 len)
     m_pend *p = find_pend(m, id);
     if (p == NULL) {
         T_CHECK(committed_alloc(m, id));
-        u8 *b = xmalloc(m->csize);
+        u8 *b = t_malloc(m->csize);
         memcpy(b, ver_bytes(m, latest(m, id)), m->csize);
         p = add_pend(m, id, P_WRITE, b);
     }
     T_CHECK(p->kind == P_ALLOC || p->kind == P_WRITE);
     if (p->bytes == NULL) {
-        p->bytes = xcalloc(m->csize);
+        p->bytes = t_calloc(1, m->csize);
     }
     if (len > 0) {
         memcpy(p->bytes + off, data, len);
@@ -408,7 +381,7 @@ static void push_version(model *m, u32 id, u64 lsn, bool freed, u8 *bytes)
     T_CHECK(pg->n == 0 || pg->v[pg->n - 1].lsn < lsn);
     if (pg->n == pg->cap) {
         pg->cap = pg->cap == 0 ? 2 : pg->cap * 2;
-        pg->v = xrealloc(pg->v, (usize) pg->cap * sizeof(*pg->v));
+        pg->v = t_realloc(pg->v, (usize) pg->cap * sizeof(*pg->v));
     }
     pg->v[pg->n].lsn = lsn;
     pg->v[pg->n].freed = freed;
@@ -434,7 +407,7 @@ void model_op_commit(model *m)
     m->num_groups = m->op_num_groups;
     if (m->nlsns == m->lsns_cap) {
         m->lsns_cap = m->lsns_cap == 0 ? 256 : m->lsns_cap * 2;
-        m->lsns = xrealloc(m->lsns, (usize) m->lsns_cap * sizeof(*m->lsns));
+        m->lsns = t_realloc(m->lsns, (usize) m->lsns_cap * sizeof(*m->lsns));
     }
     m->lsns[m->nlsns].lsn = m->op_lsn;
     m->lsns[m->nlsns].num_groups = m->num_groups;
@@ -567,7 +540,7 @@ void model_durable(model *m, u64 lsn)
     }
     if (m->nckpts == m->ckpts_cap) {
         m->ckpts_cap = m->ckpts_cap == 0 ? 64 : m->ckpts_cap * 2;
-        m->ckpts = xrealloc(m->ckpts, (usize) m->ckpts_cap * sizeof(*m->ckpts));
+        m->ckpts = t_realloc(m->ckpts, (usize) m->ckpts_cap * sizeof(*m->ckpts));
     }
     m->ckpts[m->nckpts++] = lsn;
 }
