@@ -226,10 +226,10 @@ static void test_concurrent(void)
     for (int i = 0; i < CONC_THREADS; i++) {
         args[i].fp = fp;
         args[i].tag.tag = i;
-        T_EQ(pthread_create(&th[i], NULL, conc_worker, &args[i]), 0);
+        T_OK(pthread_create(&th[i], NULL, conc_worker, &args[i]));
     }
     for (int i = 0; i < CONC_THREADS; i++) {
-        T_EQ(pthread_join(th[i], NULL), 0);
+        T_OK(pthread_join(th[i], NULL));
     }
     T_EQ(ps_frames_free_count(fp), 16);
     T_EQ(ps_frames_evictable_count(fp), 0);

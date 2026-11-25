@@ -304,7 +304,7 @@ static void test_latch_wait_broadcast(void)
     T_OK(ps_ptable_create(16, &a.pt));
 
     pthread_t th;
-    T_EQ(pthread_create(&th, NULL, waiter, &a), 0);
+    T_OK(pthread_create(&th, NULL, waiter, &a));
     while (!atomic_load(&a.waiting)) {
         sched_yield();
     }
@@ -314,7 +314,7 @@ static void test_latch_wait_broadcast(void)
     a.flag = true;
     ps_latch_broadcast(a.pt, ps_page_id_from(7));
     ps_unlatch(a.pt, ps_page_id_from(7));
-    T_EQ(pthread_join(th, NULL), 0);
+    T_OK(pthread_join(th, NULL));
     T_CHECK(a.woke);
 
     ps_ptable_destroy(a.pt);
@@ -367,10 +367,10 @@ static void test_concurrent(void)
     conc_args args[CONC_THREADS];
     for (u32 i = 0; i < CONC_THREADS; i++) {
         args[i] = (conc_args) {.pt = pt, .tid = i};
-        T_EQ(pthread_create(&th[i], NULL, conc_worker, &args[i]), 0);
+        T_OK(pthread_create(&th[i], NULL, conc_worker, &args[i]));
     }
     for (u32 i = 0; i < CONC_THREADS; i++) {
-        T_EQ(pthread_join(th[i], NULL), 0);
+        T_OK(pthread_join(th[i], NULL));
     }
     ps_ptable_destroy(pt);
 }

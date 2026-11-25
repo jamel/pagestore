@@ -839,14 +839,14 @@ static void test_read_concurrent_with_checkpoint(void)
     reader_arg a = {.be = &be, .reads = 0};
     atomic_init(&a.stop, false);
     pthread_t th;
-    T_EQ(pthread_create(&th, NULL, reader_main, &a), 0);
+    T_OK(pthread_create(&th, NULL, reader_main, &a));
     const u32 ids[] = {2, 3};
     for (u32 i = 0; i < 50; i++) {
         const u8 fills[] = {(u8) i, (u8) (i + 1)};
         checkpoint_ok(&be, ps_lsn_from(2 + i), ids, fills, 2);
     }
     atomic_store(&a.stop, true);
-    T_EQ(pthread_join(th, NULL), 0);
+    T_OK(pthread_join(th, NULL));
     be_close(&be);
     teardown();
 }

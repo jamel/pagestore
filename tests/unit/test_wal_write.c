@@ -481,10 +481,10 @@ static void test_concurrent_flush(void)
         flush_arg a[2] = {{w, base + 10, -1}, {w, base + 10, -1}};
         pthread_t t[2];
         for (u32 i = 0; i < 2; i++) {
-            T_EQ(pthread_create(&t[i], NULL, flush_thread, &a[i]), 0);
+            T_OK(pthread_create(&t[i], NULL, flush_thread, &a[i]));
         }
         for (u32 i = 0; i < 2; i++) {
-            T_EQ(pthread_join(t[i], NULL), 0);
+            T_OK(pthread_join(t[i], NULL));
             T_OK(a[i].rv);
         }
     }
@@ -574,7 +574,7 @@ static void test_flush_while_appending(void)
     race_arg a = {w, &appended, &stop};
     pthread_t t[2];
     for (u32 i = 0; i < 2; i++) {
-        T_EQ(pthread_create(&t[i], NULL, flush_loop, &a), 0);
+        T_OK(pthread_create(&t[i], NULL, flush_loop, &a));
     }
     const u64 n = 200;
     for (u64 lsn = 1; lsn <= n; lsn++) {
@@ -583,7 +583,7 @@ static void test_flush_while_appending(void)
     }
     atomic_store(&stop, true);
     for (u32 i = 0; i < 2; i++) {
-        T_EQ(pthread_join(t[i], NULL), 0);
+        T_OK(pthread_join(t[i], NULL));
     }
     T_OK(ps_wal_flush(w, ps_lsn_from(n)));
     fault_vfs_reboot(fv, FAULT_DROP_UNSYNCED);
@@ -925,8 +925,8 @@ static void test_no_io_after_failure(void)
     fault_vfs_fail_at(fv, fault_vfs_points(fv) + 2, EIO);
     flush_arg a = {w, PER_SEG, -1};
     pthread_t t;
-    T_EQ(pthread_create(&t, NULL, failing_flush, &a), 0);
-    T_EQ(pthread_join(t, NULL), 0);
+    T_OK(pthread_create(&t, NULL, failing_flush, &a));
+    T_OK(pthread_join(t, NULL));
     T_ERR(a.rv, EIO);
     fault_vfs_fail_at(fv, 0, 0);
     check_failed(w);

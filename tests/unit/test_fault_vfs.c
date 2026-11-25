@@ -636,10 +636,10 @@ static void test_threads(void)
     for (u32 i = 0; i < 4; i++) {
         snprintf(w[i].path, sizeof(w[i].path), "/d/t%u", (unsigned) i);
         w[i].fill = (u8) (i + 1);
-        T_EQ(pthread_create(&w[i].th, NULL, worker_main, &w[i]), 0);
+        T_OK(pthread_create(&w[i].th, NULL, worker_main, &w[i]));
     }
     for (u32 i = 0; i < 4; i++) {
-        T_EQ(pthread_join(w[i].th, NULL), 0);
+        T_OK(pthread_join(w[i].th, NULL));
     }
     /* Each thread creates once, writes 200 times and syncs at 0, 16, ..., 192. */
     T_EQ(fault_vfs_points(fv), 4 * (1 + 200 + 13));

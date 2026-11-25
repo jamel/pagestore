@@ -307,13 +307,13 @@ static void test_recover_misuse(void)
     atomic_init(&h.begun, false);
     atomic_init(&h.release, false);
     pthread_t t;
-    T_EQ(pthread_create(&t, NULL, hold_op, &h), 0);
+    T_OK(pthread_create(&t, NULL, hold_op, &h));
     while (!atomic_load(&h.begun)) {
         sched_yield();
     }
     T_ERR(ps_recover(s, w, apply_rec, &ctx), EINVAL);
     atomic_store(&h.release, true);
-    T_EQ(pthread_join(t, NULL), 0);
+    T_OK(pthread_join(t, NULL));
     T_EQ(ctx.nseen, 0);
 
     T_OK(ps_op_begin(s, ps_lsn_from(CKPT_LSN + 100)));

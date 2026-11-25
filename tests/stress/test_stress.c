@@ -477,7 +477,7 @@ static void test_writer_readers_checkpoint(void)
     stress *st = t_calloc(1, sizeof(*st));
     writer *w = t_calloc(1, sizeof(*w));
     st->seed = 0x5EEDu + t_scale();
-    T_EQ(pthread_rwlock_init(&st->mu, NULL), 0);
+    T_OK(pthread_rwlock_init(&st->mu, NULL));
     atomic_init(&st->stop, false);
     atomic_init(&st->id_end, 1);
     atomic_init(&st->stale, 0);
@@ -596,7 +596,7 @@ static void test_writer_readers_checkpoint(void)
     for (u32 i = 0; i < ID_MAX; i++) {
         free(st->ids[i].v);
     }
-    T_EQ(pthread_rwlock_destroy(&st->mu), 0);
+    T_OK(pthread_rwlock_destroy(&st->mu));
     free(w);
     free(st);
 }

@@ -473,7 +473,7 @@ static wcase *case_new(u32 cls, u64 seed)
     c->fv = fault_vfs_create(seed);
     c->vc.inner = *fault_vfs_get(c->fv);
     c->vc.fv = c->fv;
-    T_CHECK(pthread_mutex_init(&c->vc.mu, NULL) == 0);
+    T_OK(pthread_mutex_init(&c->vc.mu, NULL));
     c->vfs = (ps_vfs) {
         .ctx = &c->vc,
         .open = wrap_open,

@@ -789,7 +789,7 @@ static void test_readers(void)
     readers_state rs = {.f = &f, .base = f.lsn.raw, .n = 3000};
     atomic_init(&rs.stop, false);
     pthread_t th;
-    T_CHECK(pthread_create(&th, NULL, reader_main, &rs) == 0);
+    T_OK(pthread_create(&th, NULL, reader_main, &rs));
     char key[32];
     for (u64 i = 0; i < 2 * rs.n; i++) {
         const u64 k = (i < rs.n ? i : i - rs.n) * 7919u % rs.n;
@@ -801,7 +801,7 @@ static void test_readers(void)
         }
     }
     atomic_store(&rs.stop, true);
-    T_CHECK(pthread_join(th, NULL) == 0);
+    T_OK(pthread_join(th, NULL));
     T_CHECK(rs.checks > 0);
     fx_destroy(&f);
 }
