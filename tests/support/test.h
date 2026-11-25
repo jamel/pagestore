@@ -151,3 +151,7 @@ void t_rmtree(const char *path);
 
 /* Monotonic clock in milliseconds. */
 u64 t_now_ms(void);
+
+/* Sleeps for the full time, even if a signal interrupts it. */
+void t_sleep_ms(u32 ms);
+void t_sleep_us(u32 us);

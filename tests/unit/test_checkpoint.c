@@ -12,7 +12,6 @@
 #include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
-#include <time.h>
 
 #define PS 4096u
 #define HDR PS_PAGE_HEADER_SIZE
@@ -39,12 +38,6 @@ static void close_store(void)
     s = NULL;
     mb_destroy(mb);
     mb = NULL;
-}
-
-static void sleep_ms(u32 ms)
-{
-    struct timespec ts = {(time_t) (ms / 1000), (long) (ms % 1000) * 1000000L};
-    while (nanosleep(&ts, &ts) != 0) {}
 }
 
 static struct ps_stats stats(void)
@@ -745,7 +738,7 @@ static void test_hooks_serialized(void)
     atomic_init(&st.done, false);
     st.h = &bh;
     T_OK(pthread_create(&st.t, NULL, setter_main, &st));
-    sleep_ms(50);
+    t_sleep_ms(50);
     T_CHECK(!atomic_load(&st.done)); /* waits for the checkpoint */
     mb_block_writes(mb, false);
     T_OK(bg_join(&b));

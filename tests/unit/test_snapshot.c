@@ -10,7 +10,6 @@
 #include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
-#include <time.h>
 
 #define HDR PS_PAGE_HEADER_SIZE
 
@@ -44,12 +43,6 @@ static void close_store(void)
     s = NULL;
     mb_destroy(mb);
     mb = NULL;
-}
-
-static void sleep_ms(u32 ms)
-{
-    struct timespec ts = {(time_t) (ms / 1000), (long) (ms % 1000) * 1000000L};
-    while (nanosleep(&ts, &ts) != 0) {}
 }
 
 static struct ps_stats stats(void)
@@ -637,7 +630,7 @@ static void *releaser_main(void *arg)
 {
     const releaser *r = arg;
     while (ps_test_waiters(s, ps_page_id_from(r->id)) < r->n) {
-        sleep_ms(1);
+        t_sleep_ms(1);
     }
     mb_hold_reads(mb, false);
     return NULL;

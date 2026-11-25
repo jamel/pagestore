@@ -12,7 +12,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 #define PS 4096u
 #define HDR PS_PAGE_HEADER_SIZE
@@ -430,12 +429,6 @@ static void test_recover_fresh(void)
 
 /* ---- POSIX startup sequence ---- */
 
-static void sleep_ms(u32 ms)
-{
-    struct timespec ts = {.tv_sec = 0, .tv_nsec = (long) ms * 1000000L};
-    nanosleep(&ts, NULL);
-}
-
 static void test_startup_sequence_posix(void)
 {
     char *root = t_tmpdir();
@@ -460,7 +453,7 @@ static void test_startup_sequence_posix(void)
     }
     ps_checkpoint_request(s);
     for (u32 i = 0; i < 2000 && ps_durable_lsn(s).raw < 30; i++) {
-        sleep_ms(5);
+        t_sleep_ms(5);
     }
     T_EQ(ps_durable_lsn(s).raw, 30);
     for (u64 lsn = 31; lsn <= NREC; lsn++) {

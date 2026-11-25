@@ -15,7 +15,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 #define PS 4096u
 #define HDR PS_PAGE_HEADER_SIZE
@@ -508,12 +507,6 @@ static void test_lone_frameless_dropped(void)
     close_store();
 }
 
-static void sleep_ms(u32 ms)
-{
-    struct timespec ts = {(time_t) (ms / 1000), (long) (ms % 1000) * 1000000L};
-    while (nanosleep(&ts, &ts) != 0) {}
-}
-
 static void *bg_checkpoint(void *arg)
 {
     int *rv = arg;
@@ -545,7 +538,7 @@ static void test_no_cutoff_behind_checkpoint(void)
     pthread_t t;
     T_OK(pthread_create(&t, NULL, bg_checkpoint, &crv));
     while (!ckpt_running()) {
-        sleep_ms(1);
+        t_sleep_ms(1);
     }
     ps_snapshot *s1 = snap_open();
     ps_snapshot *s2 = snap_open();

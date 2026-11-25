@@ -22,7 +22,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 #define PS 4096u
 #define DIR "/s"
@@ -190,8 +189,7 @@ static int wrap_fsync(ps_vfs_ctx *v, ps_file *f)
         const bool journal = e != NULL && strcmp(e->path, DIR "/journal") == 0;
         pthread_mutex_unlock(&v->mu);
         if (journal) {
-            const struct timespec ts = {0, (long) v->journal_sleep_us * 1000};
-            nanosleep(&ts, NULL);
+            t_sleep_us(v->journal_sleep_us);
         }
     }
     return v->inner.fsync(v->inner.ctx, f);

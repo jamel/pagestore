@@ -13,7 +13,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 #define PS 4096u
 #define HDR PS_PAGE_HEADER_SIZE
@@ -44,12 +43,6 @@ static bool all_zero(const void *p, usize n)
         }
     }
     return true;
-}
-
-static void sleep_ms(u32 ms)
-{
-    struct timespec ts = {(time_t) (ms / 1000), (long) (ms % 1000) * 1000000L};
-    while (nanosleep(&ts, &ts) != 0) {}
 }
 
 /* Create a committed page in its own operation at lsn. */
@@ -277,7 +270,7 @@ static void test_begin_waits_for_other_thread(void)
     const u64 t0 = t_now_ms();
     pthread_t th;
     T_OK(pthread_create(&th, NULL, begin_waiter, &a));
-    sleep_ms(100);
+    t_sleep_ms(100);
     ps_page_id id = PS_PAGE_ID_NONE;
     ps_page *p = NULL;
     T_OK(ps_alloc(s, &id, &p));

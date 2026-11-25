@@ -245,3 +245,21 @@ u64 t_now_ms(void)
     }
     return (u64) ts.tv_sec * 1000u + (u64) ts.tv_nsec / 1000000u;
 }
+
+static void t_sleep_ns(u64 ns)
+{
+    struct timespec ts = {(time_t) (ns / 1000000000u), (long) (ns % 1000000000u)};
+    while (nanosleep(&ts, &ts) != 0) {
+        /* Interrupted: nanosleep left the remaining time in ts. */
+    }
+}
+
+void t_sleep_ms(u32 ms)
+{
+    t_sleep_ns((u64) ms * 1000000u);
+}
+
+void t_sleep_us(u32 us)
+{
+    t_sleep_ns((u64) us * 1000u);
+}

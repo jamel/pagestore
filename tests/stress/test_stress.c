@@ -17,7 +17,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 #define PS 4096u
 #define HDR PS_PAGE_HEADER_SIZE
@@ -169,25 +168,14 @@ static void hist_push(stress *st, u32 id, u64 lsn, bool freed)
 
 /* ---- helpers ---- */
 
-static void sleep_us(u32 us)
-{
-    struct timespec ts = {(time_t) (us / 1000000), (long) (us % 1000000) * 1000L};
-    while (nanosleep(&ts, &ts) != 0) {
-        /* nanosleep puts the remaining delay back in ts on EINTR. */
-    }
-}
-
-/*
- * Wait for the committed LSN to advance. A fixed delay can leave the
- * snapshot too young for cut-off when the writer runs under MSan.
- */
+/* Waits for commits, not a fixed delay, so the snapshot ages enough for cut-off under MSan. */
 static void hold_snapshot(const stress *st, u64 S, u32 commits)
 {
     for (u32 waited = 0; waited < HOLD_MAX_US && !atomic_load(&st->stop); waited += 100) {
         if (ps_committed_lsn(st->s).raw >= S + commits) {
             return;
         }
-        sleep_us(100);
+        t_sleep_us(100);
     }
 }
 

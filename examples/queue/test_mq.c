@@ -22,7 +22,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 static void log_line(ps_logger_ctx *ctx, ps_log_level level, const char *fmt, va_list ap)
 {
@@ -72,17 +71,6 @@ static u64 reader_pos(mq *q, const char *name)
     T_OK(ml_reader_get(mq_log(q), snap, name, &pos));
     ps_snapshot_close(snap);
     return pos;
-}
-
-static void sleep_us(u32 us)
-{
-    const struct timespec t = {us / 1000000, (long) (us % 1000000) * 1000L};
-    nanosleep(&t, NULL);
-}
-
-static void sleep_ms(u32 ms)
-{
-    sleep_us(ms * 1000);
 }
 
 /* ---- test messages -------------------------------------------------------- */
@@ -302,7 +290,7 @@ static void test_mq_wakeup(void)
     T_OK(mq_subscribe(q, "w", MQ_LATEST));
     waiter w = {.q = q};
     T_OK(pthread_create(&w.thread, NULL, wait_main, &w));
-    sleep_ms(50);
+    t_sleep_ms(50);
     u64 seq;
     T_OK(mq_push(q, "hi", 2, &seq));
     T_OK(pthread_join(w.thread, NULL));
@@ -566,7 +554,7 @@ static void *crash_produce(void *arg)
             break;
         }
         /* Pause so reader 0 keeps up and reads right behind the newest push. */
-        sleep_us((u32) rng_below(&r, 400));
+        t_sleep_us((u32) rng_below(&r, 400));
     }
     c->counters[t->id] = counter;
     free(buf);
@@ -743,7 +731,7 @@ static void crash_round(crash_state *c, rng *r)
         if (t_now_ms() - start > 3000) {
             fault_vfs_crash_at(c->fv, fault_vfs_points(c->fv) + 1);
         }
-        sleep_ms(1);
+        t_sleep_ms(1);
     }
     atomic_store(&c->stop, true);
     for (u32 i = 0; i < CR_PRODUCERS + CR_READERS; i++) {

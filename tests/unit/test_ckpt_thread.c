@@ -10,7 +10,6 @@
 #include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
-#include <time.h>
 
 #define PS 4096u
 #define HDR PS_PAGE_HEADER_SIZE
@@ -107,14 +106,6 @@ static struct ps_stats stats(void)
     return st;
 }
 
-static void sleep_ms(u32 ms)
-{
-    struct timespec ts = {(time_t) (ms / 1000), (long) (ms % 1000) * 1000000L};
-    while (nanosleep(&ts, &ts) != 0) {
-        /* interrupted: sleep the rest */
-    }
-}
-
 /* Returns false if the backend has not passed count c within ms. */
 static bool wait_ckpt_count_above(u64 c, u32 ms)
 {
@@ -123,7 +114,7 @@ static bool wait_ckpt_count_above(u64 c, u32 ms)
         if (t_now_ms() >= end) {
             return false;
         }
-        sleep_ms(2);
+        t_sleep_ms(2);
     }
     return true;
 }
@@ -136,7 +127,7 @@ static bool wait_durable(u64 lsn, u32 ms)
         if (t_now_ms() >= end) {
             return false;
         }
-        sleep_ms(2);
+        t_sleep_ms(2);
     }
     return true;
 }
@@ -149,7 +140,7 @@ static bool wait_ckpt_errors(ps_logger_ctx *lc, u32 n, u32 ms)
         if (t_now_ms() >= end) {
             return false;
         }
-        sleep_ms(2);
+        t_sleep_ms(2);
     }
     return true;
 }
@@ -275,7 +266,7 @@ static void wait_flush_held(ps_log_hooks_ctx *h)
     const u64 end = t_now_ms() + 5000;
     while (!flush_held(h)) {
         T_CHECK(t_now_ms() < end);
-        sleep_ms(1);
+        t_sleep_ms(1);
     }
 }
 
@@ -323,7 +314,7 @@ static void test_dirty_watermark(void)
         commit_alloc(1);
     }
     T_EQ(stats().frames_dirty, 21); /* 20 pages and bitmap page 0 */
-    sleep_ms(100);
+    t_sleep_ms(100);
     T_EQ(mb_ckpt_count(mb), c0); /* below the watermark: nothing runs */
     while (stats().frames_dirty <= 25 && mb_ckpt_count(mb) == c0) {
         commit_alloc(1);
@@ -337,7 +328,7 @@ static void test_request(void)
     open_store((thread_cfg) {64, 100, 0});
     commit_alloc(1);
     const u64 c0 = mb_ckpt_count(mb);
-    sleep_ms(50);
+    t_sleep_ms(50);
     T_EQ(mb_ckpt_count(mb), c0);
     ps_checkpoint_request(s);
     T_CHECK(wait_ckpt_count_above(c0, 1000));
@@ -345,7 +336,7 @@ static void test_request(void)
     /* Requests coalesce and a request with nothing to do is harmless. */
     ps_checkpoint_request(s);
     ps_checkpoint_request(s);
-    sleep_ms(50);
+    t_sleep_ms(50);
     T_EQ(mb_ckpt_count(mb), c0 + 1);
     close_store();
 }
@@ -358,7 +349,7 @@ static void test_request_thread_off(void)
     commit_alloc(1);
     const u64 c0 = mb_ckpt_count(mb);
     ps_checkpoint_request(s);
-    sleep_ms(50);
+    t_sleep_ms(50);
     T_EQ(mb_ckpt_count(mb), c0);
     close_store();
 }
@@ -481,7 +472,7 @@ static void test_waiter_gets_error_then_recovers(void)
             break;
         }
         T_ERR(rv, ENOSPC);
-        sleep_ms(10);
+        t_sleep_ms(10);
     }
     T_OK(rv);
     st = stats();
@@ -516,7 +507,7 @@ static void *release_when_waiting(void *arg)
     const u64 end = t_now_ms() + 5000;
     while (ps_test_ckpt_waiters(s) == 0) {
         T_CHECK(t_now_ms() < end);
-        sleep_ms(1);
+        t_sleep_ms(1);
     }
     hold_flushes(h, false);
     return NULL;
@@ -660,9 +651,9 @@ static void *release_when_closing(void *arg)
     const u64 end = t_now_ms() + 5000;
     while (!ps_test_ckpt_stopping(s)) {
         T_CHECK(t_now_ms() < end);
-        sleep_ms(1);
+        t_sleep_ms(1);
     }
-    sleep_ms(50);
+    t_sleep_ms(50);
     T_CHECK(flush_held(cr->h)); /* still in flight while close waits */
     cr->released_ms = t_now_ms();
     hold_flushes(cr->h, false);
@@ -738,7 +729,7 @@ static void test_close_failed_no_leak(void)
     ps_checkpoint_request(s);
     const u64 end = t_now_ms() + 2000;
     while (!stats().failed && t_now_ms() < end) {
-        sleep_ms(2);
+        t_sleep_ms(2);
     }
     T_CHECK(stats().failed);
     const u64 t = t_now_ms();

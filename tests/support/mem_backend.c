@@ -9,7 +9,6 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 #define MB_HDR_PAGE_ID 4
 #define MB_HDR_CHECKSUM 8
@@ -222,12 +221,6 @@ static int be_open(ps_backend_ctx *ctx, bool create, u32 page_size, ps_backend_i
     return rv;
 }
 
-static void sleep_ms(u32 ms)
-{
-    struct timespec ts = {(time_t) (ms / 1000), (long) (ms % 1000) * 1000000L};
-    while (nanosleep(&ts, &ts) != 0) {}
-}
-
 static int be_read_page(ps_backend_ctx *ctx, ps_page_id id, void *buf)
 {
     mem_backend *mb = ctx->mb;
@@ -306,7 +299,7 @@ static int be_ckpt_commit(ps_backend_ctx *ctx, bool *fatal)
     const u32 delay = mb->commit_delay_ms;
     pthread_mutex_unlock(&mb->mu);
     if (delay != 0) {
-        sleep_ms(delay);
+        t_sleep_ms(delay);
     }
 
     pthread_mutex_lock(&mb->mu);
