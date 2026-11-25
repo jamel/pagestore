@@ -12,15 +12,19 @@
 #include <stddef.h> // IWYU pragma: export
 #include <stdint.h> // IWYU pragma: export
 
+/*
+ * i64 and u64 are long long so they print with %lld and %llu without a
+ * cast. int64_t is long on some hosts and long long on others.
+ */
 typedef int8_t i8;
 typedef int16_t i16;
 typedef int32_t i32;
-typedef int64_t i64;
+typedef long long i64;
 
 typedef uint8_t u8;
 typedef uint16_t u16;
 typedef uint32_t u32;
-typedef uint64_t u64;
+typedef unsigned long long u64;
 
 typedef ptrdiff_t isize;
 typedef size_t usize;
@@ -28,6 +32,8 @@ typedef size_t usize;
 typedef float f32;
 typedef double f64;
 
+PS_STATIC_ASSERT(sizeof(i64) == 8, "i64 must be 64 bits");
+PS_STATIC_ASSERT(sizeof(u64) == 8, "u64 must be 64 bits");
 PS_STATIC_ASSERT(sizeof(f32) == 4, "f32 must be 32 bits");
 PS_STATIC_ASSERT(sizeof(f64) == 8, "f64 must be 64 bits");
 PS_STATIC_ASSERT(sizeof(isize) == sizeof(usize), "isize and usize must have the same width");

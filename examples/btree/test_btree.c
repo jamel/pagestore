@@ -792,7 +792,7 @@ static void test_readers(void)
     char key[32];
     for (u64 i = 0; i < 2 * rs.n; i++) {
         const u64 k = (i < rs.n ? i : i - rs.n) * 7919u % rs.n;
-        snprintf(key, sizeof(key), "key%llu", (unsigned long long) k);
+        snprintf(key, sizeof(key), "key%llu", k);
         if (i < rs.n) {
             T_OK(put_str(&f, key, "a value of moderate length"));
         } else {

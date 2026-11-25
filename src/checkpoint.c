@@ -233,7 +233,7 @@ static int ckpt_failed(ps_store *s, ps_lsn L, int err, bool fatal, bool began)
         fatal || s->ckpt_bg ? PS_LOG_LEVEL_ERROR : PS_LOG_LEVEL_WARN,
         "%scheckpoint at LSN %llu failed: %s (error %d)%s",
         s->ckpt_bg ? "background " : "",
-        (unsigned long long) L.raw,
+        L.raw,
         ps_strerror(err, eb, sizeof(eb)),
         err,
         fatal          ? "; the store has failed" :
@@ -419,7 +419,7 @@ int ps_checkpoint_run(ps_store *s)
     ps_retire_process(s);
     pthread_mutex_unlock(&s->reg_mu);
     atomic_fetch_add_explicit(&s->checkpoints_run, 1, memory_order_relaxed);
-    PS_LOG_DEBUG(&s->logger, "checkpoint at LSN %llu: %u pages", (unsigned long long) L.raw, count);
+    PS_LOG_DEBUG(&s->logger, "checkpoint at LSN %llu: %u pages", L.raw, count);
 
     if (s->hooks.checkpoint_done != NULL) {
         s->hooks.checkpoint_done(s->hooks.ctx, L);

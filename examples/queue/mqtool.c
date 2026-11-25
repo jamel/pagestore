@@ -108,7 +108,7 @@ static int cmd_push(tool *t, int argc, char **argv)
             report("push failed", rv);
             return EXIT_ERROR;
         }
-        printf("%llu\n", (unsigned long long) seq);
+        printf("%llu\n", seq);
     }
     return EXIT_SUCCESS;
 }
@@ -191,7 +191,7 @@ static int cmd_load(tool *t, int argc, char **argv)
             len--;
         }
         if (len > t->cfg.max_batch) {
-            fprintf(stderr, "mq: line %llu is too long\n", (unsigned long long) loaded + 1);
+            fprintf(stderr, "mq: line %llu is too long\n", loaded + 1);
             rv = EMSGSIZE;
             break;
         }
@@ -220,7 +220,7 @@ static int cmd_load(tool *t, int argc, char **argv)
     if (rv != 0) {
         return EXIT_ERROR;
     }
-    printf("loaded %llu %s\n", (unsigned long long) loaded, loaded == 1 ? "message" : "messages");
+    printf("loaded %llu %s\n", loaded, loaded == 1 ? "message" : "messages");
     return EXIT_SUCCESS;
 }
 
@@ -319,10 +319,10 @@ static int cmd_read(tool *t, int argc, char **argv)
                 stderr,
                 "mq: %s missed %llu %s\n",
                 argv[0],
-                (unsigned long long) it.missed,
+                it.missed,
                 it.missed == 1 ? "message" : "messages");
         }
-        printf("%llu\t", (unsigned long long) it.seq);
+        printf("%llu\t", it.seq);
         fwrite(buf, 1, it.len, stdout);
         putchar('\n');
         last = it.seq;
@@ -357,7 +357,7 @@ static int cmd_ack(tool *t, int argc, char **argv)
     }
     const int rv = mq_ack(&r, seq);
     if (rv == EINVAL) {
-        fprintf(stderr, "mq: no message %llu yet\n", (unsigned long long) seq);
+        fprintf(stderr, "mq: no message %llu yet\n", seq);
         status = EXIT_ERROR;
     } else if (rv != 0) {
         report("ack failed", rv);
@@ -385,11 +385,7 @@ static int cmd_readers(tool *t, int argc, char **argv)
     char name[MQ_NAME_MAX + 1];
     u64 pos;
     while (rv == 0 && (rv = ml_reader_next(l, snap, &slot, name, &pos)) == 0) {
-        printf(
-            "%s\t%llu\t%llu\n",
-            name,
-            (unsigned long long) pos,
-            (unsigned long long) (st.next_seq - pos));
+        printf("%s\t%llu\t%llu\n", name, pos, st.next_seq - pos);
     }
     ps_snapshot_close(snap);
     if (rv != ENOENT) {
@@ -440,25 +436,19 @@ static int cmd_stats(tool *t, int argc, char **argv)
     }
     struct ps_stats ss;
     ps_stats(mq_store(t->q), &ss);
-    printf("messages        %llu\n", (unsigned long long) ms.messages);
+    printf("messages        %llu\n", ms.messages);
     if (ms.messages > 0) {
-        printf(
-            "sequence        %llu to %llu\n",
-            (unsigned long long) st.first_seq,
-            (unsigned long long) st.next_seq - 1);
+        printf("sequence        %llu to %llu\n", st.first_seq, st.next_seq - 1);
     }
-    printf("cap             %llu\n", (unsigned long long) st.cap);
-    printf("payload bytes   %llu\n", (unsigned long long) ms.bytes);
+    printf("cap             %llu\n", st.cap);
+    printf("payload bytes   %llu\n", ms.bytes);
     printf("readers         %u\n", ms.readers);
-    printf("data pages      %llu\n", (unsigned long long) ms.data_pages);
-    printf("index pages     %llu\n", (unsigned long long) ms.index_pages);
-    printf("page map pages  %llu\n", (unsigned long long) ms.map_pages);
-    printf(
-        "store pages     %llu, %u bytes each\n",
-        (unsigned long long) ss.allocated_pages,
-        ss.page_size);
-    printf("committed LSN   %llu\n", (unsigned long long) ss.committed_lsn.raw);
-    printf("durable LSN     %llu\n", (unsigned long long) ss.durable_lsn.raw);
+    printf("data pages      %llu\n", ms.data_pages);
+    printf("index pages     %llu\n", ms.index_pages);
+    printf("page map pages  %llu\n", ms.map_pages);
+    printf("store pages     %llu, %u bytes each\n", ss.allocated_pages, ss.page_size);
+    printf("committed LSN   %llu\n", ss.committed_lsn.raw);
+    printf("durable LSN     %llu\n", ss.durable_lsn.raw);
     return EXIT_SUCCESS;
 }
 
@@ -480,14 +470,11 @@ static int cmd_check(tool *t, int argc, char **argv)
         fprintf(
             stderr,
             "mq: the store has %llu pages allocated but the log uses %llu\n",
-            (unsigned long long) ss.allocated_pages,
-            (unsigned long long) pages);
+            ss.allocated_pages,
+            pages);
         return EXIT_ERROR;
     }
-    printf(
-        "ok: %llu messages in %llu pages\n",
-        (unsigned long long) ms.messages,
-        (unsigned long long) pages);
+    printf("ok: %llu messages in %llu pages\n", ms.messages, pages);
     return EXIT_SUCCESS;
 }
 
@@ -584,18 +571,13 @@ static bool bench_verify(const bench *b, const u8 *msg, u32 len, u64 *next, char
             cap,
             "producer %u: message %llu after %llu",
             producer,
-            (unsigned long long) counter,
-            (unsigned long long) next[producer] - 1);
+            counter,
+            next[producer] - 1);
         return false;
     }
     for (u32 i = BENCH_HEADER; i < len; i++) {
         if (msg[i] != pattern(producer, counter, i)) {
-            snprintf(
-                why,
-                cap,
-                "producer %u: message %llu is damaged",
-                producer,
-                (unsigned long long) counter);
+            snprintf(why, cap, "producer %u: message %llu is damaged", producer, counter);
             return false;
         }
     }
@@ -741,7 +723,7 @@ static int cmd_bench(tool *t, int argc, char **argv)
     const f64 mib = (f64) b.messages * b.size / (1 << 20);
     printf(
         "pushed %llu messages of %u bytes in %.2f s: %.0f messages/s, %.1f MiB/s\n",
-        (unsigned long long) b.messages,
+        b.messages,
         b.size,
         pushed,
         (f64) b.messages / pushed,
@@ -757,8 +739,8 @@ static int cmd_bench(tool *t, int argc, char **argv)
         printf(
             "%s read %llu messages, missed %llu, done at %.2f s\n",
             r->name,
-            (unsigned long long) r->delivered,
-            (unsigned long long) r->missed,
+            r->delivered,
+            r->missed,
             r->done_at);
     }
     free(ps);

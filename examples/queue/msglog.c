@@ -625,17 +625,12 @@ static int check_meta(const ml_log *l, const ps_page *p, const log_meta *m, char
             msg,
             cap,
             "meta: %llu..%llu doesn't fit cap %llu",
-            (unsigned long long) m->first_seq,
-            (unsigned long long) m->next_seq,
-            (unsigned long long) m->cap);
+            m->first_seq,
+            m->next_seq,
+            m->cap);
     }
     if (m->first_off > m->end_off || (m->first_seq == m->next_seq && m->first_off != m->end_off)) {
-        return fail(
-            msg,
-            cap,
-            "meta: bad byte range %llu..%llu",
-            (unsigned long long) m->first_off,
-            (unsigned long long) m->end_off);
+        return fail(msg, cap, "meta: bad byte range %llu..%llu", m->first_off, m->end_off);
     }
     u32 used = 0;
     for (u32 i = 0; i < l->max_readers; i++) {
@@ -695,19 +690,11 @@ static int check_offsets(
         u64 off;
         const int rv = rx_get(index, snap, seq, &off);
         if (rv != 0) {
-            return rv == ENOENT ?
-                fail(msg, cap, "index: no entry for %llu", (unsigned long long) seq) :
-                rv;
+            return rv == ENOENT ? fail(msg, cap, "index: no entry for %llu", seq) : rv;
         }
         const bool bad = seq == m->first_seq ? off != m->first_off : off < prev;
         if (bad || off > m->end_off) {
-            return fail(
-                msg,
-                cap,
-                "index: message %llu at offset %llu, after %llu",
-                (unsigned long long) seq,
-                (unsigned long long) off,
-                (unsigned long long) prev);
+            return fail(msg, cap, "index: message %llu at offset %llu, after %llu", seq, off, prev);
         }
         prev = off;
     }
@@ -730,11 +717,7 @@ static int check_data(
         u64 raw;
         int rv = rx_get(pages, snap, lp, &raw);
         if (rv == ENOENT || (rv == 0 && raw == 0)) {
-            return fail(
-                msg,
-                cap,
-                "page map: no page for logical page %llu",
-                (unsigned long long) lp);
+            return fail(msg, cap, "page map: no page for logical page %llu", lp);
         }
         if (rv != 0) {
             return rv;
@@ -751,12 +734,7 @@ static int check_data(
         const bool ok = data_ok(p, lp);
         ps_snapshot_unpin(snap, id);
         if (!ok) {
-            return fail(
-                msg,
-                cap,
-                "page %u: not the data page for logical page %llu",
-                id.raw,
-                (unsigned long long) lp);
+            return fail(msg, cap, "page %u: not the data page for logical page %llu", id.raw, lp);
         }
         (*count)++;
     }

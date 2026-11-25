@@ -84,10 +84,10 @@ static void check_page(u64 seed, const ps_page *p, u32 id, u64 lsn)
             T_FAIL(
                 "page %u (lsn %llu): word %u is %016llx, want %016llx",
                 id,
-                (unsigned long long) lsn,
+                lsn,
                 i,
-                (unsigned long long) w,
-                (unsigned long long) word_at(seed, id, lsn, i));
+                w,
+                word_at(seed, id, lsn, i));
         }
     }
 }
@@ -544,18 +544,18 @@ static void test_writer_readers_checkpoint(void)
         "%llu busy, %llu at cap; cut off %llu, hits %llu, misses %llu, checkpoints %llu, "
         "waits %llu\n",
         (double) (t_now_ms() - start) / 1000.0,
-        (unsigned long long) w->commits,
-        (unsigned long long) w->aborts,
-        (unsigned long long) tot.snapshots,
-        (unsigned long long) tot.reads,
-        (unsigned long long) tot.stale,
-        (unsigned long long) tot.busy,
-        (unsigned long long) tot.cap_hits,
-        (unsigned long long) ss.snapshots_cut_off,
-        (unsigned long long) ss.cache_hits,
-        (unsigned long long) ss.cache_misses,
-        (unsigned long long) ss.checkpoints_run,
-        (unsigned long long) ss.writer_waits);
+        w->commits,
+        w->aborts,
+        tot.snapshots,
+        tot.reads,
+        tot.stale,
+        tot.busy,
+        tot.cap_hits,
+        ss.snapshots_cut_off,
+        ss.cache_hits,
+        ss.cache_misses,
+        ss.checkpoints_run,
+        ss.writer_waits);
 
     T_CHECK(ss.snapshots_cut_off > 0);
     T_CHECK(ss.cache_misses > 0);

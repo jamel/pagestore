@@ -395,7 +395,7 @@ int ps_op_begin(ps_store *s, ps_lsn lsn)
         PS_LOG_ERROR(
             &s->logger,
             "ps_op_begin(%llu): this thread already has an operation",
-            (unsigned long long) lsn.raw);
+            lsn.raw);
         return EINVAL;
     }
     gate_enter_locked(s);
@@ -410,8 +410,8 @@ int ps_op_begin(ps_store *s, ps_lsn lsn)
         PS_LOG_ERROR(
             &s->logger,
             "ps_op_begin(%llu): LSN must exceed the committed LSN %llu",
-            (unsigned long long) lsn.raw,
-            (unsigned long long) committed.raw);
+            lsn.raw,
+            committed.raw);
         return EINVAL;
     }
     s->op_owner = pthread_self();

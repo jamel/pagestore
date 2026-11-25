@@ -63,7 +63,7 @@ int ps_recover(ps_store *store, ps_wal *wal, ps_apply_fn apply, ps_apply_ctx *ct
             PS_LOG_ERROR(
                 &store->logger,
                 "ps_recover: reading the WAL after LSN %llu failed: %s (error %d)",
-                (unsigned long long) (n > 0 ? lsn : d).raw,
+                (n > 0 ? lsn : d).raw,
                 ps_strerror(rv, buf, sizeof(buf)),
                 rv);
             break;
@@ -74,7 +74,7 @@ int ps_recover(ps_store *store, ps_wal *wal, ps_apply_fn apply, ps_apply_ctx *ct
             PS_LOG_ERROR(
                 &store->logger,
                 "ps_recover: apply left the operation of record %llu open; aborted it",
-                (unsigned long long) lsn.raw);
+                lsn.raw);
             if (rv == 0) {
                 rv = EINVAL;
             }
@@ -85,7 +85,7 @@ int ps_recover(ps_store *store, ps_wal *wal, ps_apply_fn apply, ps_apply_ctx *ct
             PS_LOG_ERROR(
                 &store->logger,
                 "ps_recover: applying record %llu failed: %s (error %d)",
-                (unsigned long long) lsn.raw,
+                lsn.raw,
                 ps_strerror(rv, buf, sizeof(buf)),
                 rv);
             break;
@@ -96,8 +96,8 @@ int ps_recover(ps_store *store, ps_wal *wal, ps_apply_fn apply, ps_apply_ctx *ct
                 &store->logger,
                 "ps_recover: after applying record %llu the committed LSN is %llu "
                 "(apply must commit one operation at the record's LSN)",
-                (unsigned long long) lsn.raw,
-                (unsigned long long) c.raw);
+                lsn.raw,
+                c.raw);
             rv = EINVAL;
             break;
         }
@@ -112,15 +112,12 @@ int ps_recover(ps_store *store, ps_wal *wal, ps_apply_fn apply, ps_apply_ctx *ct
             PS_LOG_INFO(
                 &store->logger,
                 "recovered %llu WAL records (LSNs %llu..%llu) above the durable LSN %llu",
-                (unsigned long long) n,
-                (unsigned long long) first.raw,
-                (unsigned long long) lsn.raw,
-                (unsigned long long) d.raw);
+                n,
+                first.raw,
+                lsn.raw,
+                d.raw);
         } else {
-            PS_LOG_INFO(
-                &store->logger,
-                "no WAL records above the durable LSN %llu",
-                (unsigned long long) d.raw);
+            PS_LOG_INFO(&store->logger, "no WAL records above the durable LSN %llu", d.raw);
         }
     }
     return rv;

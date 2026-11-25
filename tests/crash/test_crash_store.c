@@ -80,7 +80,7 @@ static void check_content(const ps_page *p, ps_page_id id, u64 lsn)
     const u8 *b = (const u8 *) p;
     for (u32 j = HDR; j < PS; j++) {
         if (b[j] != content_byte(id, lsn, j)) {
-            T_FAIL("page %u lsn %llu: byte %u differs", id.raw, (unsigned long long) lsn, j);
+            T_FAIL("page %u lsn %llu: byte %u differs", id.raw, lsn, j);
         }
     }
 }
@@ -219,10 +219,7 @@ static const image *expected_at(const run *rn, u64 L)
             return &rn->images[i];
         }
     }
-    T_FAIL(
-        "durable lsn %llu is no allowed checkpoint (last ok %llu)",
-        (unsigned long long) L,
-        (unsigned long long) rn->images[last_ok].lsn);
+    T_FAIL("durable lsn %llu is no allowed checkpoint (last ok %llu)", L, rn->images[last_ok].lsn);
 }
 
 /* Checks the reopened store against im, then that it keeps working. */

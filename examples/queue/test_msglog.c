@@ -341,7 +341,7 @@ static void expect_msg(const u8 *buf, u64 seq, u32 len)
 {
     for (u32 i = 0; i < len; i++) {
         if (buf[i] != msg_byte(seq, i)) {
-            T_FAIL("message %llu: byte %u differs", (unsigned long long) seq, i);
+            T_FAIL("message %llu: byte %u differs", seq, i);
         }
     }
 }

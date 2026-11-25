@@ -118,10 +118,7 @@ static void cut_off_unlock(ps_store *s, ps_snapref *r)
     atomic_fetch_add_explicit(&s->snapshots_cut_off, 1, memory_order_relaxed);
     ps_retire_process(s);
     pthread_mutex_unlock(&s->reg_mu);
-    PS_LOG_INFO(
-        &s->logger,
-        "snapshot at LSN %llu cut off to free memory",
-        (unsigned long long) lsn.raw);
+    PS_LOG_INFO(&s->logger, "snapshot at LSN %llu cut off to free memory", lsn.raw);
 }
 
 bool ps_snap_cut_off_oldest(ps_store *s)
@@ -355,13 +352,13 @@ int ps_snapshot_read(ps_snapshot *sn, ps_page_id id, const ps_page **page)
                 &s->logger,
                 "ps_snapshot_read: page %u is freed at LSN %llu",
                 id.raw,
-                (unsigned long long) sn->ref.lsn.raw);
+                sn->ref.lsn.raw);
         } else if (why == MISUSE_NOT_ALLOCATED) {
             PS_LOG_ERROR(
                 &s->logger,
                 "ps_snapshot_read: page %u is not allocated at LSN %llu",
                 id.raw,
-                (unsigned long long) sn->ref.lsn.raw);
+                sn->ref.lsn.raw);
         }
         return rv;
     }

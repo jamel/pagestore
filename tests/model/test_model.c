@@ -213,9 +213,9 @@ static int misuse_read(run *t, snap_rec *sr, ps_page_id id)
         T_FAIL(
             "misuse read of %u at LSN %llu: rv %d, page lsn %llu",
             id.raw,
-            (unsigned long long) sr->lsn,
+            sr->lsn,
             rv,
-            rv == 0 ? (unsigned long long) p->lsn.raw : 0ull);
+            rv == 0 ? p->lsn.raw : 0ull);
     }
     if (rv == EINVAL) {
         t->t->misuse_einval++;
@@ -556,16 +556,16 @@ static void test_model_vs_store(void)
         stderr,
         "  ops %llu aborted %llu reopens %llu failures %llu stale %llu eagain %llu\n"
         "  misuse reads: EINVAL %llu EBADMSG %llu bytes %llu; failed-store EIO %llu\n",
-        (unsigned long long) ty.ops,
-        (unsigned long long) ty.aborted,
-        (unsigned long long) ty.reopens,
-        (unsigned long long) ty.failures,
-        (unsigned long long) ty.stale,
-        (unsigned long long) ty.eagain,
-        (unsigned long long) ty.misuse_einval,
-        (unsigned long long) ty.misuse_ebadmsg,
-        (unsigned long long) ty.misuse_bytes,
-        (unsigned long long) ty.failed_eio);
+        ty.ops,
+        ty.aborted,
+        ty.reopens,
+        ty.failures,
+        ty.stale,
+        ty.eagain,
+        ty.misuse_einval,
+        ty.misuse_ebadmsg,
+        ty.misuse_bytes,
+        ty.failed_eio);
     /* Ensure these seeds exercise the error paths as well as successful reads. */
     T_CHECK(ty.failures > 0);
     T_CHECK(ty.stale > 0);

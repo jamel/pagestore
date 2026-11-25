@@ -164,7 +164,7 @@ static const char *wal_path(ps_wal *w, char *dst, const char *name)
 static const char *seg_path(ps_wal *w, char *dst, u64 seq, bool tmp)
 {
     char name[WAL_NAME_LEN];
-    snprintf(name, sizeof(name), "%016llx.wal%s", (unsigned long long) seq, tmp ? ".tmp" : "");
+    snprintf(name, sizeof(name), "%016llx.wal%s", seq, tmp ? ".tmp" : "");
     return wal_path(w, dst, name);
 }
 
@@ -536,7 +536,7 @@ int ps_wal_truncate(ps_wal *w, ps_lsn lsn)
         PS_LOG_WARN(
             &w->logger,
             "WAL truncate: deleting segment %016llx failed: %s (error %d)",
-            (unsigned long long) seq,
+            seq,
             ps_strerror(rv, buf, sizeof(buf)),
             rv);
     }
@@ -799,7 +799,7 @@ static int open_fresh(ps_wal *w)
             &w->logger,
             "WAL %s has no segments but the store's durable LSN is %llu: the log was lost",
             w->dir,
-            (unsigned long long) ps_durable_lsn(w->store).raw);
+            ps_durable_lsn(w->store).raw);
         return EBADMSG;
     }
     int rv = reserve_seg(w);
@@ -836,11 +836,7 @@ static int find_anchor(
         int rv = scan_open(&w->vfs, seg_path(w, w->path, segs[i], false), sc, segs[i], &h);
         scan_close(&w->vfs, sc);
         if (rv == EBADMSG) {
-            PS_LOG_ERROR(
-                &w->logger,
-                "WAL %s: segment %016llx has a bad header",
-                w->dir,
-                (unsigned long long) segs[i]);
+            PS_LOG_ERROR(&w->logger, "WAL %s: segment %016llx has a bad header", w->dir, segs[i]);
         }
         if (rv != 0) {
             return rv;
@@ -858,8 +854,8 @@ static int find_anchor(
                 &w->logger,
                 "WAL %s: segment %016llx is missing (records after the durable LSN %llu are lost)",
                 w->dir,
-                (unsigned long long) (segs[i] - 1),
-                (unsigned long long) d.raw);
+                segs[i] - 1,
+                d.raw);
             return EBADMSG;
         }
     }
@@ -867,9 +863,9 @@ static int find_anchor(
         &w->logger,
         "WAL %s: no segment starts at or before the durable LSN %llu (oldest %016llx starts after %llu)",
         w->dir,
-        (unsigned long long) d.raw,
-        (unsigned long long) segs[0],
-        (unsigned long long) prev[0].raw);
+        d.raw,
+        segs[0],
+        prev[0].raw);
     return EBADMSG;
 }
 
@@ -894,10 +890,10 @@ static int validate(
                 &w->logger,
                 "WAL %s: segment %016llx starts after LSN %llu but segment %016llx ends at LSN %llu",
                 w->dir,
-                (unsigned long long) segs[i],
-                (unsigned long long) prev[i].raw,
-                (unsigned long long) segs[i - 1],
-                (unsigned long long) last[i - 1].raw);
+                segs[i],
+                prev[i].raw,
+                segs[i - 1],
+                last[i - 1].raw);
             return EBADMSG;
         }
         ps_wal_seg_header h;
@@ -920,11 +916,7 @@ static int validate(
         last[i] = sc->last;
         scan_close(&w->vfs, sc);
         if (rv == EBADMSG) {
-            PS_LOG_ERROR(
-                &w->logger,
-                "WAL %s: segment %016llx has a bad header",
-                w->dir,
-                (unsigned long long) segs[i]);
+            PS_LOG_ERROR(&w->logger, "WAL %s: segment %016llx has a bad header", w->dir, segs[i]);
         }
         if (rv != 0) {
             return rv;
@@ -934,9 +926,9 @@ static int validate(
                 &w->logger,
                 "WAL %s: sealed segment %016llx has an invalid record at offset %llu (size %llu)",
                 w->dir,
-                (unsigned long long) segs[i],
-                (unsigned long long) off,
-                (unsigned long long) sz);
+                segs[i],
+                off,
+                sz);
             return EBADMSG;
         }
         *end = off;
@@ -965,7 +957,7 @@ static int seal_at_open(ps_wal *w, u64 seq, u64 end, u64 size)
             &w->logger,
             "WAL %s: sealing segment %016llx failed: %s (error %d)",
             w->dir,
-            (unsigned long long) seq,
+            seq,
             ps_strerror(rv, buf, sizeof(buf)),
             rv);
     }
@@ -1029,8 +1021,8 @@ static int open_existing(ps_wal *w, u64 *segs, usize n)
             "WAL %s: the last valid LSN %llu is below the store's durable LSN %llu "
             "(operations not logged, or the newest segments were lost)",
             w->dir,
-            (unsigned long long) last_lsn.raw,
-            (unsigned long long) d.raw);
+            last_lsn.raw,
+            d.raw);
     }
     if (rv == 0) {
         bool clean = false;
@@ -1054,10 +1046,10 @@ static int open_existing(ps_wal *w, u64 *segs, usize n)
             &w->logger,
             "WAL %s opened: segments %016llx..%016llx, last LSN %llu, durable LSN %llu",
             w->dir,
-            (unsigned long long) segs[anchor],
-            (unsigned long long) newest,
-            (unsigned long long) last_lsn.raw,
-            (unsigned long long) d.raw);
+            segs[anchor],
+            newest,
+            last_lsn.raw,
+            d.raw);
     }
     free(prev);
     free(last);
@@ -1238,7 +1230,7 @@ static int iter_changed(ps_wal_iter *it, const char *what)
         &it->w->logger,
         "WAL %s: segment %016llx %s since open",
         it->w->dir,
-        (unsigned long long) it->seq,
+        it->seq,
         what);
     return EBADMSG;
 }

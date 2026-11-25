@@ -314,10 +314,10 @@ static void test_long_snapshot_writer_never_stalls(void)
     fprintf(
         stderr,
         "  long snapshot: %llu ops, max %llu ms, cut off after op %llu, %llu reads before\n",
-        (unsigned long long) ops,
-        (unsigned long long) max_ms,
-        (unsigned long long) stale_at,
-        (unsigned long long) sreads);
+        ops,
+        max_ms,
+        stale_at,
+        sreads);
     T_CHECK(stale_at != 0);
     ps_snapshot_unpin(sn, ps_page_id_from(1));
     ps_snapshot_close(sn);
@@ -431,9 +431,9 @@ static void test_cutoff_oldest_first(void)
     fprintf(
         stderr,
         "  oldest first: %llu ops (max %llu ms), %llu cut off\n",
-        (unsigned long long) ops,
-        (unsigned long long) max_ms,
-        (unsigned long long) st.snapshots_cut_off);
+        ops,
+        max_ms,
+        st.snapshots_cut_off);
     T_CHECK(max_ms < MAX_OP_MS);
     T_CHECK(dead_seen > 1);
     T_EQ(st.snapshots_cut_off, dead_seen);
@@ -594,11 +594,11 @@ static void test_pin_limits(void)
     fprintf(
         stderr,
         "  pin limits: %llu writer ops (max %llu ms), %llu reads, %llu ENOBUFS, %llu ESTALE\n",
-        (unsigned long long) cops,
-        (unsigned long long) max_ms,
-        (unsigned long long) tot.reads,
-        (unsigned long long) tot.enobufs,
-        (unsigned long long) tot.stale);
+        cops,
+        max_ms,
+        tot.reads,
+        tot.enobufs,
+        tot.stale);
     T_CHECK(max_ms < MAX_OP_MS);
     T_CHECK(tot.reads > 0);
     T_CHECK(tot.enobufs > 0);

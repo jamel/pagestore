@@ -1472,8 +1472,8 @@ int bt_check(const bt_tree *t, ps_snapshot *snap, bt_stats *out, char *msg, usiz
             &c,
             t->meta,
             "the tree holds %llu keys but the meta page says %llu",
-            (unsigned long long) out->keys,
-            (unsigned long long) m.count);
+            out->keys,
+            m.count);
     }
     return 0;
 }

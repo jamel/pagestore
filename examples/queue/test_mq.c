@@ -654,10 +654,7 @@ static void crash_verify(crash_state *c)
 {
     const ml_state st = check_queue(c->q);
     if (c->seen > st.next_seq) {
-        T_FAIL(
-            "a reader got message %llu, but only %llu survived",
-            (unsigned long long) c->seen - 1,
-            (unsigned long long) st.next_seq);
+        T_FAIL("a reader got message %llu, but only %llu survived", c->seen - 1, st.next_seq);
     }
     ps_snapshot *snap;
     T_OK(ps_snapshot_open(mq_store(c->q), &snap));
@@ -667,7 +664,7 @@ static void crash_verify(crash_state *c)
     for (usize i = 0; i < c->nok; i++) {
         const pushed *p = &c->ok[i];
         if (p->seq >= st.next_seq) {
-            T_FAIL("acknowledged push %llu was lost", (unsigned long long) p->seq);
+            T_FAIL("acknowledged push %llu was lost", p->seq);
         }
         if (p->seq < st.first_seq) {
             continue;

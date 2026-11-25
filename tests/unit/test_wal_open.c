@@ -102,7 +102,7 @@ static void teardown(void)
 
 static void seg_name(char *buf, usize n, u64 seq)
 {
-    snprintf(buf, n, WALDIR "/%016llx.wal", (unsigned long long) seq);
+    snprintf(buf, n, WALDIR "/%016llx.wal", seq);
 }
 
 static bool file_exists(const char *path)

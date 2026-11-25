@@ -447,11 +447,7 @@ static int check_leaf(check_state *c, ps_page_id id, u64 base)
     }
     const u64 k = base / c->a->leaf_cap;
     if (k != c->need) {
-        return check_fail(
-            c,
-            id,
-            "leaf for indexes from %llu is missing",
-            (unsigned long long) (c->need * c->a->leaf_cap));
+        return check_fail(c, id, "leaf for indexes from %llu is missing", c->need * c->a->leaf_cap);
     }
     c->need++;
     return 0;
@@ -468,12 +464,7 @@ static int check_node(check_state *c, ps_page_id id, u32 level, u64 base)
     }
     if (!node_ok(a, n, level, base)) {
         src_done(&r, id);
-        return check_fail(
-            c,
-            id,
-            "not the level %u node at base %llu",
-            level,
-            (unsigned long long) base);
+        return check_fail(c, id, "not the level %u node at base %llu", level, base);
     }
     const u64 s = span(a, level);
     const u64 end = s > UINT64_MAX - base ? UINT64_MAX : base + s;
@@ -483,10 +474,10 @@ static int check_node(check_state *c, ps_page_id id, u32 level, u64 base)
             c,
             id,
             "covers %llu..%llu, outside the live range %llu..%llu",
-            (unsigned long long) base,
-            (unsigned long long) end,
-            (unsigned long long) c->lo,
-            (unsigned long long) c->hi);
+            base,
+            end,
+            c->lo,
+            c->hi);
     }
     if (level == 0) {
         rv = check_leaf(c, id, base);
@@ -539,7 +530,7 @@ int rx_check(
             &c,
             a->root,
             "leaf for indexes from %llu is missing",
-            (unsigned long long) (c.need * a->leaf_cap));
+            c.need * a->leaf_cap);
     }
     return 0;
 }

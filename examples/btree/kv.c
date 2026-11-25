@@ -474,14 +474,14 @@ static int cmd_load(kv *db, int argc, char **argv)
         }
         const char *tab = memchr(line, '\t', len);
         if (tab == NULL) {
-            fprintf(stderr, "kv: line %llu: expected KEY<TAB>VALUE\n", (unsigned long long) lineno);
+            fprintf(stderr, "kv: line %llu: expected KEY<TAB>VALUE\n", lineno);
             status = EXIT_ERROR;
             break;
         }
         const usize klen = (usize) (tab - line);
         const usize vlen = len - klen - 1;
         if (!entry_fits(db, klen, vlen)) {
-            fprintf(stderr, "kv: line %llu is too long\n", (unsigned long long) lineno);
+            fprintf(stderr, "kv: line %llu is too long\n", lineno);
             status = EXIT_ERROR;
             break;
         }
@@ -491,7 +491,7 @@ static int cmd_load(kv *db, int argc, char **argv)
             rv = kv_flush(db);
         }
         if (rv != 0) {
-            fprintf(stderr, "kv: line %llu: %s\n", (unsigned long long) lineno, strerror(rv));
+            fprintf(stderr, "kv: line %llu: %s\n", lineno, strerror(rv));
             status = EXIT_ERROR;
             break;
         }
@@ -509,7 +509,7 @@ static int cmd_load(kv *db, int argc, char **argv)
         report("log flush failed", rv);
         return EXIT_ERROR;
     }
-    printf("loaded %llu %s\n", (unsigned long long) loaded, loaded == 1 ? "entry" : "entries");
+    printf("loaded %llu %s\n", loaded, loaded == 1 ? "entry" : "entries");
     return status;
 }
 
@@ -539,26 +539,20 @@ static int cmd_stats(kv *db, int argc, char **argv)
     struct ps_stats ss;
     ps_stats(db->store, &ss);
     const u32 cap = bs.node_capacity;
-    printf("keys            %llu\n", (unsigned long long) bs.keys);
+    printf("keys            %llu\n", bs.keys);
     printf("height          %u\n", bs.height);
     printf(
         "leaf pages      %llu, %u%% full\n",
-        (unsigned long long) bs.leaf_pages,
+        bs.leaf_pages,
         fill_pct(bs.leaf_bytes, bs.leaf_pages, cap));
     printf(
         "inner pages     %llu, %u%% full\n",
-        (unsigned long long) bs.inner_pages,
+        bs.inner_pages,
         fill_pct(bs.inner_bytes, bs.inner_pages, cap));
-    printf(
-        "store pages     %llu, %u bytes each\n",
-        (unsigned long long) ss.allocated_pages,
-        ss.page_size);
-    printf(
-        "cache           %llu hits, %llu misses\n",
-        (unsigned long long) ss.cache_hits,
-        (unsigned long long) ss.cache_misses);
-    printf("committed LSN   %llu\n", (unsigned long long) ss.committed_lsn.raw);
-    printf("durable LSN     %llu\n", (unsigned long long) ss.durable_lsn.raw);
+    printf("store pages     %llu, %u bytes each\n", ss.allocated_pages, ss.page_size);
+    printf("cache           %llu hits, %llu misses\n", ss.cache_hits, ss.cache_misses);
+    printf("committed LSN   %llu\n", ss.committed_lsn.raw);
+    printf("durable LSN     %llu\n", ss.durable_lsn.raw);
     return EXIT_SUCCESS;
 }
 
@@ -588,14 +582,11 @@ static int cmd_check(kv *db, int argc, char **argv)
         fprintf(
             stderr,
             "kv: the store has %llu pages allocated but the tree uses %llu\n",
-            (unsigned long long) ss.allocated_pages,
-            (unsigned long long) pages);
+            ss.allocated_pages,
+            pages);
         return EXIT_ERROR;
     }
-    printf(
-        "ok: %llu keys in %llu pages\n",
-        (unsigned long long) bs.keys,
-        (unsigned long long) pages);
+    printf("ok: %llu keys in %llu pages\n", bs.keys, pages);
     return EXIT_SUCCESS;
 }
 

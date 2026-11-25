@@ -401,7 +401,7 @@ static int apply_rec(ps_apply_ctx *a, ps_store *s, ps_lsn at, const void *rec, u
         T_FAIL(
             "[%s] replayed record %llu was never appended %s",
             c->desc,
-            (unsigned long long) lsn,
+            lsn,
             known ? "with these bytes" : "(or was discarded)");
     }
     const u8 *b = rec;
@@ -499,7 +499,7 @@ static wcase *case_new(u32 cls, u64 seed)
     rng_seed(&c->r, 0xC1A55u + cls);
     rng_seed(&c->r2, seed);
     c->enospc_run = rng_below(&c->r2, 10) == 0;
-    snprintf(c->desc, sizeof(c->desc), "class %u seed %llu", cls, (unsigned long long) seed);
+    snprintf(c->desc, sizeof(c->desc), "class %u seed %llu", cls, seed);
     CASE_OK(c, startup(c, PS_CREATE));
     return c;
 }
@@ -650,7 +650,7 @@ static u64 scan_last_lsn(wcase *c)
     CASE_OK(c, fvfs->list(fvfs->ctx, WALDIR, list_seg, &lc));
     CASE_CHECK(c, lc.newest != 0);
     char path[64];
-    snprintf(path, sizeof(path), WALDIR "/%016llx.wal", (unsigned long long) lc.newest);
+    snprintf(path, sizeof(path), WALDIR "/%016llx.wal", lc.newest);
     u8 *buf = t_malloc(SEG);
     usize got = 0;
     CASE_OK(c, fault_vfs_read_durable(c->fv, path, 0, buf, SEG, &got));
@@ -822,11 +822,11 @@ static void test_crash_every_point(void)
                 sizeof(c->desc),
                 "class %u k %llu/%llu mode %d rc %d q %llu enospc %u",
                 cls,
-                (unsigned long long) k,
-                (unsigned long long) total,
+                k,
+                total,
                 (int) mode,
                 (int) rc,
-                (unsigned long long) q,
+                q,
                 c->enospc_injected);
             bool rcc = false;
             check(c, mode, rc, q, &rcc);
@@ -859,9 +859,9 @@ static void test_double_crash(void)
             sizeof(c->desc),
             "double class %u seed %llu k1 %llu k2 %llu",
             cls,
-            (unsigned long long) seed,
-            (unsigned long long) k1,
-            (unsigned long long) k2);
+            seed,
+            k1,
+            k2);
         fault_vfs_crash_at(c->fv, fault_vfs_points(c->fv) + k1);
         workload(c, NOPS);
         const u64 x1 = check(c, FAULT_RANDOM_UNSYNCED, RC_NONE, 0, NULL);
@@ -906,11 +906,11 @@ static void test_crash_in_rotation_truncation_seal(void)
                 sizeof(c->desc),
                 "rotation class %u call %llu/%llu mode %d rc %d q %llu",
                 cls,
-                (unsigned long long) j,
-                (unsigned long long) calls,
+                j,
+                calls,
                 (int) mode,
                 (int) rc,
-                (unsigned long long) q);
+                q);
             bool rcc = false;
             check(c, mode, rc, q, &rcc);
             open_crashed += rcc;
@@ -930,13 +930,7 @@ static void test_repeated_reopen(void)
         const u32 cls = (u32) (seed % NCLASSES);
         wcase *c = case_new(cls, seed * 15485863u);
         const u64 k = seed % 2 == 0 ? 0 : 1 + rng_below(&c->r2, 600);
-        snprintf(
-            c->desc,
-            sizeof(c->desc),
-            "reopen class %u seed %llu k %llu",
-            cls,
-            (unsigned long long) seed,
-            (unsigned long long) k);
+        snprintf(c->desc, sizeof(c->desc), "reopen class %u seed %llu k %llu", cls, seed, k);
         if (k != 0) {
             fault_vfs_crash_at(c->fv, fault_vfs_points(c->fv) + k);
         }
