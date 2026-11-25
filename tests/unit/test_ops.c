@@ -68,7 +68,7 @@ static void check_text(ps_page_id id, const char *text)
 {
     const ps_page *p = NULL;
     T_OK(ps_read(s, id, &p));
-    T_EQ(strcmp((const char *) p + HDR, text), 0);
+    T_STREQ((const char *) p + HDR, text);
 }
 
 struct ps_logger_ctx {
@@ -306,7 +306,7 @@ static void test_write_copies(void)
     T_EQ(neu->checksum, 0);
     T_EQ(old->lsn.raw, 1);
     memcpy((u8 *) neu + HDR, "B", 2);
-    T_EQ(strcmp((const char *) old + HDR, "A"), 0);
+    T_STREQ((const char *) old + HDR, "A");
     const ps_page *again = NULL;
     T_OK(ps_read(s, ps_page_id_from(1), &again));
     T_CHECK(again == neu);
@@ -384,8 +384,8 @@ static void test_read_then_replace(void)
     T_OK(ps_write(s, ps_page_id_from(1), &w));
     memcpy((u8 *) w + HDR, "C", 2);
     T_OK(ps_free(s, ps_page_id_from(2)));
-    T_EQ(strcmp((const char *) a + HDR, "A"), 0);
-    T_EQ(strcmp((const char *) b + HDR, "B"), 0);
+    T_STREQ((const char *) a + HDR, "A");
+    T_STREQ((const char *) b + HDR, "B");
     ps_op_commit(s);
     T_EQ(ps_test_pins(s, ps_page_id_from(1)), 0);
     T_EQ(ps_test_chain_len(s, ps_page_id_from(1)), 1);
@@ -619,7 +619,7 @@ static void test_pagein_checks(void)
     T_OK(ps_op_begin(s, ps_lsn_from(10)));
     const ps_page *p = NULL;
     T_OK(ps_read(s, ps_page_id_from(1), &p));
-    T_EQ(strcmp((const char *) p + HDR, "one"), 0);
+    T_STREQ((const char *) p + HDR, "one");
     T_EQ(p->checksum, 0);
     T_EQ(p->lsn.raw, 5);
     T_EQ(p->magic, 0x1234);
@@ -635,7 +635,7 @@ static void test_pagein_checks(void)
 
     T_OK(ps_op_begin(s, ps_lsn_from(10)));
     T_OK(ps_read(s, ps_page_id_from(1), &p));
-    T_EQ(strcmp((const char *) p + HDR, "one"), 0);
+    T_STREQ((const char *) p + HDR, "one");
     ps_stats(s, &st);
     T_EQ(st.cache_misses, misses0 + 4); /* resident: a hit */
     T_EQ(st.cache_hits, 1);

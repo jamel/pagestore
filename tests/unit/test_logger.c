@@ -63,7 +63,7 @@ static void test_level_filter(void)
     T_EQ(c.calls[PS_LOG_LEVEL_WARN], 1);
     T_EQ(c.calls[PS_LOG_LEVEL_INFO], 0);
     T_EQ(c.calls[PS_LOG_LEVEL_DEBUG], 0);
-    T_EQ(strcmp(c.last, "w"), 0);
+    T_STREQ(c.last, "w");
 
     /* A filtered call skips its arguments. */
     u32 evaluated = 0;
@@ -93,7 +93,7 @@ static void test_computed_level(void)
         "x");
     T_EQ(evaluated, 1); /* lg once */
     T_EQ(c.last_level, PS_LOG_LEVEL_WARN);
-    T_EQ(strcmp(c.last, "page 7: x"), 0);
+    T_STREQ(c.last, "page 7: x");
 }
 
 /* The sink formats the message, so ps_log_write imposes no length limit. */
@@ -107,7 +107,7 @@ static void test_long_message(void)
     path[sizeof(path) - 1] = '\0';
     PS_LOG_ERROR(&lg, "WAL %s: segment %016llx has a bad header", path, 1ull);
     T_EQ(c->last_len, strlen(path) + strlen("WAL : segment 0000000000000001 has a bad header"));
-    T_CHECK(strstr(c->last, "has a bad header") != NULL);
+    T_CONTAINS(c->last, "has a bad header");
     free(c);
 }
 
@@ -129,7 +129,7 @@ static void test_wal_uses_store_logger(void)
     ps_wal_close(w);
     c->last[0] = '\0';
     T_OK(ps_wal_open(s, NULL, NULL, &w));
-    T_CHECK(strstr(c->last, "opened") != NULL);
+    T_CONTAINS(c->last, "opened");
     T_EQ(c->last_level, PS_LOG_LEVEL_INFO);
     ps_wal_close(w);
 

@@ -299,9 +299,9 @@ static void test_radix_check_finds_damage(void)
     char msg[256];
     T_OK(ps_snapshot_open(f.s, &snap));
     T_ERR(rx_check(&a, snap, 1500, 2000, &st, msg, sizeof(msg)), EBADMSG);
-    T_CHECK(strstr(msg, "outside the live range") != NULL);
+    T_CONTAINS(msg, "outside the live range");
     T_ERR(rx_check(&a, snap, 0, 3000, &st, msg, sizeof(msg)), EBADMSG);
-    T_CHECK(strstr(msg, "is missing") != NULL);
+    T_CONTAINS(msg, "is missing");
     ps_snapshot_close(snap);
 
     /* A child in the wrong slot has the wrong base. */
@@ -316,7 +316,7 @@ static void test_radix_check_finds_damage(void)
     ps_op_commit(f.s);
     T_OK(ps_snapshot_open(f.s, &snap));
     T_ERR(rx_check(&a, snap, 0, 2000, &st, msg, sizeof(msg)), EBADMSG);
-    T_CHECK(strstr(msg, "not the level 0 node at base 0") != NULL);
+    T_CONTAINS(msg, "not the level 0 node at base 0");
     u64 v;
     T_ERR(rx_get(&a, snap, 1, &v), EBADMSG);
     ps_snapshot_close(snap);
@@ -444,9 +444,9 @@ static void test_log_basic(void)
     u32 slot = 0;
     char name[ML_NAME_MAX + 1];
     T_OK(ml_reader_next(&l, snap, &slot, name, &pos));
-    T_CHECK(strcmp(name, "a") == 0);
+    T_STREQ(name, "a");
     T_OK(ml_reader_next(&l, snap, &slot, name, &pos));
-    T_CHECK(strcmp(name, "b") == 0);
+    T_STREQ(name, "b");
     T_ERR(ml_reader_next(&l, snap, &slot, name, &pos), ENOENT);
     ps_snapshot_close(snap);
 

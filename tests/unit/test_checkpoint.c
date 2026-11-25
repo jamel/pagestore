@@ -84,7 +84,7 @@ static void check_text(ps_page_id id, const char *text)
 {
     const ps_page *p = NULL;
     T_OK(ps_read(s, id, &p));
-    T_EQ(strcmp((const char *) p + HDR, text), 0);
+    T_STREQ((const char *) p + HDR, text);
     T_EQ(p->checksum, 0);
 }
 
@@ -93,7 +93,7 @@ static void check_durable_text(ps_page_id id, const char *text)
 {
     const u8 *p = mb_page(mb, id);
     T_CHECK(p != NULL);
-    T_EQ(strcmp((const char *) p + HDR, text), 0);
+    T_STREQ((const char *) p + HDR, text);
 }
 
 static bool durable_bit(ps_page_id bitmap_id, u32 bit)
@@ -680,7 +680,7 @@ static void test_hooks_order_and_failure(void)
     T_EQ(h.ndone, 1);
     T_EQ(h.done_lsn, 1);
     T_EQ(h.count_at_done, c0 + 1); /* after it */
-    T_EQ(strcmp(h.order, "FD"), 0);
+    T_STREQ(h.order, "FD");
 
     /* Cleared hooks are not called. */
     ps_set_log_hooks(s, NULL);

@@ -108,6 +108,33 @@ PS_NORETURN void t_fail_mem(
             t_fail_mem(__FILE__, __LINE__, #a, #b, t_a_, t_b_, t_n_); \
     } while (0)
 
+#define T_STREQ(a, b) \
+    do { \
+        const char *t_a_ = (a); \
+        const char *t_b_ = (b); \
+        if (strcmp(t_a_, t_b_) != 0) \
+            T_FAIL( \
+                "T_STREQ(%s, %s) failed\n    left:  \"%s\"\n    right: \"%s\"", \
+                #a, \
+                #b, \
+                t_a_, \
+                t_b_); \
+    } while (0)
+
+/* Checks that s contains sub. */
+#define T_CONTAINS(s, sub) \
+    do { \
+        const char *t_s_ = (s); \
+        const char *t_sub_ = (sub); \
+        if (strstr(t_s_, t_sub_) == NULL) \
+            T_FAIL( \
+                "T_CONTAINS(%s, %s) failed\n    text: \"%s\"\n    want: \"%s\"", \
+                #s, \
+                #sub, \
+                t_s_, \
+                t_sub_); \
+    } while (0)
+
 #include <string.h> // IWYU pragma: keep
 
 /* Reads PS_TEST_SCALE. Values outside 1..1000000 fall back to 1. */

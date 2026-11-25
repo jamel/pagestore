@@ -205,9 +205,9 @@ static void test_list_lock(void)
     memset(&lc, 0, sizeof(lc));
     T_OK(v->list(v->ctx, "/d", collect, &lc));
     T_EQ(lc.n, 3);
-    T_CHECK(strcmp(lc.name[0], "a") == 0);
-    T_CHECK(strcmp(lc.name[1], "b") == 0);
-    T_CHECK(strcmp(lc.name[2], "c") == 0);
+    T_STREQ(lc.name[0], "a");
+    T_STREQ(lc.name[1], "b");
+    T_STREQ(lc.name[2], "c");
     T_ERR(v->list(v->ctx, "/d/none", collect, &lc), ENOENT);
     T_ERR(v->list(v->ctx, "/d/a", collect, &lc), ENOTDIR);
 

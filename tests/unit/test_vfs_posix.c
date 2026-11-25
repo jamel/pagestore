@@ -236,13 +236,13 @@ static void test_rename_unlink_list(void)
 
     struct names ns = list_dir(dir);
     T_EQ(ns.n, 2);
-    T_CHECK(strcmp(ns.name[0], "b") == 0);
-    T_CHECK(strcmp(ns.name[1], "c") == 0);
+    T_STREQ(ns.name[0], "b");
+    T_STREQ(ns.name[1], "c");
 
     T_OK(v->unlink(v->ctx, b));
     ns = list_dir(dir);
     T_EQ(ns.n, 1);
-    T_CHECK(strcmp(ns.name[0], "c") == 0);
+    T_STREQ(ns.name[0], "c");
 
     T_ERR(v->unlink(v->ctx, b), ENOENT);
     T_ERR(v->rename(v->ctx, a, b), ENOENT);
@@ -264,7 +264,7 @@ static void test_rename_unlink_list(void)
     v->close(v->ctx, &f);
     ns = list_dir(dir);
     T_EQ(ns.n, 1);
-    T_CHECK(strcmp(ns.name[0], "c") == 0);
+    T_STREQ(ns.name[0], "c");
 
     char *sub = path("sub");
     T_OK(v->mkdir(v->ctx, sub));

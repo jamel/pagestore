@@ -60,7 +60,7 @@ static void check_text(ps_store *s, ps_page_id id, const char *text)
     const ps_page *p = NULL;
     T_OK(ps_snapshot_read(snap, id, &p));
     T_EQ(p->id.raw, id.raw);
-    T_CHECK(strcmp((const char *) p + HDR, text) == 0);
+    T_STREQ((const char *) p + HDR, text);
     ps_snapshot_close(snap);
 }
 
@@ -73,7 +73,7 @@ static void test_create_reopen(void)
     T_CHECK(!exists(dir));
     T_OK(ps_open(dir, &cfg, PS_CREATE, &s));
     T_EQ(ps_page_size(s), 4096);
-    T_CHECK(strcmp(ps_store_dir(s), dir) == 0);
+    T_STREQ(ps_store_dir(s), dir);
     T_CHECK(ps_store_vfs(s) != NULL);
 
     ps_page_id a = PS_PAGE_ID_NONE;
@@ -222,7 +222,7 @@ static void test_accessors(void)
     T_OK(ps_open(dir, &c2, 0, &s));
     T_CHECK(ps_store_vfs(s) != &vfs);
     T_CHECK(ps_store_vfs(s)->open == vfs.open);
-    T_CHECK(strcmp(ps_store_dir(s), dir) == 0);
+    T_STREQ(ps_store_dir(s), dir);
     ps_close(s);
     teardown();
 }

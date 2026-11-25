@@ -635,7 +635,7 @@ static void test_log_on_failure(void)
     T_CHECK(wait_ckpt_errors(&logs, 1, 2000));
     T_EQ(ckpt_errors(&logs), 1);
     pthread_mutex_lock(&logs.mu);
-    T_CHECK(strstr(logs.last_ckpt_error, strerror(ENOSPC)) != NULL);
+    T_CONTAINS(logs.last_ckpt_error, strerror(ENOSPC));
     pthread_mutex_unlock(&logs.mu);
     struct ps_stats st = stats();
     T_EQ(st.checkpoints_failed, 1);
