@@ -67,7 +67,11 @@ bool ps_reg_any_at_or_above(const ps_store *s, ps_lsn c)
 
 /* ---- failed state and log hooks ------------------------------------------- */
 
-void ps_store_fail(ps_store *s, int err)
+/*
+ * Wakes frame waiters with EIO and stops further checkpoints. Takes mem_mu
+ * and logs. Keep reg_mu, page latches and mem_mu free.
+ */
+static void store_fail(ps_store *s, int err)
 {
     const bool was = atomic_exchange_explicit(&s->failed, true, memory_order_acq_rel);
     if (was) {
@@ -98,63 +102,6 @@ void ps_set_log_hooks(ps_store *s, const ps_log_hooks *hooks)
         memset(&s->hooks, 0, sizeof(s->hooks));
     }
     pthread_mutex_unlock(&s->ckpt_mu);
-}
-
-/* ---- checkpoint attempts -------------------------------------------------- */
-
-/* Monotonic time in milliseconds for the retry and periodic timers. */
-static u64 now_ms(void)
-{
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (u64) ts.tv_sec * 1000u + (u64) ts.tv_nsec / 1000000u;
-}
-
-#define PS_BACKOFF_MIN_MS 100u
-#define PS_BACKOFF_MAX_MS 10000u
-
-/*
- * ckpt_mu serializes attempts. Publish the counter and result under
- * mem_mu so a waiter can tell when its requested attempt has finished.
- */
-static int ckpt_attempt(ps_store *s, bool bg)
-{
-    pthread_mutex_lock(&s->ckpt_mu);
-    pthread_mutex_lock(&s->mem_mu);
-    s->ckpt_started++;
-    s->ckpt_inflight = true;
-    pthread_mutex_unlock(&s->mem_mu);
-
-    s->ckpt_bg = bg;
-    const int rv = ps_checkpoint_run(s);
-    s->ckpt_bg = false;
-
-    pthread_mutex_lock(&s->mem_mu);
-    s->ckpt_done = s->ckpt_started;
-    s->ckpt_inflight = false;
-    s->ckpt_last_err = rv;
-    const u64 now = now_ms();
-    s->ckpt_last_end_ms = now;
-    if (rv == 0) {
-        s->ckpt_backoff_ms = 0;
-        s->ckpt_retry_at_ms = 0;
-    } else {
-        s->ckpt_backoff_ms = s->ckpt_backoff_ms == 0 ?
-            PS_BACKOFF_MIN_MS :
-            PS_MIN(s->ckpt_backoff_ms * 2u, PS_BACKOFF_MAX_MS);
-        s->ckpt_retry_at_ms = now + s->ckpt_backoff_ms;
-    }
-    if (s->ckpt_waiters > 0) {
-        pthread_cond_broadcast(&s->ckpt_wait_cv);
-    }
-    pthread_mutex_unlock(&s->mem_mu);
-    pthread_mutex_unlock(&s->ckpt_mu);
-    return rv;
-}
-
-int ps_checkpoint(ps_store *s)
-{
-    return ckpt_attempt(s, false);
 }
 
 /* ---- checkpoint ---------------------------------------------------------- */
@@ -213,7 +160,7 @@ static int ckpt_failed(ps_store *s, ps_lsn L, int err, bool fatal, bool began)
         s->be.ckpt_abort(s->be.ctx);
     }
     if (fatal) {
-        ps_store_fail(s, err);
+        store_fail(s, err);
     }
     pthread_mutex_lock(&s->reg_mu);
     if (!fatal) {
@@ -350,7 +297,11 @@ static void mark_written(ps_store *s, u32 n, u8 cbit)
     }
 }
 
-int ps_checkpoint_run(ps_store *s)
+/*
+ * Enter with only ckpt_mu held. A retryable failure puts dirty entries
+ * back on the next list. A fatal failure returns EIO and fails the store.
+ */
+static int ckpt_run(ps_store *s)
 {
     /* Capture the LSN and hand off the dirty list together under reg_mu. */
     pthread_mutex_lock(&s->reg_mu);
@@ -425,6 +376,63 @@ int ps_checkpoint_run(ps_store *s)
         s->hooks.checkpoint_done(s->hooks.ctx, L);
     }
     return 0;
+}
+
+/* ---- checkpoint attempts -------------------------------------------------- */
+
+/* Monotonic time in milliseconds for the retry and periodic timers. */
+static u64 now_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (u64) ts.tv_sec * 1000u + (u64) ts.tv_nsec / 1000000u;
+}
+
+#define PS_BACKOFF_MIN_MS 100u
+#define PS_BACKOFF_MAX_MS 10000u
+
+/*
+ * ckpt_mu serializes attempts. Publish the counter and result under
+ * mem_mu so a waiter can tell when its requested attempt has finished.
+ */
+static int ckpt_attempt(ps_store *s, bool bg)
+{
+    pthread_mutex_lock(&s->ckpt_mu);
+    pthread_mutex_lock(&s->mem_mu);
+    s->ckpt_started++;
+    s->ckpt_inflight = true;
+    pthread_mutex_unlock(&s->mem_mu);
+
+    s->ckpt_bg = bg;
+    const int rv = ckpt_run(s);
+    s->ckpt_bg = false;
+
+    pthread_mutex_lock(&s->mem_mu);
+    s->ckpt_done = s->ckpt_started;
+    s->ckpt_inflight = false;
+    s->ckpt_last_err = rv;
+    const u64 now = now_ms();
+    s->ckpt_last_end_ms = now;
+    if (rv == 0) {
+        s->ckpt_backoff_ms = 0;
+        s->ckpt_retry_at_ms = 0;
+    } else {
+        s->ckpt_backoff_ms = s->ckpt_backoff_ms == 0 ?
+            PS_BACKOFF_MIN_MS :
+            PS_MIN(s->ckpt_backoff_ms * 2u, PS_BACKOFF_MAX_MS);
+        s->ckpt_retry_at_ms = now + s->ckpt_backoff_ms;
+    }
+    if (s->ckpt_waiters > 0) {
+        pthread_cond_broadcast(&s->ckpt_wait_cv);
+    }
+    pthread_mutex_unlock(&s->mem_mu);
+    pthread_mutex_unlock(&s->ckpt_mu);
+    return rv;
+}
+
+int ps_checkpoint(ps_store *s)
+{
+    return ckpt_attempt(s, false);
 }
 
 /* ---- checkpoint thread and waits ----------------------------------------- */

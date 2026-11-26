@@ -306,21 +306,7 @@ void ps_update_evictable(ps_store *s, ps_entry *e);
  */
 void ps_mark_dirty(ps_store *s, ps_entry *e);
 
-/* ---- checkpoint, registry, retire queue (checkpoint.c) ---- */
-
-/*
- * Enter with only ckpt_mu held. A retryable failure puts dirty entries
- * back on the next list. A fatal failure returns EIO and fails the store.
- */
-int ps_checkpoint_run(ps_store *s);
-
-/*
- * Wakes frame waiters with EIO and stops further checkpoints. Takes mem_mu
- * and logs. Keep reg_mu, page latches and mem_mu free.
- */
-void ps_store_fail(ps_store *s, int err);
-
-/* ---- checkpoint thread and waits (checkpoint.c) ---- */
+/* ---- checkpoint thread, waits and registry (checkpoint.c) ---- */
 
 /* Set up mem_mu and the two condition variables used by the checkpointer. */
 int ps_ckpt_sync_init(ps_store *s);
