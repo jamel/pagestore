@@ -413,21 +413,25 @@ static int cmd_scan(kv *db, int argc, char **argv)
         return EXIT_ERROR;
     }
     bt_cursor c;
-    bt_item it;
-    u64 shown = 0;
     int rv = bt_cursor_open(&c, &db->tree, snap, start, (u32) slen);
-    while (rv == 0 && shown < limit && (rv = bt_cursor_next(&c, &it)) == 0) {
-        if (prefix != NULL && !has_prefix(&it, prefix, plen)) {
-            break;
+    if (rv == 0) {
+        for (u64 shown = 0; shown < limit; shown++) {
+            bt_item it;
+            rv = bt_cursor_next(&c, &it);
+            if (rv != 0) {
+                break;
+            }
+            if (prefix != NULL && !has_prefix(&it, prefix, plen)) {
+                break;
+            }
+            if (end != NULL && past_end(&it, end, elen)) {
+                break;
+            }
+            fwrite(it.key, 1, it.klen, stdout);
+            putchar('\t');
+            fwrite(it.val, 1, it.vlen, stdout);
+            putchar('\n');
         }
-        if (end != NULL && past_end(&it, end, elen)) {
-            break;
-        }
-        fwrite(it.key, 1, it.klen, stdout);
-        putchar('\t');
-        fwrite(it.val, 1, it.vlen, stdout);
-        putchar('\n');
-        shown++;
     }
     bt_cursor_close(&c);
     ps_snapshot_close(snap);

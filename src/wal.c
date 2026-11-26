@@ -516,13 +516,17 @@ int ps_wal_truncate(ps_wal *w, ps_lsn lsn)
     int rv = 0;
     usize drop = 0;
     /* Recovery can be reading these files while the checkpoint runs. */
-    while (w->iters == 0 && w->nsegs - drop >= 2 && ps_lsn_le(w->prev_lsns[drop + 1], lsn)) {
-        rv = w->vfs.unlink(w->vfs.ctx, seg_path(w, w->path, w->first_seq + drop, false));
-        if (rv != 0 && rv != ENOENT) {
-            break;
+    if (w->iters == 0) {
+        for (; w->nsegs - drop >= 2; drop++) {
+            if (!ps_lsn_le(w->prev_lsns[drop + 1], lsn)) {
+                break;
+            }
+            rv = w->vfs.unlink(w->vfs.ctx, seg_path(w, w->path, w->first_seq + drop, false));
+            if (rv != 0 && rv != ENOENT) {
+                break;
+            }
+            rv = 0;
         }
-        rv = 0;
-        drop++;
     }
     if (drop > 0) {
         memmove(w->prev_lsns, w->prev_lsns + drop, (w->nsegs - drop) * sizeof(*w->prev_lsns));

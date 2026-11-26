@@ -312,8 +312,12 @@ static int cmd_read(tool *t, int argc, char **argv)
     u64 shown = 0;
     u64 last = 0;
     int rv = 0;
-    mq_item it;
-    while (shown < limit && (rv = mq_read(&r, buf, t->cfg.max_batch, 0, &it)) == 0) {
+    while (shown < limit) {
+        mq_item it;
+        rv = mq_read(&r, buf, t->cfg.max_batch, 0, &it);
+        if (rv != 0) {
+            break;
+        }
         if (it.missed > 0) {
             fprintf(
                 stderr,
@@ -381,11 +385,17 @@ static int cmd_readers(tool *t, int argc, char **argv)
     const ml_log *l = mq_log(t->q);
     ml_state st;
     int rv = ml_state_get(l, snap, &st);
-    u32 slot = 0;
-    char name[MQ_NAME_MAX + 1];
-    u64 pos;
-    while (rv == 0 && (rv = ml_reader_next(l, snap, &slot, name, &pos)) == 0) {
-        printf("%s\t%llu\t%llu\n", name, pos, st.next_seq - pos);
+    if (rv == 0) {
+        u32 slot = 0;
+        for (;;) {
+            char name[MQ_NAME_MAX + 1];
+            u64 pos;
+            rv = ml_reader_next(l, snap, &slot, name, &pos);
+            if (rv != 0) {
+                break;
+            }
+            printf("%s\t%llu\t%llu\n", name, pos, st.next_seq - pos);
+        }
     }
     ps_snapshot_close(snap);
     if (rv != ENOENT) {
