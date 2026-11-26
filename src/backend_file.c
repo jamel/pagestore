@@ -16,6 +16,7 @@
 #include "backend_file.h"
 #include "crc32c.h"
 #include "format.h"
+#include "path.h"
 #include "util.h"
 
 #include <errno.h>
@@ -73,50 +74,14 @@ struct ps_backend_ctx {
 
 /* ---- paths ---- */
 
-static char *str_join(const char *a, const char *b)
-{
-    const usize la = strlen(a);
-    const usize lb = strlen(b);
-    char *s = malloc(la + lb + 1);
-    if (s != NULL) {
-        memcpy(s, a, la);
-        memcpy(s + la, b, lb + 1);
-    }
-    return s;
-}
-
 static char *path_join(const char *dir, const char *sep, const char *name)
 {
-    char *a = str_join(dir, sep);
+    char *a = ps_str_join(dir, sep);
     if (a == NULL) {
         return NULL;
     }
-    char *s = str_join(a, name);
+    char *s = ps_str_join(a, name);
     free(a);
-    return s;
-}
-
-/* For example, "/a/b" gives "/a", "/a" gives "/", and "a" gives ".". */
-static char *parent_of(const char *path)
-{
-    usize n = strlen(path);
-    while (n > 1 && path[n - 1] == '/') {
-        n--;
-    }
-    while (n > 0 && path[n - 1] != '/') {
-        n--;
-    }
-    if (n == 0) {
-        return str_join(".", "");
-    }
-    while (n > 1 && path[n - 1] == '/') {
-        n--;
-    }
-    char *s = malloc(n + 1);
-    if (s != NULL) {
-        memcpy(s, path, n);
-        s[n] = '\0';
-    }
     return s;
 }
 
@@ -637,14 +602,14 @@ int ps_file_backend_new(const char *dir, const ps_vfs *vfs, ps_backend *out)
     }
     c->vfs = *vfs;
     c->state = FB_IDLE;
-    c->dir = str_join(dir, "");
+    c->dir = ps_str_dup(dir);
     if (c->dir != NULL) {
         usize n = strlen(c->dir);
         while (n > 1 && c->dir[n - 1] == '/') {
             c->dir[--n] = '\0';
         }
     }
-    c->parent = parent_of(dir);
+    c->parent = ps_path_parent(dir);
     const char *d = c->dir != NULL ? c->dir : "";
     const char *sep = strcmp(d, "/") == 0 ? "" : "/";
     c->lock_path = path_join(d, sep, "LOCK");

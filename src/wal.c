@@ -6,6 +6,7 @@
 
 #include "crc32c.h"
 #include "format.h"
+#include "path.h"
 #include "store.h"
 #include "util.h"
 #include "wal_internal.h"
@@ -107,52 +108,6 @@ static int check_config(const ps_wal_config *cfg)
 }
 
 /* ---- paths --------------------------------------------------------------- */
-
-static char *str_dup(const char *s)
-{
-    const usize n = strlen(s) + 1;
-    char *d = malloc(n);
-    if (d != NULL) {
-        memcpy(d, s, n);
-    }
-    return d;
-}
-
-static char *str_join(const char *a, const char *b)
-{
-    const usize na = strlen(a);
-    const usize nb = strlen(b);
-    char *s = malloc(na + nb + 1);
-    if (s != NULL) {
-        memcpy(s, a, na);
-        memcpy(s + na, b, nb + 1);
-    }
-    return s;
-}
-
-/* For example, "/a/b" gives "/a", "/a" gives "/", and "a" gives ".". */
-static char *parent_of(const char *path)
-{
-    usize n = strlen(path);
-    while (n > 1 && path[n - 1] == '/') {
-        n--;
-    }
-    while (n > 0 && path[n - 1] != '/') {
-        n--;
-    }
-    if (n == 0) {
-        return str_dup(".");
-    }
-    while (n > 1 && path[n - 1] == '/') {
-        n--;
-    }
-    char *s = malloc(n + 1);
-    if (s != NULL) {
-        memcpy(s, path, n);
-        s[n] = '\0';
-    }
-    return s;
-}
 
 /* The directory prefix is already in dst. */
 static const char *wal_path(ps_wal *w, char *dst, const char *name)
@@ -634,7 +589,7 @@ static int open_dir(ps_wal *w)
     if (rv != 0 && rv != EEXIST) {
         return rv;
     }
-    char *parent = parent_of(w->dir);
+    char *parent = ps_path_parent(w->dir);
     if (parent == NULL) {
         return ENOMEM;
     }
@@ -1115,7 +1070,7 @@ int ps_wal_open(ps_store *store, const char *waldir, const ps_wal_config *cfg, p
     w->hctx.w = w;
     atomic_init(&w->failed, false);
     atomic_init(&w->appending, false);
-    w->dir = waldir != NULL ? str_dup(waldir) : str_join(ps_store_dir(store), "/wal");
+    w->dir = waldir != NULL ? ps_str_dup(waldir) : ps_str_join(ps_store_dir(store), "/wal");
     if (w->dir != NULL) {
         w->dir_len = strlen(w->dir);
         w->path = malloc(w->dir_len + WAL_NAME_LEN + 2);
