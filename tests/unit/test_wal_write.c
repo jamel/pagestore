@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #define PS 4096u
 #define HDR PS_PAGE_HEADER_SIZE
@@ -266,8 +267,16 @@ static void test_open_errors(void)
     ps_store *s = setup();
     ps_wal *w = NULL;
     ps_wal_config c = wal_config();
+    T_ERR(ps_wal_open(NULL, NULL, &c, &w), EINVAL);
+    T_ERR(ps_wal_open(s, NULL, &c, NULL), EINVAL);
+    T_ERR(ps_wal_open(s, "", &c, &w), EINVAL);
+    ps_wal_close(NULL);
     c.segment_size = 64 * 1024 - 1;
     c.max_record_size = 1024;
+    T_ERR(ps_wal_open(s, NULL, &c, &w), EINVAL);
+    /* With an unaligned segment size the largest payload fits but its padding does not. */
+    c.segment_size = SEG + 1;
+    c.max_record_size = (u32) (SEG + 1 - 56);
     T_ERR(ps_wal_open(s, NULL, &c, &w), EINVAL);
     c = wal_config();
     c.max_record_size = (u32) (SEG - 56 + 1);
@@ -305,6 +314,24 @@ static void test_open_errors(void)
     T_ERR(ps_wal_open(s, NULL, &c, &w), EINVAL);
     ps_close(s);
     mb_destroy(mb);
+    teardown();
+}
+
+/* An explicit waldir may end in a slash. Open still syncs its parent. */
+static void test_explicit_waldir(void)
+{
+    ps_store *s = setup();
+    const ps_wal_config c = wal_config();
+    ps_wal *w = NULL;
+    T_OK(ps_wal_open(s, WALDIR "/", &c, &w));
+    for (u64 lsn = 1; lsn <= 5; lsn++) {
+        append_rec(w, lsn, rec_len(lsn));
+    }
+    T_OK(ps_wal_flush(w, ps_lsn_from(5)));
+    fault_vfs_reboot(fv, FAULT_DROP_UNSYNCED);
+    ps_close(s);
+    ps_wal_close(w);
+    check_seg(1, 0, 1, 5, 0);
     teardown();
 }
 
@@ -665,6 +692,26 @@ static void test_truncate(void)
     teardown();
 }
 
+/* Eleven live segments outgrow the first allocation of the segment list. */
+static void test_many_segments(void)
+{
+    ps_store *s = setup();
+    ps_wal *w = open_wal(s);
+    const u64 last = 10 * PER_SEG + 1;
+    for (u64 lsn = 1; lsn <= last; lsn++) {
+        append_rec(w, lsn, BIG);
+    }
+    T_OK(ps_wal_flush(w, ps_lsn_from(last)));
+    T_EQ(count_files().segs, 11);
+    T_OK(ps_wal_truncate(w, ps_lsn_from(9 * PER_SEG)));
+    T_EQ(count_files().segs, 2);
+    ps_close(s);
+    ps_wal_close(w);
+    check_seg(10, 9 * PER_SEG, 9 * PER_SEG + 1, 10 * PER_SEG, BIG);
+    check_seg(11, 10 * PER_SEG, last, last, BIG);
+    teardown();
+}
+
 static void test_enospc_rotation_healthy(void)
 {
     ps_store *s = setup();
@@ -998,12 +1045,43 @@ static void test_posix_smoke(void)
     t_tmpdir_free(root);
 }
 
+/* A relative waldir resolves against the working directory, which open syncs as its parent. */
+static void test_posix_relative_waldir(void)
+{
+    char *root = t_tmpdir();
+    char dir[4096];
+    snprintf(dir, sizeof(dir), "%s/store", root);
+    char cwd[4096];
+    T_CHECK(getcwd(cwd, sizeof(cwd)) != NULL);
+    T_EQ(chdir(root), 0);
+    ps_config cfg;
+    ps_config_init(&cfg);
+    cfg.cache_size = (usize) 64 * PS;
+    cfg.checkpoint_thread = false;
+    ps_store *s = NULL;
+    T_OK(ps_open(dir, &cfg, PS_CREATE, &s));
+    const ps_wal_config c = wal_config();
+    ps_wal *w = NULL;
+    T_OK(ps_wal_open(s, "wal", &c, &w));
+    T_OK(ps_wal_append(w, ps_lsn_from(1), "abc", 3));
+    T_OK(ps_wal_flush(w, ps_lsn_from(1)));
+    ps_close(s);
+    ps_wal_close(w);
+    T_EQ(chdir(cwd), 0);
+    char path[4200];
+    struct stat st;
+    snprintf(path, sizeof(path), "%s/wal/0000000000000001.wal", root);
+    T_EQ(stat(path, &st), 0);
+    t_tmpdir_free(root);
+}
+
 int main(int argc, char **argv)
 {
     t_init(argc, argv);
     T_RUN(test_open_fresh);
     T_RUN(test_open_fresh_nonzero_durable);
     T_RUN(test_open_errors);
+    T_RUN(test_explicit_waldir);
     T_RUN(test_append_flush_durable);
     T_RUN(test_unflushed_lost);
     T_RUN(test_lsn_increasing);
@@ -1014,6 +1092,7 @@ int main(int argc, char **argv)
     T_RUN(test_flush_while_appending);
     T_RUN(test_flush_beyond_appended);
     T_RUN(test_truncate);
+    T_RUN(test_many_segments);
     T_RUN(test_enospc_rotation_healthy);
     T_RUN(test_write_error_fails_wal);
     T_RUN(test_drain_and_seal_errors_fail_wal);
@@ -1024,5 +1103,6 @@ int main(int argc, char **argv)
     T_RUN(test_no_io_after_failure);
     T_RUN(test_hooks_installed);
     T_RUN(test_posix_smoke);
+    T_RUN(test_posix_relative_waldir);
     return t_done();
 }

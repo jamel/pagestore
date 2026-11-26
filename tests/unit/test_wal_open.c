@@ -770,6 +770,29 @@ static void test_lost_log_nonzero_durable(void)
     teardown();
 }
 
+/* A segment numbered UINT64_MAX leaves no number for its successor. */
+static void test_seq_exhausted(void)
+{
+    ps_store *s = setup();
+    fault_vfs_mkdir_durable(fv, WALDIR);
+    char p[64];
+    seg_name(p, sizeof(p), UINT64_MAX);
+    u8 hdr[PS_WAL_SEG_HEADER_SIZE];
+    const ps_wal_seg_header h = {.seq = UINT64_MAX, .prev_lsn = PS_LSN_NONE};
+    ps_wal_seg_header_encode(&h, hdr);
+    ps_file f;
+    T_OK(vfs->open(vfs->ctx, p, PS_VFS_CREATE, &f));
+    T_OK(vfs->pwrite(vfs->ctx, &f, hdr, sizeof(hdr), 0));
+    T_OK(vfs->fsync(vfs->ctx, &f));
+    vfs->close(vfs->ctx, &f);
+    ps_wal *w = NULL;
+    T_ERR(try_open_wal(s, &w), EBADMSG);
+    T_EQ(count_files().segs, 1);
+    T_EQ(count_files().tmps, 0);
+    ps_close(s);
+    teardown();
+}
+
 static void test_tmp_deleted(void)
 {
     build_segments(5);
@@ -784,6 +807,34 @@ static void test_tmp_deleted(void)
     T_EQ(count_files().tmps, 0);
     T_CHECK(!file_exists(WALDIR "/0000000000000009.wal.tmp"));
     T_CHECK(seg_exists(2)); /* stale temp file was removed before publishing */
+    T_EQ(check_iter(w, 1, BIG, NULL), 5);
+    close_both(s, w);
+    teardown();
+}
+
+/* Open leaves other files alone, including names that only look like segments. */
+static void test_other_files_kept(void)
+{
+    build_segments(5);
+    const char *names[] = {
+        WALDIR "/0000000000000009.bak",
+        WALDIR "/0000000000000009.wal.old",
+        WALDIR "/000000000000000A.wal",
+        WALDIR "/9.wal",
+    };
+    const u32 n = sizeof(names) / sizeof(names[0]);
+    for (u32 i = 0; i < n; i++) {
+        ps_file f;
+        T_OK(vfs->open(vfs->ctx, names[i], PS_VFS_CREATE, &f));
+        vfs->close(vfs->ctx, &f);
+    }
+    ps_store *s = open_store(0);
+    ps_wal *w = open_wal(s);
+    for (u32 i = 0; i < n; i++) {
+        T_CHECK(file_exists(names[i]));
+    }
+    T_CHECK(seg_exists(2));
+    T_CHECK(!seg_exists(10));
     T_EQ(check_iter(w, 1, BIG, NULL), 5);
     close_both(s, w);
     teardown();
@@ -883,6 +934,40 @@ static void test_seal_failure(void)
     T_EQ(found, 1);
 }
 
+/*
+ * Fail each I/O step of a fresh open in turn. Points 1 through 3 make the
+ * directory, sync its parent and create the lock file. Points 4 through 9
+ * publish segment 1. A clean retry opens an empty WAL.
+ */
+static void test_open_fresh_errors(void)
+{
+    u64 k = 1;
+    for (; k <= 20; k++) {
+        ps_store *s = setup();
+        fault_vfs_fail_at(fv, fault_vfs_points(fv) + k, EIO);
+        ps_wal *w = NULL;
+        const int rv = try_open_wal(s, &w);
+        fault_vfs_fail_at(fv, 0, 0);
+        if (rv == 0) {
+            close_both(s, w);
+            teardown();
+            break;
+        }
+        T_ERR(rv, EIO);
+        T_CHECK(w == NULL);
+        w = open_wal(s);
+        T_EQ(count_files().tmps, 0);
+        u64 cnt = 1;
+        check_iter(w, 1, 0, &cnt);
+        T_EQ(cnt, 0);
+        append_rec(w, 1, 10);
+        T_OK(ps_wal_flush(w, ps_lsn_from(1)));
+        close_both(s, w);
+        teardown();
+    }
+    T_EQ(k, 10);
+}
+
 static void test_seal_fsyncs_already_truncated(void)
 {
     /*
@@ -979,6 +1064,52 @@ static void test_iter_detects_change(void)
         close_both(s, w);
         teardown();
     }
+}
+
+/*
+ * Every read fails after a crash. An iterator returns the error when it
+ * opens a segment and when it reads past the part it already has.
+ */
+static void test_iter_read_error(void)
+{
+    ps_store *s = setup();
+    ps_wal_config c = wal_config();
+    c.segment_size = (u64) 1 << 20; /* more records than one 256 KiB read holds */
+    ps_wal *w = open_wal_cfg(s, &c);
+    const u64 n = 100;
+    append_range(w, 1, n, BIG);
+    T_OK(ps_wal_flush(w, ps_lsn_from(n)));
+    close_both(s, w);
+    s = open_store(0);
+    w = open_wal_cfg(s, &c);
+    ps_wal_iter *a = NULL;
+    ps_wal_iter *b = NULL;
+    T_OK(ps_wal_iter_open(w, ps_lsn_from(1), &a));
+    T_OK(ps_wal_iter_open(w, ps_lsn_from(1), &b));
+    ps_lsn lsn = PS_LSN_NONE;
+    const void *buf = NULL;
+    usize len = 0;
+    T_OK(ps_wal_iter_next(a, &lsn, &buf, &len));
+    fault_vfs_crash_at(fv, fault_vfs_points(fv) + 1);
+    T_ERR(vfs->fsync_dir(vfs->ctx, WALDIR), EIO);
+    T_CHECK(fault_vfs_crashed(fv));
+    T_ERR(ps_wal_iter_next(b, &lsn, &buf, &len), EIO);
+    u64 got = 1;
+    int rv = 0;
+    for (;;) {
+        rv = ps_wal_iter_next(a, &lsn, &buf, &len);
+        if (rv != 0) {
+            break;
+        }
+        got++;
+    }
+    T_ERR(rv, EIO);
+    T_CHECK(got > 1 && got < n);
+    ps_wal_iter_close(a);
+    ps_wal_iter_close(b);
+    fault_vfs_reboot(fv, FAULT_DROP_UNSYNCED);
+    close_both(s, w);
+    teardown();
 }
 
 static void test_crash_truncate(void)
@@ -1204,11 +1335,15 @@ int main(int argc, char **argv)
     T_RUN(test_anchor_is_newest);
     T_RUN(test_no_anchor);
     T_RUN(test_lost_log_nonzero_durable);
+    T_RUN(test_seq_exhausted);
     T_RUN(test_tmp_deleted);
+    T_RUN(test_other_files_kept);
     T_RUN(test_repeated_reopen_no_appends);
     T_RUN(test_seal_failure);
+    T_RUN(test_open_fresh_errors);
     T_RUN(test_seal_fsyncs_already_truncated);
     T_RUN(test_iter_detects_change);
+    T_RUN(test_iter_read_error);
     T_RUN(test_crash_truncate);
     T_RUN(test_double_crash_no_resurrection);
     T_RUN(test_crash_every_point);
