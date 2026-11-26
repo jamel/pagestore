@@ -56,27 +56,8 @@ if(PS_COVERAGE)
   find_program(PS_LLVM_COV NAMES llvm-cov-${ps_llvm_major} llvm-cov
     HINTS "${ps_llvm_bin}" REQUIRED)
 
+  # The coverage targets are defined at the end, after every test.
   set(PS_COVERAGE_DIR ${PROJECT_BINARY_DIR}/coverage)
-  set(ps_profdata ${PS_COVERAGE_DIR}/merged.profdata)
-  # The report reads the library, not the test binaries. Then every source
-  # file shows up, even when the selected tests never link it.
-  set(ps_cov_args $<TARGET_FILE:pagestore> -instr-profile=${ps_profdata}
-    -show-region-summary=false -show-branch-summary=false)
-
-  add_custom_target(coverage-reset
-    COMMAND ${CMAKE_COMMAND} -E rm -rf ${PS_COVERAGE_DIR}/profiles
-    COMMENT "Removing old coverage profiles"
-    VERBATIM)
-  add_custom_target(coverage-report
-    COMMAND ${PS_LLVM_PROFDATA} merge -sparse -o ${ps_profdata} ${PS_COVERAGE_DIR}/profiles
-    COMMAND ${CMAKE_COMMAND} -E rm -rf ${PS_COVERAGE_DIR}/html
-    COMMAND ${PS_LLVM_COV} show ${ps_cov_args} -format=html
-      -output-dir=${PS_COVERAGE_DIR}/html -project-title=PageStore
-    COMMAND ${PS_LLVM_COV} report ${ps_cov_args}
-    COMMAND ${CMAKE_COMMAND} -E echo "HTML report: ${PS_COVERAGE_DIR}/html/index.html"
-    COMMENT "Writing coverage report"
-    USES_TERMINAL
-    VERBATIM)
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -121,4 +102,37 @@ option(PS_BUILD_EXAMPLES "Build the examples and their tests" OFF)
 if(PS_BUILD_EXAMPLES)
   add_subdirectory(examples/btree)
   add_subdirectory(examples/queue)
+endif()
+
+if(PS_COVERAGE)
+  # Read the library so every source file shows up, even when the selected
+  # tests never link it. The test programs add the header functions they
+  # inline. Only library files are reported, in sorted order. Each test that
+  # did not run adds a "mismatched data" warning for its main().
+  set(ps_profdata ${PS_COVERAGE_DIR}/merged.profdata)
+  set(ps_cov_args $<TARGET_FILE:pagestore>)
+  get_property(ps_cov_tests GLOBAL PROPERTY PS_COVERAGE_TESTS)
+  foreach(t IN LISTS ps_cov_tests)
+    list(APPEND ps_cov_args -object=$<TARGET_FILE:${t}>)
+  endforeach()
+  file(GLOB ps_cov_sources
+    ${PROJECT_SOURCE_DIR}/include/pagestore/*.h
+    ${PROJECT_SOURCE_DIR}/src/*.[ch])
+  list(APPEND ps_cov_args -instr-profile=${ps_profdata}
+    -show-region-summary=false -show-branch-summary=false ${ps_cov_sources})
+
+  add_custom_target(coverage-reset
+    COMMAND ${CMAKE_COMMAND} -E rm -rf ${PS_COVERAGE_DIR}/profiles
+    COMMENT "Removing old coverage profiles"
+    VERBATIM)
+  add_custom_target(coverage-report
+    COMMAND ${PS_LLVM_PROFDATA} merge -sparse -o ${ps_profdata} ${PS_COVERAGE_DIR}/profiles
+    COMMAND ${CMAKE_COMMAND} -E rm -rf ${PS_COVERAGE_DIR}/html
+    COMMAND ${PS_LLVM_COV} show ${ps_cov_args} -format=html
+      -output-dir=${PS_COVERAGE_DIR}/html -project-title=PageStore
+    COMMAND ${PS_LLVM_COV} report ${ps_cov_args}
+    COMMAND ${CMAKE_COMMAND} -E echo "HTML report: ${PS_COVERAGE_DIR}/html/index.html"
+    COMMENT "Writing coverage report"
+    USES_TERMINAL
+    VERBATIM)
 endif()

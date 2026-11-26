@@ -48,6 +48,7 @@ function(ps_add_test)
   if(PS_COVERAGE)
     # %p gives each process its own file, so repeated runs add up.
     list(APPEND env "LLVM_PROFILE_FILE=${PS_COVERAGE_DIR}/profiles/${T_NAME}-%p.profraw")
+    set_property(GLOBAL APPEND PROPERTY PS_COVERAGE_TESTS ${T_NAME})
   endif()
   set_tests_properties(${T_NAME} PROPERTIES
     LABELS ${T_LABEL}
